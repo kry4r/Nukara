@@ -1,0 +1,5 @@
+FROM scratch
+WORKDIR /srv
+COPY build/gateway-linux-amd64 /usr/local/bin/service
+EXPOSE 8080
+ENTRYPOINT ["/usr/local/bin/service"]

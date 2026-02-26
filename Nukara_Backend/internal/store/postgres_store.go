@@ -1,0 +1,1153 @@
+package store
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log"
+	"sort"
+	"strings"
+	"time"
+
+	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/redis/go-redis/v9"
+)
+
+const (
+	metricKeyRequests  = "metrics:requests_total"
+	metricKeyWS        = "metrics:active_ws_connections"
+	metricKeyProactive = "metrics:proactive_message_sent"
+)
+
+type PostgresStore struct {
+	*Store
+	db               *sql.DB
+	redis            *redis.Client
+	metricsKeyPrefix string
+}
+
+func NewPostgresStore(postgresDSN, redisAddr string) (*PostgresStore, error) {
+	if strings.TrimSpace(postgresDSN) == "" {
+		return nil, errors.New("postgres dsn is empty")
+	}
+
+	db, err := sql.Open("pgx", postgresDSN)
+	if err != nil {
+		return nil, err
+	}
+	db.SetMaxOpenConns(80)
+	db.SetMaxIdleConns(25)
+	db.SetConnMaxLifetime(30 * time.Minute)
+	db.SetConnMaxIdleTime(5 * time.Minute)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := db.PingContext(ctx); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if err := ensurePostgresSchema(ctx, db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+
+	store := &PostgresStore{
+		Store:            NewStore(),
+		db:               db,
+		metricsKeyPrefix: "nukara:",
+	}
+	if strings.TrimSpace(redisAddr) != "" {
+		client := redis.NewClient(&redis.Options{Addr: strings.TrimSpace(redisAddr)})
+		if err := client.Ping(context.Background()).Err(); err != nil {
+			log.Printf("redis unavailable, fallback to in-memory metrics: %v", err)
+			_ = client.Close()
+		} else {
+			store.redis = client
+		}
+	}
+	return store, nil
+}
+
+func (p *PostgresStore) Close() {
+	if p.redis != nil {
+		_ = p.redis.Close()
+	}
+	if p.db != nil {
+		_ = p.db.Close()
+	}
+}
+
+func ensurePostgresSchema(ctx context.Context, db *sql.DB) error {
+	const schema = `
+CREATE TABLE IF NOT EXISTS users (
+    id UUID PRIMARY KEY,
+    phone VARCHAR(20) UNIQUE NOT NULL,
+    nickname VARCHAR(50) NOT NULL,
+    avatar_url TEXT,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS sms_codes (
+    id UUID PRIMARY KEY,
+    phone VARCHAR(20) NOT NULL,
+    purpose VARCHAR(20) NOT NULL,
+    code VARCHAR(10) NOT NULL,
+    expires_at TIMESTAMP NOT NULL,
+    used BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS bots (
+    id UUID PRIMARY KEY,
+    user_id UUID NOT NULL,
+    name VARCHAR(100) NOT NULL,
+    avatar_url TEXT,
+    avatar_base64 TEXT,
+    summary TEXT NOT NULL,
+    speaking_style TEXT NOT NULL,
+    background TEXT NOT NULL,
+    traits JSONB NOT NULL DEFAULT '[]'::jsonb,
+    gender VARCHAR(20) NOT NULL DEFAULT 'unknown',
+    chat_background_style VARCHAR(30) NOT NULL DEFAULT 'lightPaper',
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS bot_states (
+    id UUID PRIMARY KEY,
+    user_id UUID NOT NULL,
+    bot_id UUID NOT NULL,
+    status_emoji VARCHAR(16) NOT NULL DEFAULT '🙂',
+    status_text VARCHAR(50) NOT NULL DEFAULT '在线',
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    UNIQUE (user_id, bot_id)
+);
+
+CREATE TABLE IF NOT EXISTS conversations (
+    id UUID PRIMARY KEY,
+    user_id UUID NOT NULL,
+    bot_id UUID NOT NULL,
+    last_message TEXT,
+    last_message_at TIMESTAMP,
+    unread_count INT NOT NULL DEFAULT 0,
+    is_proactive_message BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    UNIQUE (user_id, bot_id)
+);
+
+CREATE TABLE IF NOT EXISTS messages (
+    id UUID PRIMARY KEY,
+    conversation_id UUID NOT NULL,
+    sender_type VARCHAR(10) NOT NULL,
+    content_type VARCHAR(20) NOT NULL,
+    content JSONB NOT NULL,
+    is_proactive BOOLEAN NOT NULL DEFAULT FALSE,
+    emotion_tag VARCHAR(30),
+    reply_group_id VARCHAR(20),
+    sequence INT NOT NULL DEFAULT 0,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS user_devices (
+    id UUID PRIMARY KEY,
+    user_id UUID NOT NULL,
+    platform VARCHAR(20) NOT NULL,
+    device_token TEXT NOT NULL,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    UNIQUE (user_id, device_token)
+);
+
+CREATE TABLE IF NOT EXISTS user_notification_settings (
+    user_id UUID PRIMARY KEY,
+    proactive_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    dnd_start VARCHAR(5),
+    dnd_end VARCHAR(5),
+    frequency VARCHAR(20) NOT NULL DEFAULT 'normal',
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS proactive_logs (
+    id UUID PRIMARY KEY,
+    user_id UUID NOT NULL,
+    bot_id UUID NOT NULL,
+    conversation_id UUID NOT NULL,
+    trigger_type VARCHAR(50) NOT NULL,
+    message TEXT NOT NULL,
+    sent_by_ws BOOLEAN NOT NULL DEFAULT TRUE,
+    sent_by_apns BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+-- Migrations: add reply_group_id and sequence to messages (idempotent)
+DO $$ BEGIN
+    ALTER TABLE messages ADD COLUMN reply_group_id VARCHAR(20);
+EXCEPTION WHEN duplicate_column THEN NULL;
+END $$;
+DO $$ BEGIN
+    ALTER TABLE messages ADD COLUMN sequence INT NOT NULL DEFAULT 0;
+EXCEPTION WHEN duplicate_column THEN NULL;
+END $$;
+
+-- Migration: add turn_count to bot_states
+DO $$ BEGIN
+    ALTER TABLE bot_states ADD COLUMN turn_count INT NOT NULL DEFAULT 0;
+EXCEPTION WHEN duplicate_column THEN NULL;
+END $$;
+
+CREATE TABLE IF NOT EXISTS user_statuses (
+    user_id UUID PRIMARY KEY,
+    emoji VARCHAR(16) NOT NULL DEFAULT '',
+    text VARCHAR(100) NOT NULL DEFAULT '',
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS bot_directives (
+    id UUID PRIMARY KEY,
+    user_id UUID NOT NULL,
+    bot_id UUID NOT NULL,
+    content TEXT NOT NULL,
+    category VARCHAR(30) NOT NULL DEFAULT 'style',
+    source VARCHAR(30) NOT NULL DEFAULT 'conversation',
+    status VARCHAR(20) NOT NULL DEFAULT 'active',
+    original_message TEXT,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_bot_directives_user_bot ON bot_directives(user_id, bot_id, status);
+`
+	_, err := db.ExecContext(ctx, schema)
+	return err
+}
+
+func (p *PostgresStore) withTimeout() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), 5*time.Second)
+}
+
+func (p *PostgresStore) metricKey(suffix string) string {
+	return p.metricsKeyPrefix + suffix
+}
+
+func (p *PostgresStore) IncrementRequests() {
+	p.Store.IncrementRequests()
+	if p.redis == nil {
+		return
+	}
+	if err := p.redis.Incr(context.Background(), p.metricKey(metricKeyRequests)).Err(); err != nil {
+		log.Printf("redis incr requests failed: %v", err)
+	}
+}
+
+func (p *PostgresStore) SetWSConnections(count int) {
+	p.Store.SetWSConnections(count)
+	if p.redis == nil {
+		return
+	}
+	if err := p.redis.Set(context.Background(), p.metricKey(metricKeyWS), count, 0).Err(); err != nil {
+		log.Printf("redis set ws connections failed: %v", err)
+	}
+}
+
+func (p *PostgresStore) SnapshotMetrics() Metrics {
+	metrics := p.Store.SnapshotMetrics()
+	if p.redis == nil {
+		return metrics
+	}
+
+	ctx := context.Background()
+	if value, err := p.redis.Get(ctx, p.metricKey(metricKeyRequests)).Int(); err == nil {
+		metrics.RequestsTotal = value
+	}
+	if value, err := p.redis.Get(ctx, p.metricKey(metricKeyWS)).Int(); err == nil {
+		metrics.ActiveWSConnections = value
+	}
+	if value, err := p.redis.Get(ctx, p.metricKey(metricKeyProactive)).Int(); err == nil {
+		metrics.ProactiveSentTotal = value
+	}
+	return metrics
+}
+
+func (p *PostgresStore) SaveSMSCode(phone, purpose, code string, ttl time.Duration) {
+	ctx, cancel := p.withTimeout()
+	defer cancel()
+	_, err := p.db.ExecContext(ctx,
+		`INSERT INTO sms_codes(id, phone, purpose, code, expires_at, used, created_at)
+		 VALUES($1,$2,$3,$4,$5,FALSE,NOW())`,
+		NewID(), phone, purpose, code, time.Now().UTC().Add(ttl),
+	)
+	if err != nil {
+		log.Printf("save sms code to postgres failed: %v", err)
+	}
+}
+
+func (p *PostgresStore) ValidateSMSCode(phone, purpose, code string) bool {
+	ctx, cancel := p.withTimeout()
+	defer cancel()
+
+	var id string
+	var dbCode string
+	var expiresAt time.Time
+	err := p.db.QueryRowContext(ctx,
+		`SELECT id, code, expires_at
+		 FROM sms_codes
+		 WHERE phone=$1 AND purpose=$2 AND used=FALSE
+		 ORDER BY created_at DESC
+		 LIMIT 1`,
+		phone, purpose,
+	).Scan(&id, &dbCode, &expiresAt)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return p.Store.ValidateSMSCode(phone, purpose, code)
+		}
+		log.Printf("validate sms query failed: %v", err)
+		return p.Store.ValidateSMSCode(phone, purpose, code)
+	}
+	if dbCode != code || time.Now().UTC().After(expiresAt) {
+		return false
+	}
+	_, _ = p.db.ExecContext(ctx, `UPDATE sms_codes SET used=TRUE WHERE id=$1`, id)
+	return true
+}
+
+func (p *PostgresStore) FindUserByPhone(phone string) (User, bool) {
+	ctx, cancel := p.withTimeout()
+	defer cancel()
+
+	var user User
+	var avatar sql.NullString
+	err := p.db.QueryRowContext(ctx,
+		`SELECT id, phone, nickname, avatar_url, created_at
+		 FROM users
+		 WHERE phone=$1`, phone,
+	).Scan(&user.ID, &user.Phone, &user.Nickname, &avatar, &user.CreatedAt)
+	if err != nil {
+		if !errors.Is(err, sql.ErrNoRows) {
+			log.Printf("find user by phone failed: %v", err)
+		}
+		return p.Store.FindUserByPhone(phone)
+	}
+	user.Avatar = avatar.String
+	return user, true
+}
+
+func (p *PostgresStore) CreateUser(phone, nickname string) (User, error) {
+	ctx, cancel := p.withTimeout()
+	defer cancel()
+
+	id := NewID()
+	now := time.Now().UTC()
+	tx, err := p.db.BeginTx(ctx, nil)
+	if err != nil {
+		return p.Store.CreateUser(phone, nickname)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	_, err = tx.ExecContext(ctx,
+		`INSERT INTO users(id, phone, nickname, created_at, updated_at)
+		 VALUES($1,$2,$3,$4,$4)`,
+		id, phone, nickname, now,
+	)
+	if err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "duplicate") {
+			return User{}, errors.New("phone already registered")
+		}
+		return p.Store.CreateUser(phone, nickname)
+	}
+
+	_, _ = tx.ExecContext(ctx,
+		`INSERT INTO user_notification_settings(user_id, proactive_enabled, frequency, updated_at)
+		 VALUES($1, TRUE, 'normal', $2)
+		 ON CONFLICT (user_id) DO UPDATE SET updated_at = EXCLUDED.updated_at`,
+		id, now,
+	)
+
+	if err := tx.Commit(); err != nil {
+		return p.Store.CreateUser(phone, nickname)
+	}
+
+	created := User{ID: id, Phone: phone, Nickname: nickname, CreatedAt: now}
+	return created, nil
+}
+
+func (p *PostgresStore) UpsertDeviceToken(userID, token, platform string) {
+	ctx, cancel := p.withTimeout()
+	defer cancel()
+	now := time.Now().UTC()
+	_, err := p.db.ExecContext(ctx,
+		`INSERT INTO user_devices(id, user_id, platform, device_token, is_active, created_at, updated_at)
+		 VALUES($1,$2,$3,$4,TRUE,$5,$5)
+		 ON CONFLICT (user_id, device_token)
+		 DO UPDATE SET platform=EXCLUDED.platform, is_active=TRUE, updated_at=EXCLUDED.updated_at`,
+		NewID(), userID, platform, token, now,
+	)
+	if err != nil {
+		log.Printf("upsert device token failed: %v", err)
+	}
+}
+
+func (p *PostgresStore) GetDeviceToken(userID string) (DeviceToken, bool) {
+	ctx, cancel := p.withTimeout()
+	defer cancel()
+
+	var out DeviceToken
+	err := p.db.QueryRowContext(ctx,
+		`SELECT user_id, device_token, platform, updated_at
+		 FROM user_devices
+		 WHERE user_id=$1 AND is_active=TRUE
+		 ORDER BY updated_at DESC
+		 LIMIT 1`, userID,
+	).Scan(&out.UserID, &out.Token, &out.Platform, &out.UpdatedAt)
+	if err != nil {
+		if !errors.Is(err, sql.ErrNoRows) {
+			log.Printf("get device token failed: %v", err)
+		}
+		return p.Store.GetDeviceToken(userID)
+	}
+	return out, true
+}
+
+func (p *PostgresStore) UpdateNotificationSettings(userID string, input NotificationSettings) NotificationSettings {
+	ctx, cancel := p.withTimeout()
+	defer cancel()
+
+	if strings.TrimSpace(input.Frequency) == "" {
+		input.Frequency = "normal"
+	}
+	input.UserID = userID
+	input.UpdatedAt = time.Now().UTC()
+
+	_, err := p.db.ExecContext(ctx,
+		`INSERT INTO user_notification_settings(user_id, proactive_enabled, dnd_start, dnd_end, frequency, updated_at)
+		 VALUES($1,$2,$3,$4,$5,$6)
+		 ON CONFLICT (user_id)
+		 DO UPDATE SET proactive_enabled=EXCLUDED.proactive_enabled,
+		               dnd_start=EXCLUDED.dnd_start,
+		               dnd_end=EXCLUDED.dnd_end,
+		               frequency=EXCLUDED.frequency,
+		               updated_at=EXCLUDED.updated_at`,
+		input.UserID, input.ProactiveEnabled, nullIfEmpty(input.DNDStart), nullIfEmpty(input.DNDEnd), input.Frequency, input.UpdatedAt,
+	)
+	if err != nil {
+		log.Printf("update notification settings failed: %v", err)
+	}
+	return input
+}
+
+func (p *PostgresStore) GetNotificationSettings(userID string) NotificationSettings {
+	ctx, cancel := p.withTimeout()
+	defer cancel()
+
+	var out NotificationSettings
+	var dndStart, dndEnd sql.NullString
+	err := p.db.QueryRowContext(ctx,
+		`SELECT user_id, proactive_enabled, dnd_start, dnd_end, frequency, updated_at
+		 FROM user_notification_settings
+		 WHERE user_id=$1`, userID,
+	).Scan(&out.UserID, &out.ProactiveEnabled, &dndStart, &dndEnd, &out.Frequency, &out.UpdatedAt)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return NotificationSettings{UserID: userID, ProactiveEnabled: true, Frequency: "normal", UpdatedAt: time.Now().UTC()}
+		}
+		log.Printf("get notification settings failed: %v", err)
+		return p.Store.GetNotificationSettings(userID)
+	}
+	out.DNDStart = dndStart.String
+	out.DNDEnd = dndEnd.String
+	if strings.TrimSpace(out.Frequency) == "" {
+		out.Frequency = "normal"
+	}
+	return out
+}
+
+func (p *PostgresStore) CreateBot(userID string, bot Bot) Bot {
+	if bot.ChatBackgroundStyle == "" {
+		bot.ChatBackgroundStyle = "lightPaper"
+	}
+	if bot.Gender == "" {
+		bot.Gender = "unknown"
+	}
+
+	now := time.Now().UTC()
+	bot.ID = NewID()
+	bot.UserID = userID
+	bot.CreatedAt = now
+	bot.UpdatedAt = now
+
+	traitsRaw, _ := json.Marshal(bot.Traits)
+
+	ctx, cancel := p.withTimeout()
+	defer cancel()
+	tx, err := p.db.BeginTx(ctx, nil)
+	if err != nil {
+		return p.Store.CreateBot(userID, bot)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	_, err = tx.ExecContext(ctx,
+		`INSERT INTO bots(id, user_id, name, avatar_url, avatar_base64, summary, speaking_style, background, traits, gender, chat_background_style, created_at, updated_at)
+		 VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$12)`,
+		bot.ID, userID, bot.Name, nullIfEmpty(bot.Avatar), nullIfEmpty(bot.AvatarBase64), bot.Summary,
+		bot.SpeakingStyle, bot.Background, traitsRaw, bot.Gender, bot.ChatBackgroundStyle, now,
+	)
+	if err != nil {
+		log.Printf("insert bot failed: %v", err)
+		return p.Store.CreateBot(userID, bot)
+	}
+
+	_, _ = tx.ExecContext(ctx,
+		`INSERT INTO bot_states(id, user_id, bot_id, status_emoji, status_text, updated_at)
+		 VALUES($1,$2,$3,'🙂','在线',$4)
+		 ON CONFLICT (user_id, bot_id)
+		 DO UPDATE SET status_emoji=EXCLUDED.status_emoji, status_text=EXCLUDED.status_text, updated_at=EXCLUDED.updated_at`,
+		NewID(), userID, bot.ID, now,
+	)
+
+	convID := NewID()
+	_, _ = tx.ExecContext(ctx,
+		`INSERT INTO conversations(id, user_id, bot_id, last_message, last_message_at, unread_count, is_proactive_message, created_at, updated_at)
+		 VALUES($1,$2,$3,'',$4,0,FALSE,$4,$4)
+		 ON CONFLICT (user_id, bot_id) DO NOTHING`,
+		convID, userID, bot.ID, now,
+	)
+
+	if err := tx.Commit(); err != nil {
+		log.Printf("commit create bot failed: %v", err)
+		return p.Store.CreateBot(userID, bot)
+	}
+
+	return bot
+}
+
+func (p *PostgresStore) ListBots(userID string) []Bot {
+	ctx, cancel := p.withTimeout()
+	defer cancel()
+
+	rows, err := p.db.QueryContext(ctx,
+		`SELECT id, user_id, name, avatar_url, avatar_base64, summary, speaking_style, background, traits, gender, chat_background_style, created_at, updated_at
+		 FROM bots
+		 WHERE user_id=$1
+		 ORDER BY created_at DESC`, userID,
+	)
+	if err != nil {
+		log.Printf("list bots failed: %v", err)
+		return p.Store.ListBots(userID)
+	}
+	defer rows.Close()
+
+	out := []Bot{}
+	for rows.Next() {
+		bot, ok := scanBotRow(rows)
+		if ok {
+			out = append(out, bot)
+		}
+	}
+	if len(out) == 0 {
+		return p.Store.ListBots(userID)
+	}
+	return out
+}
+
+func (p *PostgresStore) GetBot(userID, botID string) (Bot, bool) {
+	ctx, cancel := p.withTimeout()
+	defer cancel()
+
+	row := p.db.QueryRowContext(ctx,
+		`SELECT id, user_id, name, avatar_url, avatar_base64, summary, speaking_style, background, traits, gender, chat_background_style, created_at, updated_at
+		 FROM bots
+		 WHERE user_id=$1 AND id=$2`, userID, botID,
+	)
+	bot, ok := scanBotSingleRow(row)
+	if !ok {
+		return p.Store.GetBot(userID, botID)
+	}
+	return bot, true
+}
+
+func (p *PostgresStore) GetBotState(userID, botID string) (BotState, bool) {
+	ctx, cancel := p.withTimeout()
+	defer cancel()
+
+	var state BotState
+	err := p.db.QueryRowContext(ctx,
+		`SELECT user_id, bot_id, status_emoji, status_text, turn_count, updated_at
+		 FROM bot_states
+		 WHERE user_id=$1 AND bot_id=$2`, userID, botID,
+	).Scan(&state.UserID, &state.BotID, &state.StatusEmoji, &state.StatusText, &state.TurnCount, &state.UpdatedAt)
+	if err != nil {
+		if !errors.Is(err, sql.ErrNoRows) {
+			log.Printf("get bot state failed: %v", err)
+		}
+		return p.Store.GetBotState(userID, botID)
+	}
+	return state, true
+}
+
+func (p *PostgresStore) AppendBotPersona(userID, botID string, speakingAdds, backgroundAdds, traitAdds []string, gender *string) (Bot, bool) {
+	bot, found := p.GetBot(userID, botID)
+	if !found {
+		return Bot{}, false
+	}
+
+	bot.SpeakingStyle = strings.Join(dedup(append(splitSegments(bot.SpeakingStyle), speakingAdds...)), "|")
+	bot.Background = strings.Join(dedup(append(splitSegments(bot.Background), backgroundAdds...)), "|")
+	bot.Traits = dedup(append(bot.Traits, traitAdds...))
+	if gender != nil && strings.TrimSpace(*gender) != "" {
+		bot.Gender = strings.TrimSpace(*gender)
+	}
+	bot.UpdatedAt = time.Now().UTC()
+
+	traitsRaw, _ := json.Marshal(bot.Traits)
+	ctx, cancel := p.withTimeout()
+	defer cancel()
+	_, err := p.db.ExecContext(ctx,
+		`UPDATE bots
+		 SET speaking_style=$1, background=$2, traits=$3, gender=$4, updated_at=$5
+		 WHERE user_id=$6 AND id=$7`,
+		bot.SpeakingStyle, bot.Background, traitsRaw, bot.Gender, bot.UpdatedAt, userID, botID,
+	)
+	if err != nil {
+		log.Printf("append bot persona update failed: %v", err)
+		return p.Store.AppendBotPersona(userID, botID, speakingAdds, backgroundAdds, traitAdds, gender)
+	}
+	return bot, true
+}
+
+func (p *PostgresStore) ListConversations(userID string) []Conversation {
+	ctx, cancel := p.withTimeout()
+	defer cancel()
+
+	rows, err := p.db.QueryContext(ctx,
+		`SELECT c.id, c.user_id, c.bot_id, b.name, COALESCE(b.avatar_url,''), COALESCE(b.avatar_base64,''),
+		        COALESCE(c.last_message,''), COALESCE(c.last_message_at, NOW()), c.unread_count, c.is_proactive_message
+		 FROM conversations c
+		 JOIN bots b ON b.id = c.bot_id
+		 WHERE c.user_id=$1
+		 ORDER BY c.last_message_at DESC NULLS LAST, c.updated_at DESC`, userID,
+	)
+	if err != nil {
+		log.Printf("list conversations failed: %v", err)
+		return p.Store.ListConversations(userID)
+	}
+	defer rows.Close()
+
+	out := []Conversation{}
+	for rows.Next() {
+		conv, ok := scanConversationRow(rows)
+		if ok {
+			out = append(out, conv)
+		}
+	}
+	if len(out) == 0 {
+		return p.Store.ListConversations(userID)
+	}
+	return out
+}
+
+func (p *PostgresStore) FindConversationByBot(userID, botID string) (Conversation, bool) {
+	ctx, cancel := p.withTimeout()
+	defer cancel()
+
+	row := p.db.QueryRowContext(ctx,
+		`SELECT c.id, c.user_id, c.bot_id, b.name, COALESCE(b.avatar_url,''), COALESCE(b.avatar_base64,''),
+		        COALESCE(c.last_message,''), COALESCE(c.last_message_at, NOW()), c.unread_count, c.is_proactive_message
+		 FROM conversations c
+		 JOIN bots b ON b.id = c.bot_id
+		 WHERE c.user_id=$1 AND c.bot_id=$2
+		 LIMIT 1`, userID, botID,
+	)
+	conv, ok := scanConversationSingleRow(row)
+	if !ok {
+		return p.Store.FindConversationByBot(userID, botID)
+	}
+	return conv, true
+}
+
+func (p *PostgresStore) EnsureConversation(userID, botID, botName, botAvatar, botAvatarBase64 string) Conversation {
+	if conv, found := p.FindConversationByBot(userID, botID); found {
+		return conv
+	}
+
+	now := time.Now().UTC()
+	ctx, cancel := p.withTimeout()
+	defer cancel()
+	_, _ = p.db.ExecContext(ctx,
+		`INSERT INTO conversations(id, user_id, bot_id, last_message, last_message_at, unread_count, is_proactive_message, created_at, updated_at)
+		 VALUES($1,$2,$3,'',$4,0,FALSE,$4,$4)
+		 ON CONFLICT (user_id, bot_id) DO NOTHING`,
+		NewID(), userID, botID, now,
+	)
+	if conv, found := p.FindConversationByBot(userID, botID); found {
+		return conv
+	}
+	return p.Store.EnsureConversation(userID, botID, botName, botAvatar, botAvatarBase64)
+}
+
+func (p *PostgresStore) GetConversation(userID, conversationID string) (Conversation, bool) {
+	ctx, cancel := p.withTimeout()
+	defer cancel()
+	row := p.db.QueryRowContext(ctx,
+		`SELECT c.id, c.user_id, c.bot_id, b.name, COALESCE(b.avatar_url,''), COALESCE(b.avatar_base64,''),
+		        COALESCE(c.last_message,''), COALESCE(c.last_message_at, NOW()), c.unread_count, c.is_proactive_message
+		 FROM conversations c
+		 JOIN bots b ON b.id = c.bot_id
+		 WHERE c.user_id=$1 AND c.id=$2`, userID, conversationID,
+	)
+	conv, ok := scanConversationSingleRow(row)
+	if !ok {
+		return p.Store.GetConversation(userID, conversationID)
+	}
+	return conv, true
+}
+
+func (p *PostgresStore) ListMessages(userID, conversationID string, limit int) ([]Message, bool) {
+	if limit <= 0 {
+		limit = 100
+	}
+	if limit > 200 {
+		limit = 200
+	}
+
+	if _, found := p.GetConversation(userID, conversationID); !found {
+		return nil, false
+	}
+
+	ctx, cancel := p.withTimeout()
+	defer cancel()
+	rows, err := p.db.QueryContext(ctx,
+		`SELECT id, conversation_id, sender_type, content_type, content, is_proactive, COALESCE(emotion_tag,''), COALESCE(reply_group_id,''), sequence, created_at
+		 FROM messages
+		 WHERE conversation_id=$1
+		 ORDER BY created_at DESC
+		 LIMIT $2`, conversationID, limit,
+	)
+	if err != nil {
+		log.Printf("list messages failed: %v", err)
+		return p.Store.ListMessages(userID, conversationID, limit)
+	}
+	defer rows.Close()
+
+	messages := []Message{}
+	for rows.Next() {
+		var msg Message
+		var contentRaw []byte
+		if err := rows.Scan(&msg.ID, &msg.ConversationID, &msg.SenderType, &msg.ContentType, &contentRaw, &msg.IsProactive, &msg.EmotionTag, &msg.ReplyGroupID, &msg.Sequence, &msg.CreatedAt); err != nil {
+			continue
+		}
+		_ = json.Unmarshal(contentRaw, &msg.Content)
+		messages = append(messages, msg)
+	}
+
+	sort.Slice(messages, func(i, j int) bool { return messages[i].CreatedAt.Before(messages[j].CreatedAt) })
+	return messages, true
+}
+
+func (p *PostgresStore) MarkConversationRead(userID, conversationID string) bool {
+	ctx, cancel := p.withTimeout()
+	defer cancel()
+	result, err := p.db.ExecContext(ctx,
+		`UPDATE conversations
+		 SET unread_count=0, updated_at=$1
+		 WHERE user_id=$2 AND id=$3`,
+		time.Now().UTC(), userID, conversationID,
+	)
+	if err != nil {
+		log.Printf("mark conversation read failed: %v", err)
+		return p.Store.MarkConversationRead(userID, conversationID)
+	}
+	rows, _ := result.RowsAffected()
+	if rows == 0 {
+		return false
+	}
+	return true
+}
+
+func (p *PostgresStore) SaveMessage(userID string, message Message) (Message, bool) {
+	conv, found := p.GetConversation(userID, message.ConversationID)
+	if !found {
+		return Message{}, false
+	}
+
+	now := time.Now().UTC()
+	if strings.TrimSpace(message.ID) == "" {
+		message.ID = NewID()
+	}
+	message.CreatedAt = now
+	if strings.TrimSpace(message.ContentType) == "" {
+		message.ContentType = message.Content.Type
+	}
+
+	contentRaw, _ := json.Marshal(message.Content)
+	ctx, cancel := p.withTimeout()
+	defer cancel()
+	tx, err := p.db.BeginTx(ctx, nil)
+	if err != nil {
+		return p.Store.SaveMessage(userID, message)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	_, err = tx.ExecContext(ctx,
+		`INSERT INTO messages(id, conversation_id, sender_type, content_type, content, is_proactive, emotion_tag, reply_group_id, sequence, created_at)
+		 VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+		message.ID, message.ConversationID, message.SenderType, message.ContentType, contentRaw, message.IsProactive, nullIfEmpty(message.EmotionTag), nullIfEmpty(message.ReplyGroupID), message.Sequence, message.CreatedAt,
+	)
+	if err != nil {
+		log.Printf("save message insert failed: %v", err)
+		return p.Store.SaveMessage(userID, message)
+	}
+
+	unreadDelta := 0
+	if message.SenderType == "bot" {
+		unreadDelta = 1
+	}
+
+	_, err = tx.ExecContext(ctx,
+		`UPDATE conversations
+		 SET last_message=$1,
+		     last_message_at=$2,
+		     is_proactive_message=$3,
+		     unread_count=GREATEST(0, unread_count + $4),
+		     updated_at=$2
+		 WHERE id=$5 AND user_id=$6`,
+		previewText(message), message.CreatedAt, message.IsProactive, unreadDelta, conv.ID, userID,
+	)
+	if err != nil {
+		log.Printf("save message conversation update failed: %v", err)
+		return p.Store.SaveMessage(userID, message)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return p.Store.SaveMessage(userID, message)
+	}
+	return message, true
+}
+
+func (p *PostgresStore) SaveBotStatus(userID, botID, emoji, text string) {
+	ctx, cancel := p.withTimeout()
+	defer cancel()
+	_, err := p.db.ExecContext(ctx,
+		`INSERT INTO bot_states(id, user_id, bot_id, status_emoji, status_text, updated_at)
+		 VALUES($1,$2,$3,$4,$5,$6)
+		 ON CONFLICT (user_id, bot_id)
+		 DO UPDATE SET status_emoji=EXCLUDED.status_emoji, status_text=EXCLUDED.status_text, updated_at=EXCLUDED.updated_at`,
+		NewID(), userID, botID, emoji, text, time.Now().UTC(),
+	)
+	if err != nil {
+		log.Printf("save bot status failed: %v", err)
+	}
+}
+
+func (p *PostgresStore) IncrementTurnCount(userID, botID string) int {
+	ctx, cancel := p.withTimeout()
+	defer cancel()
+	var count int
+	err := p.db.QueryRowContext(ctx,
+		`INSERT INTO bot_states(id, user_id, bot_id, turn_count, updated_at)
+		 VALUES($1,$2,$3,1,$4)
+		 ON CONFLICT (user_id, bot_id)
+		 DO UPDATE SET turn_count=bot_states.turn_count+1, updated_at=EXCLUDED.updated_at
+		 RETURNING turn_count`,
+		NewID(), userID, botID, time.Now().UTC(),
+	).Scan(&count)
+	if err != nil {
+		log.Printf("increment turn count failed: %v", err)
+		return p.Store.IncrementTurnCount(userID, botID)
+	}
+	return count
+}
+
+func (p *PostgresStore) SaveUserStatus(userID, emoji, text string) {
+	ctx, cancel := p.withTimeout()
+	defer cancel()
+	_, err := p.db.ExecContext(ctx,
+		`INSERT INTO user_statuses(user_id, emoji, text, updated_at)
+		 VALUES($1,$2,$3,$4)
+		 ON CONFLICT (user_id)
+		 DO UPDATE SET emoji=EXCLUDED.emoji, text=EXCLUDED.text, updated_at=EXCLUDED.updated_at`,
+		userID, emoji, text, time.Now().UTC(),
+	)
+	if err != nil {
+		log.Printf("save user status failed: %v", err)
+	}
+}
+
+func (p *PostgresStore) GetUserStatus(userID string) (UserStatus, bool) {
+	ctx, cancel := p.withTimeout()
+	defer cancel()
+	var st UserStatus
+	err := p.db.QueryRowContext(ctx,
+		`SELECT user_id, emoji, text, updated_at FROM user_statuses WHERE user_id=$1`, userID,
+	).Scan(&st.UserID, &st.Emoji, &st.Text, &st.UpdatedAt)
+	if err != nil {
+		if !errors.Is(err, sql.ErrNoRows) {
+			log.Printf("get user status failed: %v", err)
+		}
+		return p.Store.GetUserStatus(userID)
+	}
+	return st, true
+}
+
+func (p *PostgresStore) AddProactiveLog(entry ProactiveLog) ProactiveLog {
+	entry.ID = NewID()
+	entry.CreatedAt = time.Now().UTC()
+
+	ctx, cancel := p.withTimeout()
+	defer cancel()
+	_, err := p.db.ExecContext(ctx,
+		`INSERT INTO proactive_logs(id, user_id, bot_id, conversation_id, trigger_type, message, sent_by_ws, sent_by_apns, created_at)
+		 VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+		entry.ID, entry.UserID, entry.BotID, entry.ConversationID, entry.TriggerType, entry.Message, entry.SentByWS, entry.SentByAPNs, entry.CreatedAt,
+	)
+	if err != nil {
+		log.Printf("add proactive log failed: %v", err)
+		fallback := p.Store.AddProactiveLog(entry)
+		p.bumpProactiveMetric()
+		return fallback
+	}
+
+	p.bumpProactiveMetric()
+	return entry
+}
+
+func (p *PostgresStore) ListProactiveLogs(userID string, limit int) []ProactiveLog {
+	if limit <= 0 {
+		limit = 20
+	}
+	ctx, cancel := p.withTimeout()
+	defer cancel()
+
+	base := `SELECT id, user_id, conversation_id, bot_id, trigger_type, message, sent_by_ws, sent_by_apns, created_at
+		FROM proactive_logs`
+	args := []any{}
+	if strings.TrimSpace(userID) != "" {
+		base += ` WHERE user_id=$1`
+		args = append(args, userID)
+		base += ` ORDER BY created_at DESC LIMIT $2`
+		args = append(args, limit)
+	} else {
+		base += ` ORDER BY created_at DESC LIMIT $1`
+		args = append(args, limit)
+	}
+
+	rows, err := p.db.QueryContext(ctx, base, args...)
+	if err != nil {
+		log.Printf("list proactive logs failed: %v", err)
+		return p.Store.ListProactiveLogs(userID, limit)
+	}
+	defer rows.Close()
+
+	out := make([]ProactiveLog, 0, limit)
+	for rows.Next() {
+		var logEntry ProactiveLog
+		if err := rows.Scan(&logEntry.ID, &logEntry.UserID, &logEntry.ConversationID, &logEntry.BotID, &logEntry.TriggerType, &logEntry.Message, &logEntry.SentByWS, &logEntry.SentByAPNs, &logEntry.CreatedAt); err != nil {
+			continue
+		}
+		out = append(out, logEntry)
+	}
+	if len(out) == 0 {
+		return p.Store.ListProactiveLogs(userID, limit)
+	}
+	return out
+}
+
+func (p *PostgresStore) SaveDirective(d Directive) Directive {
+	d.ID = NewID()
+	now := time.Now().UTC()
+	d.CreatedAt = now
+	d.UpdatedAt = now
+	if d.Status == "" {
+		d.Status = "active"
+	}
+	ctx, cancel := p.withTimeout()
+	defer cancel()
+	_, err := p.db.ExecContext(ctx,
+		`INSERT INTO bot_directives(id,user_id,bot_id,content,category,source,status,original_message,created_at,updated_at)
+		 VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$9)`,
+		d.ID, d.UserID, d.BotID, d.Content, d.Category, d.Source, d.Status, nullIfEmpty(d.OriginalMessage), now,
+	)
+	if err != nil {
+		log.Printf("save directive failed: %v", err)
+	}
+	return d
+}
+
+func (p *PostgresStore) ListDirectives(userID, botID, status string) []Directive {
+	ctx, cancel := p.withTimeout()
+	defer cancel()
+	q := `SELECT id,bot_id,content,category,source,status,COALESCE(original_message,''),created_at,updated_at
+	      FROM bot_directives WHERE user_id=$1 AND bot_id=$2`
+	args := []any{userID, botID}
+	if status != "" {
+		q += ` AND status=$3`
+		args = append(args, status)
+	}
+	q += ` ORDER BY created_at`
+	rows, err := p.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		log.Printf("list directives failed: %v", err)
+		return p.Store.ListDirectives(userID, botID, status)
+	}
+	defer rows.Close()
+	var out []Directive
+	for rows.Next() {
+		var d Directive
+		d.UserID = userID
+		if err := rows.Scan(&d.ID, &d.BotID, &d.Content, &d.Category, &d.Source, &d.Status, &d.OriginalMessage, &d.CreatedAt, &d.UpdatedAt); err != nil {
+			continue
+		}
+		out = append(out, d)
+	}
+	return out
+}
+
+func (p *PostgresStore) RevokeDirective(userID, botID, directiveID string) bool {
+	ctx, cancel := p.withTimeout()
+	defer cancel()
+	res, err := p.db.ExecContext(ctx,
+		`UPDATE bot_directives SET status='revoked',updated_at=$1 WHERE id=$2 AND user_id=$3 AND bot_id=$4`,
+		time.Now().UTC(), directiveID, userID, botID,
+	)
+	if err != nil {
+		log.Printf("revoke directive failed: %v", err)
+		return p.Store.RevokeDirective(userID, botID, directiveID)
+	}
+	n, _ := res.RowsAffected()
+	return n > 0
+}
+
+func (p *PostgresStore) bumpProactiveMetric() {
+	if p.redis != nil {
+		if err := p.redis.Incr(context.Background(), p.metricKey(metricKeyProactive)).Err(); err != nil {
+			log.Printf("redis incr proactive metric failed: %v", err)
+		}
+	}
+}
+
+func scanBotRow(rows *sql.Rows) (Bot, bool) {
+	var bot Bot
+	var avatarURL, avatarBase64 sql.NullString
+	var traitsRaw []byte
+	if err := rows.Scan(
+		&bot.ID,
+		&bot.UserID,
+		&bot.Name,
+		&avatarURL,
+		&avatarBase64,
+		&bot.Summary,
+		&bot.SpeakingStyle,
+		&bot.Background,
+		&traitsRaw,
+		&bot.Gender,
+		&bot.ChatBackgroundStyle,
+		&bot.CreatedAt,
+		&bot.UpdatedAt,
+	); err != nil {
+		return Bot{}, false
+	}
+	bot.Avatar = avatarURL.String
+	bot.AvatarBase64 = avatarBase64.String
+	_ = json.Unmarshal(traitsRaw, &bot.Traits)
+	return bot, true
+}
+
+func scanBotSingleRow(row *sql.Row) (Bot, bool) {
+	var bot Bot
+	var avatarURL, avatarBase64 sql.NullString
+	var traitsRaw []byte
+	if err := row.Scan(
+		&bot.ID,
+		&bot.UserID,
+		&bot.Name,
+		&avatarURL,
+		&avatarBase64,
+		&bot.Summary,
+		&bot.SpeakingStyle,
+		&bot.Background,
+		&traitsRaw,
+		&bot.Gender,
+		&bot.ChatBackgroundStyle,
+		&bot.CreatedAt,
+		&bot.UpdatedAt,
+	); err != nil {
+		return Bot{}, false
+	}
+	bot.Avatar = avatarURL.String
+	bot.AvatarBase64 = avatarBase64.String
+	_ = json.Unmarshal(traitsRaw, &bot.Traits)
+	return bot, true
+}
+
+func scanConversationRow(rows *sql.Rows) (Conversation, bool) {
+	var conv Conversation
+	if err := rows.Scan(
+		&conv.ID,
+		&conv.UserID,
+		&conv.BotID,
+		&conv.BotName,
+		&conv.BotAvatar,
+		&conv.BotAvatarBase64,
+		&conv.LastMessage,
+		&conv.LastMessageAt,
+		&conv.UnreadCount,
+		&conv.IsProactiveMessage,
+	); err != nil {
+		return Conversation{}, false
+	}
+	return conv, true
+}
+
+func scanConversationSingleRow(row *sql.Row) (Conversation, bool) {
+	var conv Conversation
+	if err := row.Scan(
+		&conv.ID,
+		&conv.UserID,
+		&conv.BotID,
+		&conv.BotName,
+		&conv.BotAvatar,
+		&conv.BotAvatarBase64,
+		&conv.LastMessage,
+		&conv.LastMessageAt,
+		&conv.UnreadCount,
+		&conv.IsProactiveMessage,
+	); err != nil {
+		return Conversation{}, false
+	}
+	return conv, true
+}
+
+func nullIfEmpty(value string) any {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	return value
+}
+
+func (p *PostgresStore) ListAllUserIDs() []string {
+	ctx, cancel := p.withTimeout()
+	defer cancel()
+	rows, err := p.db.QueryContext(ctx, `SELECT id FROM users ORDER BY created_at`)
+	if err != nil {
+		log.Printf("list all user ids failed: %v", err)
+		return p.Store.ListAllUserIDs()
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err == nil {
+			ids = append(ids, id)
+		}
+	}
+	if len(ids) == 0 {
+		return p.Store.ListAllUserIDs()
+	}
+	return ids
+}
+
+func (p *PostgresStore) String() string {
+	return fmt.Sprintf("PostgresStore(redis=%v)", p.redis != nil)
+}

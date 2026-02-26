@@ -1,0 +1,118 @@
+services:
+  gateway:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      args:
+        SERVICE: gateway
+    env_file:
+      - ../.env
+    environment:
+      NUKARA_JWT_SECRET: ${NUKARA_JWT_SECRET:-nukara-dev-secret}
+      NUKARA_POSTGRES_DSN: postgres://postgres:postgres@postgres:5432/nukara?sslmode=disable
+      NUKARA_REDIS_ADDR: redis:6379
+      NUKARA_NANOBOT_HTTP_URL: http://nanobot:8081
+      NUKARA_NANOBOT_WS_URL: ws://nanobot:8081/ws/chat
+      NUKARA_NANOBOT_TOKEN: ${NUKARA_NANOBOT_TOKEN:-}
+      NUKARA_APNS_TOPIC: ${NUKARA_APNS_TOPIC:-com.nukara.app}
+      NUKARA_PROACTIVE_INTERVAL: ${NUKARA_PROACTIVE_INTERVAL:-5m}
+    ports:
+      - "${NUKARA_GATEWAY_PORT:-8080}:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      nanobot:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/api/v1/gateway/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: nukara
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 3s
+      timeout: 2s
+      retries: 15
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 2s
+      retries: 10
+    restart: unless-stopped
+
+  # --- Nanobot AI Agent (extend-chat gateway) ---
+  nanobot:
+    build:
+      context: ${NANOBOT_SRC_DIR:-/Users/nidhogg/Desktop/nanobot}
+    command: ["gateway"]
+    environment:
+      NANOBOT_PROVIDERS__CUSTOM__API_KEY: ${NUKARA_ASTRON_API_KEY:-}
+      NANOBOT_PROVIDERS__CUSTOM__API_BASE: ${NUKARA_ASTRON_BASE_URL:-https://maas-api.cn-huabei-1.xf-yun.com/v2}
+      NANOBOT_AGENTS__DEFAULTS__MODEL: ${NUKARA_ASTRON_CHAT_MODEL:-xminimaxm25}
+    volumes:
+      - ./nanobot/config.json:/root/.nanobot/config.json:ro
+      - nanobot-data:/data
+    ports:
+      - "9091:8081"
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8081/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 15s
+    restart: unless-stopped
+
+  # --- Proactive messaging scheduler ---
+  proactive:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      args:
+        SERVICE: proactive
+    env_file:
+      - ../.env
+    environment:
+      NUKARA_JWT_SECRET: ${NUKARA_JWT_SECRET:-nukara-dev-secret}
+      NUKARA_POSTGRES_DSN: postgres://postgres:postgres@postgres:5432/nukara?sslmode=disable
+      NUKARA_REDIS_ADDR: redis:6379
+      NUKARA_NANOBOT_HTTP_URL: http://nanobot:8081
+      NUKARA_NANOBOT_WS_URL: ws://nanobot:8081/ws/chat
+      NUKARA_NANOBOT_TOKEN: ${NUKARA_NANOBOT_TOKEN:-}
+      NUKARA_APNS_TOPIC: ${NUKARA_APNS_TOPIC:-com.nukara.app}
+      NUKARA_PROACTIVE_INTERVAL: ${NUKARA_PROACTIVE_INTERVAL:-5m}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      nanobot:
+        condition: service_started
+      gateway:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  nanobot-data:
