@@ -82,6 +82,49 @@ install_docker() {
   log "Docker installed successfully"
 }
 
+# --- Configure Docker registry mirrors (China) ---
+configure_mirrors() {
+  local DAEMON_JSON="/etc/docker/daemon.json"
+
+  # Skip if already configured
+  if [ -f "$DAEMON_JSON" ] && grep -q "registry-mirrors" "$DAEMON_JSON" 2>/dev/null; then
+    log "Docker mirrors already configured"
+    return
+  fi
+
+  echo ""
+  echo -e "${CYAN}Docker Hub 在国内访问受限，是否配置镜像加速？${NC}"
+  read -rp "  Configure registry mirrors? [Y/n]: " yn
+  if [[ "$yn" =~ ^[Nn] ]]; then
+    return
+  fi
+
+  log "Configuring Docker registry mirrors..."
+
+  # Merge with existing daemon.json if present
+  if [ -f "$DAEMON_JSON" ]; then
+    cp "$DAEMON_JSON" "${DAEMON_JSON}.bak"
+    warn "Backed up existing daemon.json"
+  fi
+
+  mkdir -p /etc/docker
+  cat > "$DAEMON_JSON" <<'MIRRORS'
+{
+  "registry-mirrors": [
+    "https://docker.1ms.run",
+    "https://docker.xuanyuan.me",
+    "https://docker.m.daocloud.io"
+  ]
+}
+MIRRORS
+
+  # Restart Docker to apply
+  systemctl daemon-reload 2>/dev/null || true
+  systemctl restart docker 2>/dev/null || service docker restart 2>/dev/null || true
+  sleep 2
+  log "Docker mirrors configured and service restarted"
+}
+
 # --- Ensure docker compose is available ---
 ensure_compose() {
   if docker compose version &>/dev/null; then
@@ -317,6 +360,7 @@ main() {
 
   detect_distro
   install_docker
+  configure_mirrors
   ensure_compose
   collect_config
   prepare_sources
