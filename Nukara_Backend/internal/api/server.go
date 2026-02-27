@@ -307,6 +307,33 @@ func (s *Server) handleBotByID(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		respondJSON(w, http.StatusOK, bot)
+	case http.MethodPut:
+		var req struct {
+			Name          string   `json:"name"`
+			Description   string   `json:"description"`
+			SpeakingStyle string   `json:"speaking_style"`
+			Background    string   `json:"background"`
+			Traits        []string `json:"traits"`
+			Gender        string   `json:"gender"`
+		}
+		if err := decodeJSON(r, &req); err != nil {
+			badRequest(w, err)
+			return
+		}
+		summary := strings.TrimSpace(req.Description)
+		updated, found := s.store.UpdateBot(userID, botID, store.Bot{
+			Name:          req.Name,
+			Summary:       summary,
+			SpeakingStyle: req.SpeakingStyle,
+			Background:    req.Background,
+			Traits:        req.Traits,
+			Gender:        req.Gender,
+		})
+		if !found {
+			respondJSON(w, http.StatusNotFound, map[string]any{"error": "bot not found"})
+			return
+		}
+		respondJSON(w, http.StatusOK, updated)
 	case http.MethodPatch:
 		var req struct {
 			SpeakingStyleAdds []string `json:"speaking_style_adds"`
@@ -801,7 +828,8 @@ func (s *Server) handleGatewayTestProactive(w http.ResponseWriter, r *http.Reque
 	}
 
 	convID := agent.NanobotConvID(userID, bot.ID, conv.ID)
-	message, proactiveErr := s.agent.Proactive(context.Background(), convID, "proactive", req.TriggerType)
+	sysCtx := agent.BuildSystemContext(bot, nil)
+	message, proactiveErr := s.agent.Proactive(context.Background(), convID, "proactive", req.TriggerType, sysCtx)
 	if proactiveErr != nil {
 		log.Printf("[server] agent.Proactive failed: %v", proactiveErr)
 		message = fmt.Sprintf("%s：刚想到你了，最近怎么样？", bot.Name)

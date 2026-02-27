@@ -51,14 +51,14 @@ func NewHandler(role string) (string, http.Handler) {
 	server := api.NewServer(sharedStore, agentClient, apnsClient, tokenSecret, redisAddr)
 	handler := server.HandlerFor(role)
 
-	if role == "proactive" {
+	if role == "proactive" || role == "gateway" {
 		intervalStr := envOr("NUKARA_PROACTIVE_INTERVAL", "5m")
 		interval, err := time.ParseDuration(intervalStr)
 		if err != nil {
 			interval = 5 * time.Minute
 		}
 		server.StartScheduler(interval)
-		log.Printf("proactive scheduler started, interval=%s", interval)
+		log.Printf("proactive scheduler started, interval=%s, role=%s", interval, role)
 	}
 
 	defaultPort := map[string]string{

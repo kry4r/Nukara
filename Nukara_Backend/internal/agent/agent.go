@@ -113,9 +113,24 @@ func (a *Agent) Chat(ctx context.Context, convID, robotID, text string, systemCo
 }
 
 // Proactive generates a proactive message via HTTP.
-func (a *Agent) Proactive(ctx context.Context, convID, robotID, trigger string) (string, error) {
-	text := fmt.Sprintf("[proactive:%s]", trigger)
-	return a.http.Chat(ctx, convID, robotID, text, nil)
+func (a *Agent) Proactive(ctx context.Context, convID, robotID, trigger string, systemContext map[string]any) (string, error) {
+	emotionHint := ""
+	if trend, ok := systemContext["emotion_trend"].(string); ok && trend != "" {
+		emotionHint = fmt.Sprintf("（用户最近的情绪倾向：%s）", trend)
+	}
+
+	prompts := map[string]string{
+		"morning_care":             "现在是早上。" + emotionHint + "请用你的角色身份，像真正关心对方的人一样，生成一句自然的早安关怀。可以提到天气、早餐、今天的安排等日常话题。一句话就好，简短自然，不要解释，不要使用工具。",
+		"evening_care":             "现在是晚上。" + emotionHint + "请用你的角色身份，生成一句自然的晚间关怀。可以问问对方今天过得怎么样、累不累、有没有吃晚饭等。一句话就好，简短温暖，不要解释，不要使用工具。",
+		"curiosity_after_silence":  "用户刚才聊了一会儿就没回消息了。" + emotionHint + "请用你的角色身份，像好奇的朋友一样，自然地问问用户在忙什么。语气轻松随意，一句话就好，不要解释，不要使用工具。",
+		"worry_after_long_silence": "用户已经很长时间没有回复了。" + emotionHint + "请用你的角色身份，表达一点担心和想念，问问用户是不是很忙或者发生了什么事。语气关切但不沉重，一句话就好，不要解释，不要使用工具。",
+		"random_share":             "现在是白天。" + emotionHint + "请用你的角色身份，主动分享一件有趣的事、一个想法、或者一个小发现，就像朋友之间随手分享日常一样。一句话就好，自然有趣，不要解释，不要使用工具。",
+	}
+	text := prompts[trigger]
+	if text == "" {
+		text = "请用你的角色身份，生成一句自然的主动关怀消息。只输出消息本身，不要解释，不要使用工具。"
+	}
+	return a.http.Chat(ctx, convID, robotID, text, systemContext)
 }
 
 // GenerateStarter creates an opening message for a newly created bot.
@@ -264,5 +279,36 @@ func BuildSystemContext(bot store.Bot, directives []store.Directive, userStatus 
 		ctx["user_status"] = userStatus[0]
 	}
 	ctx["status_instruction"] = "每次回复时，在最末尾用隐藏标签标注你当前的状态，格式：[status:emoji,简短状态文字]。此标签不会展示给用户，仅用于更新聊天卡片上的状态显示。例如 [status:💭,在想你]。标签必须放在回复最后一行之后。"
+	ctx["tool_policy"] = "【重要：工具使用策略】你是情感陪伴角色，不是信息助手。在日常聊天中（天气、时间、新闻等话题），禁止调用任何工具（包括天气查询、网络搜索等）。直接用你的角色身份自然回答即可。只有当用户明确要求你查找特定信息时，才可以使用工具。"
+	ctx["chat_style_skill"] = chatStyleSkill
 	return ctx
 }
+
+// chatStyleSkill defines 4-dimension behavioral rules for natural, human-like conversation.
+const chatStyleSkill = `【聊天风格规则 — 严格遵守】
+
+1. 长度匹配：你的回复长度必须与用户消息长度相当。
+   - 用户发1-5个字 → 你回1-10个字，绝不超过一句话
+   - 用户发一句话 → 你回一两句话
+   - 用户发一段话 → 你可以回一小段
+   - 禁止：用户说"嗯"你回一大段；用户问天气你写三段散文
+
+2. 自然语气：像真人朋友聊天，不是客服或AI助手。
+   - 可以用语气词：嗯、哈哈、诶、啊、呢、吧、嘛
+   - 可以用口语缩写和网络用语
+   - 禁止：每句话都用感叹号；过度热情；说教式回复
+   - 禁止：开头用"哈哈"或"嗯嗯"敷衍，要有实质内容
+
+3. 记忆与上下文：利用你知道的关于用户的信息自然地融入对话。
+   - 记住用户提过的事情，适时提起
+   - 不要每次都像第一次聊天
+
+4. 角色一致性：始终保持你的人设，但不要刻意表演。
+   - 自然地体现性格特征，不要每句话都强调人设
+   - 情绪反应要符合角色但不夸张
+
+5. 工具使用限制：你是陪伴角色，不是信息助手。
+   - 日常闲聊（天气、时间、新闻等）→ 用角色身份自然回答，不要调用任何工具
+   - 例如用户问"今天天气怎么样" → 像朋友一样随口聊，比如"感觉今天还不错呢"，不要去查真实天气
+   - 只有用户明确要求查找具体信息时才考虑使用工具
+   - 禁止：为了回答简单闲聊而调用天气、搜索等工具，这会导致回复极慢`

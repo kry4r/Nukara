@@ -27,12 +27,17 @@ Nukara_Doc/
 # Go build artifacts
 Nukara_Backend/build/
 Nukara_Backend/main
+Nukara_Backend/gateway
+
+# E2E test screenshots
+e2e-*.png
+e2e-screenshots/
 
 # iOS
 Nukara_App/build/
 Nukara_App/DerivedData/
-Nukara_App/*.xcuserdata
-*.xcworkspace/xcuserdata/
+*.xcuserdata/
+xcuserdata/
 
 # Misc
 *.log

@@ -136,11 +136,12 @@ func TestSchedulerDetectTrigger(t *testing.T) {
 		lastMsg  time.Time
 		expected string
 	}{
-		{"morning window", 8, baseTime, "morning_greeting"},
-		{"evening window", 21, baseTime, "evening_greeting"},
-		{"inactivity during day", 14, baseTime.Add(-5 * time.Hour), "inactivity"},
+		{"morning window", 8, baseTime, "morning_care"},
+		{"evening window", 21, baseTime, "evening_care"},
+		{"short inactivity during day", 14, baseTime.Add(-5 * time.Hour), "worry_after_long_silence"},
+		{"curiosity after brief silence", 14, baseTime.Add(2*time.Hour + 25*time.Minute), "curiosity_after_silence"},
 		{"no trigger at night", 2, baseTime, ""},
-		{"no inactivity if recent", 14, baseTime.Add(-1 * time.Hour), ""},
+		{"no inactivity if recent", 14, baseTime.Add(2*time.Hour + 28*time.Minute), ""},
 	}
 
 	for _, tt := range tests {
@@ -171,7 +172,7 @@ func TestSchedulerCooldownEnforcement(t *testing.T) {
 		UserID:         user.ID,
 		ConversationID: conv.ID,
 		BotID:          bot.ID,
-		TriggerType:    "morning_greeting",
+		TriggerType:    "morning_care",
 		Message:        "早上好",
 	})
 

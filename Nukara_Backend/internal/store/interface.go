@@ -23,6 +23,7 @@ type DataStore interface {
 	ListBots(userID string) []Bot
 	GetBot(userID, botID string) (Bot, bool)
 	GetBotState(userID, botID string) (BotState, bool)
+	UpdateBot(userID, botID string, patch Bot) (Bot, bool)
 	AppendBotPersona(userID, botID string, speakingAdds, backgroundAdds, traitAdds []string, gender *string) (Bot, bool)
 
 	ListConversations(userID string) []Conversation
@@ -44,6 +45,13 @@ type DataStore interface {
 	SaveDirective(d Directive) Directive
 	ListDirectives(userID, botID, status string) []Directive
 	RevokeDirective(userID, botID, directiveID string) bool
+
+	// Emotion tracking
+	AppendEmotionBuffer(userID, botID, text string) int // returns buffer length
+	GetEmotionBuffer(userID, botID string) []string
+	ClearEmotionBuffer(userID, botID string)
+	SaveEmotionContext(userID, botID string, ctx EmotionContext)
+	GetEmotionContext(userID, botID string) (EmotionContext, bool)
 
 	// ListAllUserIDs returns all registered user IDs for scheduler scanning.
 	ListAllUserIDs() []string

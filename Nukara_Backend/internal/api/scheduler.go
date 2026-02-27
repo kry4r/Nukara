@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"log"
+	"os"
 	"strings"
 	"time"
 
@@ -18,11 +19,25 @@ type proactiveScheduler struct {
 	stop     chan struct{}
 }
 
-// frequencyCooldown maps frequency setting to minimum hours between proactive messages.
+// frequencyCooldown maps frequency setting to minimum time between proactive messages.
+// Override all with NUKARA_PROACTIVE_COOLDOWN env var (e.g. "5m" for dev testing).
 var frequencyCooldown = map[string]time.Duration{
 	"high":   2 * time.Hour,
 	"normal": 4 * time.Hour,
 	"low":    8 * time.Hour,
+}
+
+func getFrequencyCooldown(freq string) time.Duration {
+	if v := os.Getenv("NUKARA_PROACTIVE_COOLDOWN"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			return d
+		}
+	}
+	cd := frequencyCooldown[freq]
+	if cd == 0 {
+		cd = frequencyCooldown["normal"]
+	}
+	return cd
 }
 
 // triggerWindow defines a time-of-day window for a trigger type.
@@ -33,11 +48,30 @@ type triggerWindow struct {
 }
 
 var triggerWindows = []triggerWindow{
-	{TriggerType: "morning_greeting", StartHour: 8, EndHour: 9},
-	{TriggerType: "evening_greeting", StartHour: 21, EndHour: 22},
+	{TriggerType: "morning_care", StartHour: 7, EndHour: 9},
+	{TriggerType: "evening_care", StartHour: 21, EndHour: 22},
+	{TriggerType: "random_share", StartHour: 10, EndHour: 20},
 }
 
-const inactivityThreshold = 4 * time.Hour
+// perTriggerCooldown prevents the same trigger type from firing too often.
+var perTriggerCooldown = map[string]time.Duration{
+	"morning_care":            20 * time.Hour, // once per day
+	"evening_care":            20 * time.Hour,
+	"curiosity_after_silence": 1 * time.Hour,
+	"worry_after_long_silence": 4 * time.Hour,
+	"random_share":            3 * time.Hour,
+}
+
+// inactivityThreshold returns the duration after which a user is considered inactive.
+// Configurable via NUKARA_INACTIVITY_THRESHOLD env var (e.g. "3m", "4h"). Default: 3m.
+func inactivityThreshold() time.Duration {
+	if v := os.Getenv("NUKARA_INACTIVITY_THRESHOLD"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			return d
+		}
+	}
+	return 3 * time.Minute
+}
 
 func newScheduler(server *Server, interval time.Duration) *proactiveScheduler {
 	if interval <= 0 {
@@ -90,10 +124,7 @@ func (ps *proactiveScheduler) processUser(userID string, now time.Time) {
 		return
 	}
 
-	cooldown := frequencyCooldown[settings.Frequency]
-	if cooldown == 0 {
-		cooldown = frequencyCooldown["normal"]
-	}
+	cooldown := getFrequencyCooldown(settings.Frequency)
 
 	// Check recent proactive logs to enforce cooldown.
 	recentLogs := ps.server.store.ListProactiveLogs(userID, 1)
@@ -106,14 +137,45 @@ func (ps *proactiveScheduler) processUser(userID string, now time.Time) {
 		return
 	}
 
+	// Back-off: if user hasn't responded since last proactive message, increase cooldown.
+	// Check the most recent conversation's messages to see if user replied.
+	conv := conversations[0]
+	if len(recentLogs) > 0 {
+		msgs, _ := ps.server.store.ListMessages(userID, conv.ID, 10)
+		unanswered := 0
+		for _, m := range msgs {
+			if m.SenderType == "user" {
+				break
+			}
+			if m.IsProactive {
+				unanswered++
+			}
+		}
+		// Exponential back-off: 2 unanswered = 2x cooldown, 3 = 4x, etc.
+		if unanswered >= 2 {
+			backoff := cooldown * time.Duration(1<<(unanswered-1))
+			if now.Sub(recentLogs[0].CreatedAt) < backoff {
+				return
+			}
+		}
+	}
+
 	// Determine trigger type based on current time.
 	triggerType := ps.detectTrigger(now, conversations)
 	if triggerType == "" {
 		return
 	}
 
-	// Pick the most recent conversation to send the proactive message to.
-	conv := conversations[0]
+	// Per-trigger cooldown: check if this specific trigger fired too recently.
+	if cd, ok := perTriggerCooldown[triggerType]; ok {
+		recentLogs := ps.server.store.ListProactiveLogs(userID, 10)
+		for _, lg := range recentLogs {
+			if lg.TriggerType == triggerType && now.Sub(lg.CreatedAt) < cd {
+				return
+			}
+		}
+	}
+
 	bot, found := ps.server.store.GetBot(userID, conv.BotID)
 	if !found {
 		return
@@ -125,18 +187,37 @@ func (ps *proactiveScheduler) processUser(userID string, now time.Time) {
 func (ps *proactiveScheduler) detectTrigger(now time.Time, conversations []store.Conversation) string {
 	hour := now.Hour()
 
-	// Check time-based triggers.
+	// Check time-based triggers (morning/evening care).
 	for _, tw := range triggerWindows {
+		if tw.TriggerType == "random_share" {
+			continue // handled separately below
+		}
 		if hour >= tw.StartHour && hour < tw.EndHour {
 			return tw.TriggerType
 		}
 	}
 
-	// Check inactivity trigger (during active hours 9:00-21:00).
-	if hour >= 9 && hour < 21 && len(conversations) > 0 {
-		lastActivity := conversations[0].LastMessageAt
-		if now.Sub(lastActivity) >= inactivityThreshold {
-			return "inactivity"
+	// Check inactivity triggers (curiosity vs worry based on gap duration).
+	threshold := inactivityThreshold()
+	longThreshold := 2 * time.Hour
+	inActiveHours := hour >= 9 && hour < 21
+
+	if len(conversations) > 0 && (inActiveHours || threshold < time.Hour) {
+		gap := now.Sub(conversations[0].LastMessageAt)
+		if gap >= longThreshold {
+			return "worry_after_long_silence"
+		}
+		if gap >= threshold {
+			return "curiosity_after_silence"
+		}
+	}
+
+	// Random share during daytime active hours (10-20).
+	if hour >= 10 && hour < 20 {
+		// Use minute-based deterministic check so it doesn't fire every tick.
+		// Fires roughly once per hour window when cooldown allows.
+		if now.Minute() < 5 {
+			return "random_share"
 		}
 	}
 
@@ -147,10 +228,22 @@ func (ps *proactiveScheduler) detectTrigger(now time.Time, conversations []store
 // Reused by both the scheduler and the manual trigger API.
 func (s *Server) sendProactiveMessage(userID string, bot store.Bot, conv store.Conversation, triggerType string) {
 	convID := agent.NanobotConvID(userID, bot.ID, conv.ID)
-	message, err := s.agent.Proactive(context.Background(), convID, "proactive", triggerType)
+	sysCtx := agent.BuildSystemContext(bot, nil)
+
+	// Inject emotion context if available
+	if emoCtx, ok := s.store.GetEmotionContext(userID, bot.ID); ok {
+		sysCtx["emotion_trend"] = emoCtx.EmotionTrend
+		sysCtx["last_tone"] = emoCtx.LastTone
+	}
+
+	message, err := s.agent.Proactive(context.Background(), convID, "proactive", triggerType, sysCtx)
 	if err != nil {
 		log.Printf("[scheduler] agent.Proactive failed: %v", err)
 	}
+	// Apply the same sanitization pipeline as regular chat messages.
+	message = agent.SanitizeLLMReply(message)
+	message, _, _ = agent.ExtractStatus(message, "")
+	message, emotion := agent.ExtractEmotion(message)
 	if strings.TrimSpace(message) == "" {
 		log.Printf("[scheduler] empty proactive message for user=%s bot=%s trigger=%s", userID, bot.ID, triggerType)
 		return
@@ -162,13 +255,13 @@ func (s *Server) sendProactiveMessage(userID string, bot store.Bot, conv store.C
 		ContentType:    "text",
 		Content:        store.MessageContent{Type: "text", Text: message},
 		IsProactive:    true,
-		EmotionTag:     "gentle",
+		EmotionTag:     emotion,
 	})
 	if !ok {
 		return
 	}
 
-	status := selectBotStatus("gentle", conv.ID)
+	status := selectBotStatus(emotion, conv.ID)
 	s.store.SaveBotStatus(userID, bot.ID, status.Emoji, status.Text)
 
 	sentByWS := s.wsHub.publishToUser(userID, wsProactiveEvent(storedMessage)) > 0

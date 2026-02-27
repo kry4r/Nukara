@@ -8,6 +8,28 @@ import (
 var emotionRe = regexp.MustCompile(`\s*\[emotion:(\w+)\]\s*$`)
 var statusRe = regexp.MustCompile(`\s*\[status:(.+?),(.+?)\]\s*$`)
 
+// toolCallRe matches leaked LLM tool call XML tags (e.g. <minimax:tool_call>...</minimax:tool_call>).
+var toolCallRe = regexp.MustCompile(`(?s)<\w+:tool_call>.*?</\w+:tool_call>`)
+
+// reasoningBlockRe matches leaked markdown reasoning headers (e.g. "**Reflection:**", "**Results:**").
+// Strips the header line and any immediately following non-empty lines.
+var reasoningBlockRe = regexp.MustCompile(`(?m)^\*\*(Reflection|Results|Next Steps|Analysis|Thinking|思考|分析|结果)[:：]\*\*.*$`)
+
+// systemTagRe matches leaked system/internal tags like [system:...], [memory:...], etc.
+var systemTagRe = regexp.MustCompile(`\[(?:system|memory|internal|debug):[^\]]*\]`)
+
+// SanitizeLLMReply strips leaked tool call XML, reasoning blocks, and other non-user-facing artifacts from LLM output.
+func SanitizeLLMReply(text string) string {
+	text = toolCallRe.ReplaceAllString(text, "")
+	text = reasoningBlockRe.ReplaceAllString(text, "")
+	text = systemTagRe.ReplaceAllString(text, "")
+	// Collapse multiple blank lines left by stripping.
+	for strings.Contains(text, "\n\n\n") {
+		text = strings.ReplaceAll(text, "\n\n\n", "\n\n")
+	}
+	return strings.TrimSpace(text)
+}
+
 // ExtractEmotion strips the trailing [emotion:tag] from the LLM reply
 // and returns the cleaned reply text and the emotion tag separately.
 func ExtractEmotion(raw string) (reply, emotion string) {

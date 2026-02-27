@@ -498,6 +498,51 @@ func writeServerJSON(conn net.Conn, msg any) {
 	conn.Write(frame)
 }
 
+func TestCalcDelay(t *testing.T) {
+	tests := []struct {
+		name     string
+		msgLen   int
+		expected time.Duration
+	}{
+		{"short message", 3, 2 * time.Second},
+		{"boundary 9 chars", 9, 2 * time.Second},
+		{"boundary 10 chars", 10, 1500 * time.Millisecond},
+		{"medium message", 30, 1500 * time.Millisecond},
+		{"boundary 50 chars", 50, 1500 * time.Millisecond},
+		{"long message", 80, 1 * time.Second},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := calcDelay(tt.msgLen)
+			if got != tt.expected {
+				t.Fatalf("calcDelay(%d) = %v, want %v", tt.msgLen, got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestFormatAggregatedPrompt(t *testing.T) {
+	t.Run("single message", func(t *testing.T) {
+		got := formatAggregatedPrompt([]string{"你好"})
+		if got != "你好" {
+			t.Fatalf("got %q, want %q", got, "你好")
+		}
+	})
+
+	t.Run("multiple messages", func(t *testing.T) {
+		got := formatAggregatedPrompt([]string{"今天好累", "加班到现在", "你在干嘛"})
+		if !strings.Contains(got, "[用户连续发送了3条消息]") {
+			t.Fatalf("missing header, got: %s", got)
+		}
+		if !strings.Contains(got, "1. 今天好累") {
+			t.Fatalf("missing numbered item, got: %s", got)
+		}
+		if !strings.Contains(got, "3. 你在干嘛") {
+			t.Fatalf("missing last item, got: %s", got)
+		}
+	})
+}
+
 func buildServerTextFrame(payload []byte) []byte {
 	frame := []byte{0x80 | wsOpcodeText}
 	n := len(payload)

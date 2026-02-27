@@ -587,6 +587,48 @@ func (p *PostgresStore) GetBotState(userID, botID string) (BotState, bool) {
 	return state, true
 }
 
+func (p *PostgresStore) UpdateBot(userID, botID string, patch Bot) (Bot, bool) {
+	bot, found := p.GetBot(userID, botID)
+	if !found {
+		return Bot{}, false
+	}
+
+	if strings.TrimSpace(patch.Name) != "" {
+		bot.Name = strings.TrimSpace(patch.Name)
+	}
+	if patch.Summary != "" {
+		bot.Summary = strings.TrimSpace(patch.Summary)
+	}
+	if patch.SpeakingStyle != "" {
+		bot.SpeakingStyle = strings.TrimSpace(patch.SpeakingStyle)
+	}
+	if patch.Background != "" {
+		bot.Background = strings.TrimSpace(patch.Background)
+	}
+	if patch.Gender != "" {
+		bot.Gender = patch.Gender
+	}
+	if len(patch.Traits) > 0 {
+		bot.Traits = patch.Traits
+	}
+	bot.UpdatedAt = time.Now().UTC()
+
+	traitsRaw, _ := json.Marshal(bot.Traits)
+	ctx, cancel := p.withTimeout()
+	defer cancel()
+	_, err := p.db.ExecContext(ctx,
+		`UPDATE bots
+		 SET name=$1, summary=$2, speaking_style=$3, background=$4, traits=$5, gender=$6, updated_at=$7
+		 WHERE user_id=$8 AND id=$9`,
+		bot.Name, bot.Summary, bot.SpeakingStyle, bot.Background, traitsRaw, bot.Gender, bot.UpdatedAt, userID, botID,
+	)
+	if err != nil {
+		log.Printf("update bot failed: %v", err)
+		return p.Store.UpdateBot(userID, botID, patch)
+	}
+	return bot, true
+}
+
 func (p *PostgresStore) AppendBotPersona(userID, botID string, speakingAdds, backgroundAdds, traitAdds []string, gender *string) (Bot, bool) {
 	bot, found := p.GetBot(userID, botID)
 	if !found {

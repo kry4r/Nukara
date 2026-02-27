@@ -87,6 +87,7 @@ func (s *Server) processChatMessage(userID string, req chatMessageRequest) (chat
 		log.Printf("[chat_flow] agent.Chat failed: %v", err)
 		raw = fmt.Sprintf("%s：我记住了你说的。要不要继续聊聊？", bot.Name)
 	}
+	raw = agent.SanitizeLLMReply(raw)
 	reply, statusEmoji, statusText := agent.ExtractStatus(raw, "")
 	reply, emotion := agent.ExtractEmotion(reply)
 	if statusEmoji == "" || statusEmoji == "☕️" {

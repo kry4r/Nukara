@@ -120,6 +120,14 @@ type ProactiveLog struct {
 	CreatedAt      time.Time `json:"created_at"`
 }
 
+// EmotionContext tracks user emotion trends for a specific bot relationship.
+type EmotionContext struct {
+	RecentEmotions []string `json:"recent_emotions"` // last batch emotions
+	EmotionTrend   string   `json:"emotion_trend"`   // positive/negative/neutral
+	LastTone       string   `json:"last_tone"`        // tone of last message
+	UpdatedAt      time.Time `json:"updated_at"`
+}
+
 type Directive struct {
 	ID              string    `json:"id"`
 	UserID          string    `json:"-"`
@@ -160,6 +168,9 @@ type Store struct {
 	proactiveLogs     []ProactiveLog
 	directivesByBot   map[string][]Directive
 
+	emotionBuffers map[string][]string        // key: userID:botID
+	emotionCtxs    map[string]EmotionContext   // key: userID:botID
+
 	metrics Metrics
 }
 
@@ -179,6 +190,8 @@ func NewStore() *Store {
 		userStatusByUser:    map[string]UserStatus{},
 		proactiveLogs:       []ProactiveLog{},
 		directivesByBot:     map[string][]Directive{},
+		emotionBuffers:      map[string][]string{},
+		emotionCtxs:         map[string]EmotionContext{},
 	}
 
 	// seed dev user so the preset phone 13800138000 works for login
@@ -356,6 +369,39 @@ func (s *Store) GetBotState(userID, botID string) (BotState, bool) {
 	defer s.mu.RUnlock()
 	state, ok := s.botStatesByKey[userID+":"+botID]
 	return state, ok
+}
+
+func (s *Store) UpdateBot(userID, botID string, patch Bot) (Bot, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	bot, ok := s.botsByID[botID]
+	if !ok || bot.UserID != userID {
+		return Bot{}, false
+	}
+
+	if strings.TrimSpace(patch.Name) != "" {
+		bot.Name = strings.TrimSpace(patch.Name)
+	}
+	if patch.Summary != "" {
+		bot.Summary = strings.TrimSpace(patch.Summary)
+	}
+	if patch.SpeakingStyle != "" {
+		bot.SpeakingStyle = strings.TrimSpace(patch.SpeakingStyle)
+	}
+	if patch.Background != "" {
+		bot.Background = strings.TrimSpace(patch.Background)
+	}
+	if patch.Gender != "" {
+		bot.Gender = patch.Gender
+	}
+	if len(patch.Traits) > 0 {
+		bot.Traits = patch.Traits
+	}
+	bot.UpdatedAt = time.Now().UTC()
+	s.botsByID[botID] = bot
+
+	return bot, true
 }
 
 func (s *Store) AppendBotPersona(userID, botID string, speakingAdds, backgroundAdds, traitAdds []string, gender *string) (Bot, bool) {
@@ -613,6 +659,40 @@ func (s *Store) RevokeDirective(userID, botID, directiveID string) bool {
 		}
 	}
 	return false
+}
+
+func (s *Store) AppendEmotionBuffer(userID, botID, text string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := userID + ":" + botID
+	s.emotionBuffers[key] = append(s.emotionBuffers[key], text)
+	return len(s.emotionBuffers[key])
+}
+
+func (s *Store) GetEmotionBuffer(userID, botID string) []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return append([]string{}, s.emotionBuffers[userID+":"+botID]...)
+}
+
+func (s *Store) ClearEmotionBuffer(userID, botID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.emotionBuffers, userID+":"+botID)
+}
+
+func (s *Store) SaveEmotionContext(userID, botID string, ctx EmotionContext) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ctx.UpdatedAt = time.Now().UTC()
+	s.emotionCtxs[userID+":"+botID] = ctx
+}
+
+func (s *Store) GetEmotionContext(userID, botID string) (EmotionContext, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	ctx, ok := s.emotionCtxs[userID+":"+botID]
+	return ctx, ok
 }
 
 func previewText(msg Message) string {

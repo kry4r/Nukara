@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -16,6 +17,12 @@ import (
 )
 
 const wsIdleTimeout = 5 * time.Minute
+const (
+	hardAggregateLimit    = 8 * time.Second  // max wait time regardless of typing
+	maxAggregateMessages  = 10               // max messages before forced flush
+	typingResumeBuffer    = 500 * time.Millisecond // extra buffer after typing stops
+	replyInactivityTimeout = 90 * time.Second // max wait for nanobot reply event
+)
 
 type wsIncomingMessage struct {
 	Type            string `json:"type"`
@@ -53,6 +60,188 @@ func newSessionConsumers(s *Server) *sessionConsumers {
 	}
 }
 
+// messageAggregator buffers rapid-fire user messages per conversation and
+// combines them into a single prompt after a short delay (aggregateDelay).
+type messageAggregator struct {
+	mu      sync.Mutex
+	buffers map[string]*aggregateBuffer // keyed by conv.ID
+	server  *Server
+}
+
+type aggregateBuffer struct {
+	prompts      []string
+	timer        *time.Timer
+	hardTimer    *time.Timer   // 8s hard cap timer
+	isTyping     bool          // user is currently typing
+	firstMsgTime time.Time     // when first message arrived
+	convID       string        // nukara conv.ID
+	nbConvID     string        // nanobot conv.ID
+	userID       string
+	bot          store.Bot
+	conv         store.Conversation
+	sysCtx       map[string]any
+	consumers    *sessionConsumers
+}
+
+func newMessageAggregator(s *Server) *messageAggregator {
+	return &messageAggregator{
+		buffers: make(map[string]*aggregateBuffer),
+		server:  s,
+	}
+}
+
+// calcDelay returns a dynamic aggregation window based on message length.
+// Short messages get longer windows (user likely still typing).
+func calcDelay(msgLen int) time.Duration {
+	switch {
+	case msgLen < 10:
+		return 2 * time.Second
+	case msgLen <= 50:
+		return 1500 * time.Millisecond
+	default:
+		return 1 * time.Second
+	}
+}
+
+// add buffers a prompt for the conversation. Uses dynamic delay based on
+// message length, with an 8s hard cap and 10-message limit.
+func (ma *messageAggregator) add(userID string, conv store.Conversation, bot store.Bot, prompt string, sysCtx map[string]any, consumers *sessionConsumers) {
+	ma.mu.Lock()
+	defer ma.mu.Unlock()
+
+	delay := calcDelay(len([]rune(prompt)))
+
+	buf, exists := ma.buffers[conv.ID]
+	if exists {
+		buf.prompts = append(buf.prompts, prompt)
+		buf.sysCtx = sysCtx
+
+		// Hit message count limit → force flush
+		if len(buf.prompts) >= maxAggregateMessages {
+			log.Printf("[aggregator] hit %d-message limit for conv=%s, forcing flush", maxAggregateMessages, conv.ID)
+			buf.timer.Stop()
+			if buf.hardTimer != nil {
+				buf.hardTimer.Stop()
+			}
+			delete(ma.buffers, conv.ID)
+			ma.mu.Unlock()
+			ma.doFlush(buf)
+			ma.mu.Lock()
+			return
+		}
+
+		// Reset soft timer with dynamic delay (unless user is typing)
+		if !buf.isTyping {
+			buf.timer.Reset(delay)
+		}
+		log.Printf("[aggregator] buffered message #%d for conv=%s (delay=%s)", len(buf.prompts), conv.ID, delay)
+		return
+	}
+
+	// New buffer
+	nbConvID := agent.NanobotConvID(userID, bot.ID, conv.ID)
+	buf = &aggregateBuffer{
+		prompts:      []string{prompt},
+		firstMsgTime: time.Now(),
+		convID:       conv.ID,
+		nbConvID:     nbConvID,
+		userID:       userID,
+		bot:          bot,
+		conv:         conv,
+		sysCtx:       sysCtx,
+		consumers:    consumers,
+	}
+	buf.timer = time.AfterFunc(delay, func() {
+		ma.flush(conv.ID)
+	})
+	buf.hardTimer = time.AfterFunc(hardAggregateLimit, func() {
+		log.Printf("[aggregator] hard limit reached for conv=%s", conv.ID)
+		ma.flush(conv.ID)
+	})
+	ma.buffers[conv.ID] = buf
+	log.Printf("[aggregator] started buffer for conv=%s (delay=%s)", conv.ID, delay)
+}
+
+// formatAggregatedPrompt merges buffered prompts with boundary info for nanobot.
+func formatAggregatedPrompt(prompts []string) string {
+	if len(prompts) == 1 {
+		return prompts[0]
+	}
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "[用户连续发送了%d条消息]\n", len(prompts))
+	for i, p := range prompts {
+		fmt.Fprintf(&sb, "%d. %s\n", i+1, p)
+	}
+	return strings.TrimSpace(sb.String())
+}
+
+// flush removes the buffer for convID and sends it to nanobot.
+func (ma *messageAggregator) flush(convID string) {
+	ma.mu.Lock()
+	buf, exists := ma.buffers[convID]
+	if !exists {
+		ma.mu.Unlock()
+		return
+	}
+	delete(ma.buffers, convID)
+	ma.mu.Unlock()
+
+	ma.doFlush(buf)
+}
+
+// doFlush sends the buffered prompts to nanobot. Caller must have removed buf from ma.buffers.
+func (ma *messageAggregator) doFlush(buf *aggregateBuffer) {
+	buf.timer.Stop()
+	if buf.hardTimer != nil {
+		buf.hardTimer.Stop()
+	}
+
+	combined := formatAggregatedPrompt(buf.prompts)
+	buf.consumers.setLastUserPrompt(buf.convID, combined)
+
+	log.Printf("[aggregator] flushing %d messages for conv=%s: %s", len(buf.prompts), buf.convID, combined[:min(len(combined), 80)])
+	if err := ma.server.agent.SendChatMessage(buf.nbConvID, "default", combined, buf.sysCtx); err != nil {
+		log.Printf("[aggregator] send to nanobot failed: %v", err)
+		ma.server.wsHub.publishToUser(buf.userID, map[string]any{"type": "error", "message": "send failed: " + err.Error()})
+	}
+}
+
+// closeAll cancels all pending timers.
+func (ma *messageAggregator) closeAll() {
+	ma.mu.Lock()
+	defer ma.mu.Unlock()
+	for id, buf := range ma.buffers {
+		buf.timer.Stop()
+		if buf.hardTimer != nil {
+			buf.hardTimer.Stop()
+		}
+		delete(ma.buffers, id)
+	}
+}
+
+// handleTyping pauses or resumes the soft timer based on user typing state.
+// The hard timer is never paused — it always enforces the 8s cap.
+func (ma *messageAggregator) handleTyping(convID string, isTyping bool) {
+	ma.mu.Lock()
+	defer ma.mu.Unlock()
+
+	buf, exists := ma.buffers[convID]
+	if !exists {
+		return
+	}
+
+	buf.isTyping = isTyping
+	if isTyping {
+		// Pause soft timer while user types (hard timer keeps ticking)
+		buf.timer.Stop()
+		log.Printf("[aggregator] typing started, paused soft timer for conv=%s", convID)
+	} else {
+		// Resume with a short buffer after typing stops
+		buf.timer.Reset(typingResumeBuffer)
+		log.Printf("[aggregator] typing stopped, resuming with %s buffer for conv=%s", typingResumeBuffer, convID)
+	}
+}
+
 // ensure starts a persistent event consumer for the conversation if not already running.
 func (sc *sessionConsumers) ensure(userID string, conv store.Conversation, bot store.Bot) {
 	sc.mu.Lock()
@@ -83,12 +272,15 @@ func (sc *sessionConsumers) setLastUserPrompt(convID, prompt string) {
 	}
 }
 
-// closeAll detaches all active consumers. Detached consumers continue saving
-// messages to DB until the current reply completes, then self-cleanup.
+// closeAll unsubscribes all active consumers from nanobot and signals them to stop.
+// This prevents duplicate consumers when the user reconnects.
 func (sc *sessionConsumers) closeAll() {
 	sc.mu.Lock()
 	defer sc.mu.Unlock()
 	for id, sub := range sc.active {
+		// Unsubscribe immediately to prevent duplicate event delivery on reconnect.
+		// This closes the event channel, causing the goroutine to exit.
+		sc.server.agent.Unsubscribe(sub.nanobotConvID, sub.eventCh)
 		select {
 		case <-sub.detached:
 		default:
@@ -112,7 +304,9 @@ func (s *Server) handleWSChat(w http.ResponseWriter, r *http.Request) {
 
 	session := s.wsHub.register(userID, conn)
 	consumers := newSessionConsumers(s)
+	aggregator := newMessageAggregator(s)
 	defer func() {
+		aggregator.closeAll()
 		consumers.closeAll()
 		s.wsHub.unregister(session)
 		_ = conn.Close()
@@ -142,9 +336,10 @@ func (s *Server) handleWSChat(w http.ResponseWriter, r *http.Request) {
 
 		switch strings.TrimSpace(msg.Type) {
 		case "message":
-			s.handleWSChatMessage(userID, msg, consumers)
+			s.handleWSChatMessage(userID, msg, consumers, aggregator)
 		case "typing_start", "typing_stop":
 			s.handleWSTypingEvent(userID, msg)
+			aggregator.handleTyping(msg.ConversationID, msg.Type == "typing_start")
 		case "ping":
 			_ = conn.WriteJSON(map[string]any{"type": "pong", "timestamp": time.Now().Unix()})
 		default:
@@ -166,7 +361,7 @@ func (s *Server) handleWSTypingEvent(userID string, message wsIncomingMessage) {
 	s.agent.SendTypingEvent(convID, "default", message.Type)
 }
 
-func (s *Server) handleWSChatMessage(userID string, message wsIncomingMessage, consumers *sessionConsumers) {
+func (s *Server) handleWSChatMessage(userID string, message wsIncomingMessage, consumers *sessionConsumers, aggregator *messageAggregator) {
 	log.Printf("[ws-chat] handleWSChatMessage user=%s conv=%s content_type=%s", userID, message.ConversationID, message.Content.Type)
 
 	conv, found := s.store.GetConversation(userID, strings.TrimSpace(message.ConversationID))
@@ -213,25 +408,21 @@ func (s *Server) handleWSChatMessage(userID string, message wsIncomingMessage, c
 		"timestamp":     userMessage.CreatedAt.Unix(),
 	})
 
+	// Buffer user message for emotion analysis (async LLM batch every 5 messages)
+	s.bufferAndAnalyzeEmotion(userID, bot, conv, prompt)
+
 	// Ensure persistent event consumer for this conversation
 	consumers.ensure(userID, conv, bot)
 	consumers.setLastUserPrompt(conv.ID, prompt)
 
-	// Forward message to nanobot (non-blocking — aggregator will batch if needed)
-	convID := agent.NanobotConvID(userID, bot.ID, conv.ID)
+	// Forward message to nanobot via aggregator (batches rapid-fire messages)
 	var userStatusStr string
 	if us, ok := s.store.GetUserStatus(userID); ok && (us.Emoji != "" || us.Text != "") {
 		userStatusStr = us.Emoji + " " + us.Text
 	}
 	wsDirectives := s.store.ListDirectives(userID, bot.ID, "active")
 	sysCtx := agent.BuildSystemContext(bot, wsDirectives, userStatusStr)
-	log.Printf("[ws-chat] forwarding to nanobot: convID=%s prompt=%s", convID, prompt[:min(len(prompt), 80)])
-	if err := s.agent.SendChatMessage(convID, "default", prompt, sysCtx); err != nil {
-		log.Printf("[ws-chat] send to nanobot failed: %v", err)
-		s.wsHub.publishToUser(userID, map[string]any{"type": "error", "message": "send failed: " + err.Error()})
-	} else {
-		log.Printf("[ws-chat] forwarded to nanobot OK: convID=%s", convID)
-	}
+	aggregator.add(userID, conv, bot, prompt, sysCtx, consumers)
 }
 
 // consumeNanobotEvents reads events from nanobot and translates them to iOS WS protocol.
@@ -252,6 +443,9 @@ func (s *Server) consumeNanobotEvents(userID string, conv store.Conversation, bo
 			log.Printf("[ws-chat] detached consumer cleaned up: user=%s conv=%s", userID, conv.ID)
 		}
 	}()
+
+	inactivityTimer := time.NewTimer(replyInactivityTimeout)
+	defer inactivityTimer.Stop()
 
 	for {
 		// Check detach status (non-blocking)
@@ -281,11 +475,31 @@ func (s *Server) consumeNanobotEvents(userID string, conv store.Conversation, bo
 				return
 			}
 		} else {
-			e, ok := <-sub.eventCh
-			if !ok {
-				return
+			select {
+			case e, ok := <-sub.eventCh:
+				if !ok {
+					return
+				}
+				evt = e
+				// Reset inactivity timer on each event received
+				if !inactivityTimer.Stop() {
+					select {
+					case <-inactivityTimer.C:
+					default:
+					}
+				}
+				inactivityTimer.Reset(replyInactivityTimeout)
+			case <-inactivityTimer.C:
+				log.Printf("[ws-chat] reply inactivity timeout (%s): user=%s conv=%s", replyInactivityTimeout, userID, conv.ID)
+				s.wsHub.publishToUser(userID, map[string]any{
+					"type":            "typing",
+					"conversation_id": conv.ID,
+					"is_typing":       false,
+				})
+				// Reset timer and continue waiting — don't kill the consumer
+				inactivityTimer.Reset(replyInactivityTimeout)
+				continue
 			}
-			evt = e
 		}
 
 		// Helper: only publish to WS if client is still connected
@@ -332,6 +546,10 @@ func (s *Server) consumeNanobotEvents(userID string, conv store.Conversation, bo
 				continue
 			}
 
+			text = agent.SanitizeLLMReply(text)
+			if strings.TrimSpace(text) == "" {
+				continue
+			}
 			cleanText, sEmoji, sText := agent.ExtractStatus(text, "")
 			cleanText, emotion := agent.ExtractEmotion(cleanText)
 			if sEmoji == "" || sEmoji == "☕️" {
@@ -423,6 +641,10 @@ func (s *Server) consumeNanobotEvents(userID string, conv store.Conversation, bo
 				if turnCount%20 == 0 {
 					s.agent.ConsolidateMemory(context.Background(), nbConvID, "default", sysCtx)
 				}
+
+				// Clear bot status to idle after background work completes
+				s.store.SaveBotStatus(uID, b.ID, "", "")
+				s.wsHub.publishToUser(uID, wsBotStatusEvent(c.ID, "", ""))
 			}(userID, bot, conv, sub.lastUserPrompt, accumulatedReply)
 
 			replyGroupID = ""
