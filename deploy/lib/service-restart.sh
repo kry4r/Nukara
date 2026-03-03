@@ -20,6 +20,36 @@ wait_for_health() {
   return 1
 }
 
+# Validate current nanobot runtime. Return non-zero if project/runtime is broken.
+validate_nanobot_runtime() {
+  local py_bin="$INSTALL_DIR/nanobot/.venv/bin/python"
+  local context_py="$INSTALL_DIR/nanobot/nanobot/agent/context.py"
+  local project_toml="$INSTALL_DIR/nanobot/pyproject.toml"
+  local project_setup="$INSTALL_DIR/nanobot/setup.py"
+
+  [ -f "$project_toml" ] || [ -f "$project_setup" ] || return 1
+  [ -x "$py_bin" ] || return 1
+  [ -f "$context_py" ] || return 1
+
+  "$py_bin" -m py_compile "$context_py" >/tmp/nukara-nanobot-compile.log 2>&1
+}
+
+# Rebuild nanobot virtualenv and reinstall package from source.
+rebuild_nanobot_runtime() {
+  [ -d "$INSTALL_DIR/nanobot" ] || err "Nanobot source missing: $INSTALL_DIR/nanobot"
+  [ -f "$INSTALL_DIR/nanobot/pyproject.toml" ] || [ -f "$INSTALL_DIR/nanobot/setup.py" ] || \
+    err "Nanobot source invalid (missing pyproject.toml/setup.py): $INSTALL_DIR/nanobot"
+  command -v uv >/dev/null 2>&1 || err "uv is required but not found in PATH"
+
+  log "Rebuilding nanobot virtualenv..."
+  rm -rf "$INSTALL_DIR/nanobot/.venv"
+
+  export UV_INDEX_URL="${UV_INDEX_URL:-https://mirrors.aliyun.com/pypi/simple/}"
+  uv venv "$INSTALL_DIR/nanobot/.venv"
+  uv pip install --python "$INSTALL_DIR/nanobot/.venv/bin/python" .
+  "$INSTALL_DIR/nanobot/.venv/bin/python" -m py_compile "$INSTALL_DIR/nanobot/nanobot/agent/context.py"
+}
+
 # 重启后端服务
 restart_backend_services() {
   log "Restarting backend services..."
@@ -47,6 +77,15 @@ restart_backend_services() {
 # 重启 nanobot 服务
 restart_nanobot_service() {
   log "Restarting nanobot service..."
+
+  if ! validate_nanobot_runtime; then
+    warn "Nanobot runtime validation failed; attempting automatic rebuild..."
+    [ -f /tmp/nukara-nanobot-compile.log ] && warn "Last compile error: $(tail -n 1 /tmp/nukara-nanobot-compile.log)"
+    (
+      cd "$INSTALL_DIR/nanobot"
+      rebuild_nanobot_runtime
+    )
+  fi
 
   systemctl enable nukara-nanobot 2>/dev/null || true
   systemctl restart nukara-nanobot

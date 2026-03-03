@@ -38,13 +38,13 @@ detect_changes() {
   # 分析变更文件
   while IFS= read -r file; do
     case "$file" in
+      Nukara_Backend/nanobot|Nukara_Backend/nanobot/*|nanobot/*)
+        REBUILD_NANOBOT=true
+        log "  Nanobot changed: $file"
+        ;;
       Nukara_Backend/*)
         REBUILD_BACKEND=true
         log "  Backend changed: $file"
-        ;;
-      nanobot/*)
-        REBUILD_NANOBOT=true
-        log "  Nanobot changed: $file"
         ;;
       Nukara_Web/*)
         REBUILD_WEB=true
