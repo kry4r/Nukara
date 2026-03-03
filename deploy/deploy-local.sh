@@ -418,48 +418,86 @@ setup_postgres() {
 # --- Prepare source code ---
 prepare_sources() {
   mkdir -p "$INSTALL_DIR"
-  cd "$INSTALL_DIR"
+  local workspace_root
+  workspace_root="$(cd "$DEPLOY_DIR/.." && pwd)"
+  local snapshot_root=""
+  local snapshot_repo=""
+
+  sync_from_workspace() {
+    local name="$1"
+    local src="$2"
+    local dst="$3"
+    [ -d "$src" ] || return 1
+
+    log "Syncing $name from local workspace..."
+    mkdir -p "$dst"
+    if command -v rsync >/dev/null 2>&1; then
+      rsync -a --delete \
+        --exclude '.git' \
+        --exclude 'node_modules' \
+        --exclude 'dist' \
+        --exclude '.venv' \
+        --exclude '__pycache__' \
+        "$src/" "$dst/"
+    else
+      rm -rf "$dst"
+      mkdir -p "$dst"
+      cp -a "$src"/. "$dst"/
+      rm -rf "$dst/.git" "$dst/node_modules" "$dst/dist" "$dst/.venv" "$dst/__pycache__"
+    fi
+    return 0
+  }
+
+  ensure_repo_snapshot() {
+    if [ -n "$snapshot_repo" ] && [ -d "$snapshot_repo" ]; then
+      return 0
+    fi
+    snapshot_root="$(mktemp -d "$INSTALL_DIR/.nukara-src.XXXXXX")"
+    snapshot_repo="$snapshot_root/repo"
+    log "Fetching latest Nukara snapshot..."
+    git clone --depth 1 https://github.com/kry4r/Nukara.git "$snapshot_repo"
+  }
+
+  refresh_component_from_snapshot() {
+    local name="$1"
+    local subdir="$2"
+    local dst="$3"
+    ensure_repo_snapshot
+    log "Refreshing $name from repository snapshot..."
+    rm -rf "$dst"
+    mkdir -p "$dst"
+    cp -a "$snapshot_repo/$subdir"/. "$dst"/
+  }
 
   # Backend
-  if [ -d "$INSTALL_DIR/Nukara_Backend" ]; then
-    log "Updating Nukara_Backend..."
-    cd "$INSTALL_DIR/Nukara_Backend" && git pull --ff-only 2>/dev/null || true
-  else
-    log "Cloning Nukara_Backend..."
-    git clone --depth 1 https://github.com/kry4r/Nukara.git _tmp
-    mv _tmp/Nukara_Backend "$INSTALL_DIR/Nukara_Backend"
-    rm -rf _tmp
+  if ! sync_from_workspace "Nukara_Backend" "$workspace_root/Nukara_Backend" "$INSTALL_DIR/Nukara_Backend"; then
+    refresh_component_from_snapshot "Nukara_Backend" "Nukara_Backend" "$INSTALL_DIR/Nukara_Backend"
   fi
 
   # Nanobot
-  if [ -d "$INSTALL_DIR/nanobot" ]; then
-    log "Updating nanobot..."
-    cd "$INSTALL_DIR/nanobot" && git pull --ff-only 2>/dev/null || true
-  else
-    log "Cloning nanobot..."
-    git clone --depth 1 -b multi-thread https://github.com/kry4r/nanobot.git "$INSTALL_DIR/nanobot"
+  if ! sync_from_workspace "nanobot" "$workspace_root/nanobot" "$INSTALL_DIR/nanobot"; then
+    if [ -d "$INSTALL_DIR/nanobot/.git" ]; then
+      log "Updating nanobot..."
+      git -C "$INSTALL_DIR/nanobot" pull --ff-only
+    else
+      [ -d "$INSTALL_DIR/nanobot" ] && rm -rf "$INSTALL_DIR/nanobot"
+      log "Cloning nanobot..."
+      git clone --depth 1 -b multi-thread https://github.com/kry4r/nanobot.git "$INSTALL_DIR/nanobot"
+    fi
   fi
 
   # Web frontend
-  if [ -d "$INSTALL_DIR/Nukara_Web" ]; then
-    log "Updating Nukara_Web..."
-    cd "$INSTALL_DIR/Nukara_Web" && git pull --ff-only 2>/dev/null || true
-  else
-    log "Cloning Nukara_Web..."
-    git clone --depth 1 https://github.com/kry4r/Nukara.git _tmp2
-    mv _tmp2/Nukara_Web "$INSTALL_DIR/Nukara_Web"
-    rm -rf _tmp2
+  if ! sync_from_workspace "Nukara_Web" "$workspace_root/Nukara_Web" "$INSTALL_DIR/Nukara_Web"; then
+    refresh_component_from_snapshot "Nukara_Web" "Nukara_Web" "$INSTALL_DIR/Nukara_Web"
   fi
 
   # Admin web frontend
-  if [ -d "$INSTALL_DIR/Nukara_Admin_Web" ]; then
-    log "Updating Nukara_Admin_Web..."
-    cd "$INSTALL_DIR/Nukara_Admin_Web" && git pull --ff-only 2>/dev/null || true
-  else
-    log "Cloning Nukara_Admin_Web..."
-    git clone --depth 1 https://github.com/kry4r/Nukara.git _tmp3
-    mv _tmp3/Nukara_Admin_Web "$INSTALL_DIR/Nukara_Admin_Web"
-    rm -rf _tmp3
+  if ! sync_from_workspace "Nukara_Admin_Web" "$workspace_root/Nukara_Admin_Web" "$INSTALL_DIR/Nukara_Admin_Web"; then
+    refresh_component_from_snapshot "Nukara_Admin_Web" "Nukara_Admin_Web" "$INSTALL_DIR/Nukara_Admin_Web"
+  fi
+
+  if [ -n "$snapshot_root" ] && [ -d "$snapshot_root" ]; then
+    rm -rf "$snapshot_root"
   fi
 
   log "Source code ready at $INSTALL_DIR"
