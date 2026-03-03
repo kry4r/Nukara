@@ -29,8 +29,8 @@ restart_backend_services() {
   systemctl restart nukara-proactive
   systemctl restart nukara-admin
 
-  # 健康检查
-  wait_for_health "http://localhost:8080/health" 30
+  # 健康检查（gateway 实际路由为 /api/v1/gateway/health）
+  wait_for_health "http://localhost:${GATEWAY_PORT:-8080}/api/v1/gateway/health" 30
   wait_for_health "http://localhost:${ADMIN_API_PORT:-19527}/health" 30
 
   # 更新部署状态
