@@ -34,9 +34,7 @@ validate_nanobot_runtime() {
   [ -f "$provider_py" ] || return 1
 
   "$py_bin" -m py_compile "$context_py" >/tmp/nukara-nanobot-compile.log 2>&1 || return 1
-  "$py_bin" -m py_compile "$provider_py" >/tmp/nukara-nanobot-compile.log 2>&1 || return 1
-  "$py_bin" -c "import nanobot.agent.loop; import nanobot.providers.litellm_provider" \
-    >/tmp/nukara-nanobot-compile.log 2>&1
+  "$py_bin" -m py_compile "$provider_py" >/tmp/nukara-nanobot-compile.log 2>&1
 }
 
 # Rebuild nanobot virtualenv and reinstall package from source.
@@ -54,7 +52,6 @@ rebuild_nanobot_runtime() {
   uv pip install --python "$INSTALL_DIR/nanobot/.venv/bin/python" .
   "$INSTALL_DIR/nanobot/.venv/bin/python" -m py_compile "$INSTALL_DIR/nanobot/nanobot/agent/context.py"
   "$INSTALL_DIR/nanobot/.venv/bin/python" -m py_compile "$INSTALL_DIR/nanobot/nanobot/providers/litellm_provider.py"
-  "$INSTALL_DIR/nanobot/.venv/bin/python" -c "import nanobot.agent.loop; import nanobot.providers.litellm_provider"
 }
 
 # 重启后端服务

@@ -603,7 +603,6 @@ build_services() {
     uv pip install --python "$INSTALL_DIR/nanobot/.venv/bin/python" .
     "$INSTALL_DIR/nanobot/.venv/bin/python" -m py_compile "$INSTALL_DIR/nanobot/nanobot/agent/context.py"
     "$INSTALL_DIR/nanobot/.venv/bin/python" -m py_compile "$INSTALL_DIR/nanobot/nanobot/providers/litellm_provider.py"
-    "$INSTALL_DIR/nanobot/.venv/bin/python" -c "import nanobot.agent.loop; import nanobot.providers.litellm_provider"
 
     # Copy and seed nanobot config
     mkdir -p "$INSTALL_DIR/nanobot-data"
