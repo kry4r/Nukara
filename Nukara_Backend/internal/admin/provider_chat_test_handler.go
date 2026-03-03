@@ -117,7 +117,11 @@ func (s *Server) chatWithNanobot(message string) (string, error) {
 		req.Header.Set("Authorization", "Bearer "+s.nanobotToken)
 	}
 
-	client := &http.Client{Timeout: 45 * time.Second}
+	timeout := s.chatTestTimeout
+	if timeout <= 0 {
+		timeout = 45 * time.Second
+	}
+	client := &http.Client{Timeout: timeout}
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", err
