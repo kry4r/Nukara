@@ -448,6 +448,11 @@ prepare_sources() {
     return 0
   }
 
+  is_python_project_dir() {
+    local dir="$1"
+    [ -f "$dir/pyproject.toml" ] || [ -f "$dir/setup.py" ]
+  }
+
   ensure_repo_snapshot() {
     if [ -n "$snapshot_repo" ] && [ -d "$snapshot_repo" ]; then
       return 0
@@ -475,19 +480,36 @@ prepare_sources() {
   fi
 
   # Nanobot
-  if ! sync_from_workspace "nanobot" "$workspace_root/nanobot" "$INSTALL_DIR/nanobot"; then
-    if ! sync_from_workspace "nanobot (embedded)" "$workspace_root/Nukara_Backend/nanobot" "$INSTALL_DIR/nanobot"; then
-      if [ -d "$INSTALL_DIR/nanobot/.git" ]; then
-        # Keep deployment deterministic: always align to remote multi-thread tip.
-        log "Updating nanobot to origin/multi-thread..."
-        git -C "$INSTALL_DIR/nanobot" fetch --depth 1 origin multi-thread
-        git -C "$INSTALL_DIR/nanobot" checkout -B multi-thread origin/multi-thread
-        git -C "$INSTALL_DIR/nanobot" reset --hard origin/multi-thread
+  local nanobot_ready=false
+  if sync_from_workspace "nanobot" "$workspace_root/nanobot" "$INSTALL_DIR/nanobot"; then
+    if is_python_project_dir "$INSTALL_DIR/nanobot"; then
+      nanobot_ready=true
+    else
+      warn "Workspace nanobot source missing pyproject.toml/setup.py, will fallback."
+    fi
+  fi
+
+  if [ "$nanobot_ready" = false ]; then
+    if sync_from_workspace "nanobot (embedded)" "$workspace_root/Nukara_Backend/nanobot" "$INSTALL_DIR/nanobot"; then
+      if is_python_project_dir "$INSTALL_DIR/nanobot"; then
+        nanobot_ready=true
       else
-        [ -d "$INSTALL_DIR/nanobot" ] && rm -rf "$INSTALL_DIR/nanobot"
-        log "Cloning nanobot..."
-        git clone --depth 1 -b multi-thread https://github.com/kry4r/nanobot.git "$INSTALL_DIR/nanobot"
+        warn "Embedded nanobot source is incomplete (submodule likely not initialized), will fallback."
       fi
+    fi
+  fi
+
+  if [ "$nanobot_ready" = false ]; then
+    if [ -d "$INSTALL_DIR/nanobot/.git" ]; then
+      # Keep deployment deterministic: always align to remote multi-thread tip.
+      log "Updating nanobot to origin/multi-thread..."
+      git -C "$INSTALL_DIR/nanobot" fetch --depth 1 origin multi-thread
+      git -C "$INSTALL_DIR/nanobot" checkout -B multi-thread origin/multi-thread
+      git -C "$INSTALL_DIR/nanobot" reset --hard origin/multi-thread
+    else
+      [ -d "$INSTALL_DIR/nanobot" ] && rm -rf "$INSTALL_DIR/nanobot"
+      log "Cloning nanobot..."
+      git clone --depth 1 -b multi-thread https://github.com/kry4r/nanobot.git "$INSTALL_DIR/nanobot"
     fi
   fi
 
@@ -530,6 +552,9 @@ build_services() {
   # Build nanobot (Python) - only if changed
   if [ "$REBUILD_NANOBOT" = true ]; then
     cd "$INSTALL_DIR/nanobot"
+    if [ ! -f "$INSTALL_DIR/nanobot/pyproject.toml" ] && [ ! -f "$INSTALL_DIR/nanobot/setup.py" ]; then
+      err "Nanobot source invalid at $INSTALL_DIR/nanobot (missing pyproject.toml/setup.py). Re-run deploy after fixing source sync."
+    fi
     log "Installing nanobot Python deps..."
     export UV_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/
     uv venv "$INSTALL_DIR/nanobot/.venv"

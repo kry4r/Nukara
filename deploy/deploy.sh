@@ -294,6 +294,11 @@ PY
 prepare_sources() {
   cd "$DEPLOY_DIR"
 
+  is_python_project_dir() {
+    local dir="$1"
+    [ -f "$dir/pyproject.toml" ] || [ -f "$dir/setup.py" ]
+  }
+
   # Backend
   if [ -d "./Nukara_Backend" ]; then
     log "Nukara_Backend found locally"
@@ -308,9 +313,17 @@ prepare_sources() {
   fi
 
   # Nanobot
+  local nanobot_ready=false
   if [ -d "./nanobot" ]; then
-    log "nanobot found locally"
-  elif [ -d "./Nukara_Backend/nanobot" ]; then
+    if is_python_project_dir "./nanobot"; then
+      log "nanobot found locally"
+      nanobot_ready=true
+    else
+      warn "Local ./nanobot exists but is missing pyproject.toml/setup.py, will fallback."
+    fi
+  fi
+
+  if [ "$nanobot_ready" = false ] && [ -d "./Nukara_Backend/nanobot" ]; then
     log "Using embedded nanobot from Nukara_Backend..."
     mkdir -p ./nanobot
     if command -v rsync >/dev/null 2>&1; then
@@ -325,8 +338,18 @@ prepare_sources() {
       cp -a ./Nukara_Backend/nanobot/. ./nanobot/
       rm -rf ./nanobot/.git ./nanobot/.venv ./nanobot/__pycache__
     fi
-  else
+
+    if is_python_project_dir "./nanobot"; then
+      nanobot_ready=true
+    else
+      warn "Embedded nanobot source is incomplete (submodule likely not initialized), will fallback."
+      rm -rf ./nanobot
+    fi
+  fi
+
+  if [ "$nanobot_ready" = false ]; then
     log "Cloning nanobot..."
+    rm -rf ./nanobot
     git clone --depth 1 -b multi-thread https://github.com/kry4r/nanobot.git ./nanobot
   fi
 
