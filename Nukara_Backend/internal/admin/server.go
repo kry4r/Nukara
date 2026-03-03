@@ -6,8 +6,10 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	_ "github.com/lib/pq"
 )
@@ -22,6 +24,7 @@ type Server struct {
 	nanobotStatePath  string
 	nanobotContainer  string
 	nanobotRestartCmd string
+	chatTestTimeout   time.Duration
 }
 
 func NewServer() *Server {
@@ -42,6 +45,7 @@ func NewServer() *Server {
 		nanobotConfigPath: envOrDefault("NUKARA_NANOBOT_CONFIG_PATH", "/root/.nanobot/config.json"),
 		nanobotContainer:  envOrDefault("NUKARA_NANOBOT_CONTAINER", "configs-nanobot-1"),
 		nanobotRestartCmd: strings.TrimSpace(os.Getenv("NUKARA_NANOBOT_RESTART_COMMAND")),
+		chatTestTimeout:   envSecondsOrDefault("NUKARA_PROVIDER_CHAT_TIMEOUT_SECONDS", 90),
 	}
 	s.nanobotStatePath = envOrDefault("NUKARA_NANOBOT_STATE_PATH", defaultNanobotStatePath(s.nanobotConfigPath))
 
@@ -79,6 +83,18 @@ func envOrDefault(key, fallback string) string {
 		return fallback
 	}
 	return v
+}
+
+func envSecondsOrDefault(key string, fallback int) time.Duration {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return time.Duration(fallback) * time.Second
+	}
+	seconds, err := strconv.Atoi(raw)
+	if err != nil || seconds <= 0 {
+		return time.Duration(fallback) * time.Second
+	}
+	return time.Duration(seconds) * time.Second
 }
 
 func defaultNanobotStatePath(configPath string) string {
