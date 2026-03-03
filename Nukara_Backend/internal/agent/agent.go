@@ -114,6 +114,11 @@ func (a *Agent) Chat(ctx context.Context, convID, robotID, text string, systemCo
 
 // Proactive generates a proactive message via HTTP.
 func (a *Agent) Proactive(ctx context.Context, convID, robotID, trigger string, systemContext map[string]any) (string, error) {
+	text := proactivePrompt(trigger, systemContext)
+	return a.http.Chat(ctx, convID, robotID, text, systemContext)
+}
+
+func proactivePrompt(trigger string, systemContext map[string]any) string {
 	emotionHint := ""
 	if trend, ok := systemContext["emotion_trend"].(string); ok && trend != "" {
 		emotionHint = fmt.Sprintf("（用户最近的情绪倾向：%s）", trend)
@@ -125,12 +130,16 @@ func (a *Agent) Proactive(ctx context.Context, convID, robotID, trigger string, 
 		"curiosity_after_silence":  "用户刚才聊了一会儿就没回消息了。" + emotionHint + "请用你的角色身份，像好奇的朋友一样，自然地问问用户在忙什么。语气轻松随意，一句话就好，不要解释，不要使用工具。",
 		"worry_after_long_silence": "用户已经很长时间没有回复了。" + emotionHint + "请用你的角色身份，表达一点担心和想念，问问用户是不是很忙或者发生了什么事。语气关切但不沉重，一句话就好，不要解释，不要使用工具。",
 		"random_share":             "现在是白天。" + emotionHint + "请用你的角色身份，主动分享一件有趣的事、一个想法、或者一个小发现，就像朋友之间随手分享日常一样。一句话就好，自然有趣，不要解释，不要使用工具。",
+		"share_personal_moment":    "请用你的角色身份，像朋友突然想到对方一样，主动聊一个轻松日常话题（例如今天的小瞬间、吃到的东西、路上见闻）。一句话就好，要自然、像在找话题开启聊天，不要解释，不要使用工具。",
+		"share_interesting_fact":   "请用你的角色身份，主动抛出一个轻松有趣、适合聊天延展的小话题（比如冷知识、趣闻、生活观察）。一句话就好，要像在找共同话题，不要解释，不要使用工具。",
+		"share_emotion":            "请用你的角色身份，主动表达一个轻微真实的当下感受，并带一个开放式小尾巴方便对方接话。保持自然，一句话就好，不要解释，不要使用工具。",
 	}
+
 	text := prompts[trigger]
 	if text == "" {
 		text = "请用你的角色身份，生成一句自然的主动关怀消息。只输出消息本身，不要解释，不要使用工具。"
 	}
-	return a.http.Chat(ctx, convID, robotID, text, systemContext)
+	return text
 }
 
 // GenerateStarter creates an opening message for a newly created bot.
