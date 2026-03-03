@@ -415,6 +415,19 @@ setup_postgres() {
   log "PostgreSQL database ready"
 }
 
+# --- Clear /opt install residue before each deployment ---
+cleanup_install_residue() {
+  log "Clearing installation residue under $INSTALL_DIR ..."
+
+  if [ "$DRY_RUN" = true ]; then
+    log "  [dry-run] would remove: $INSTALL_DIR/* (except .deploy-state.json)"
+    return
+  fi
+
+  mkdir -p "$INSTALL_DIR"
+  find "$INSTALL_DIR" -mindepth 1 -maxdepth 1 ! -name '.deploy-state.json' -exec rm -rf {} +
+}
+
 # --- Prepare source code ---
 prepare_sources() {
   mkdir -p "$INSTALL_DIR"
@@ -816,11 +829,11 @@ main() {
     log "Running in incremental deployment mode"
     detect_changes
 
-    # If no changes, exit early
+    # No-change is no longer an early-exit condition:
+    # clean deployment is enforced every run.
     if [ "$REBUILD_BACKEND" = false ] && [ "$REBUILD_NANOBOT" = false ] && \
        [ "$REBUILD_WEB" = false ] && [ "$RELOAD_CONFIG" = false ]; then
-      log "No changes detected - deployment skipped"
-      exit 0
+      log "No source changes detected, but clean deploy is enforced; continuing."
     fi
   else
     # Full deployment mode
@@ -830,6 +843,14 @@ main() {
     REBUILD_WEB=true
     RELOAD_CONFIG=true
   fi
+
+  # Always clear /opt residue and perform full rebuild.
+  cleanup_install_residue
+  REBUILD_BACKEND=true
+  REBUILD_NANOBOT=true
+  REBUILD_WEB=true
+  RELOAD_CONFIG=true
+  log "Forced full rebuild after residue cleanup"
 
   install_deps
   install_go
