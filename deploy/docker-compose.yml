@@ -29,10 +29,6 @@ services:
     build:
       context: ./nanobot
     command: ["gateway"]
-    environment:
-      NANOBOT_PROVIDERS__CUSTOM__API_KEY: ${LLM_API_KEY}
-      NANOBOT_PROVIDERS__CUSTOM__API_BASE: ${LLM_API_BASE:-https://maas-api.cn-huabei-1.xf-yun.com/v2}
-      NANOBOT_AGENTS__DEFAULTS__MODEL: ${LLM_MODEL:-xminimaxm25}
     volumes:
       - ./nanobot-config.json:/root/.nanobot/config.json:ro
       - nanobot-data:/data

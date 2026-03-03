@@ -238,6 +238,58 @@ EOF
   log "Config saved to $ENV_FILE"
 }
 
+# --- Seed nanobot runtime config from deploy inputs ---
+seed_nanobot_config() {
+  local config_path="$1"
+
+  python3 - "$config_path" "$LLM_API_KEY" "$LLM_API_BASE" "$LLM_MODEL" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+config_path = Path(sys.argv[1])
+api_key = sys.argv[2]
+api_base = sys.argv[3]
+model = sys.argv[4]
+
+data = {}
+if config_path.exists():
+    raw = config_path.read_text(encoding="utf-8").strip()
+    if raw:
+        loaded = json.loads(raw)
+        if isinstance(loaded, dict):
+            data = loaded
+
+agents = data.get("agents")
+if not isinstance(agents, dict):
+    agents = {}
+data["agents"] = agents
+
+defaults = agents.get("defaults")
+if not isinstance(defaults, dict):
+    defaults = {}
+agents["defaults"] = defaults
+
+providers = data.get("providers")
+if not isinstance(providers, dict):
+    providers = {}
+data["providers"] = providers
+
+custom = providers.get("custom")
+if not isinstance(custom, dict):
+    custom = {}
+providers["custom"] = custom
+
+custom["api_key"] = api_key
+custom["api_base"] = api_base
+if model.strip():
+    defaults["model"] = model.strip()
+
+config_path.parent.mkdir(parents=True, exist_ok=True)
+config_path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+PY
+}
+
 # --- Prepare source code ---
 prepare_sources() {
   cd "$DEPLOY_DIR"
@@ -284,6 +336,7 @@ prepare_sources() {
     warn "nanobot config not found, using default"
     echo '{}' > ./nanobot-config.json
   fi
+  seed_nanobot_config "./nanobot-config.json"
 }
 
 # --- Generate nginx config from template ---

@@ -334,6 +334,58 @@ EOF
   log "Config saved to $ENV_FILE"
 }
 
+# --- Seed nanobot runtime config from deploy inputs ---
+seed_nanobot_config() {
+  local config_path="$1"
+
+  python3 - "$config_path" "$LLM_API_KEY" "$LLM_API_BASE" "$LLM_MODEL" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+config_path = Path(sys.argv[1])
+api_key = sys.argv[2]
+api_base = sys.argv[3]
+model = sys.argv[4]
+
+data = {}
+if config_path.exists():
+    raw = config_path.read_text(encoding="utf-8").strip()
+    if raw:
+        loaded = json.loads(raw)
+        if isinstance(loaded, dict):
+            data = loaded
+
+agents = data.get("agents")
+if not isinstance(agents, dict):
+    agents = {}
+data["agents"] = agents
+
+defaults = agents.get("defaults")
+if not isinstance(defaults, dict):
+    defaults = {}
+agents["defaults"] = defaults
+
+providers = data.get("providers")
+if not isinstance(providers, dict):
+    providers = {}
+data["providers"] = providers
+
+custom = providers.get("custom")
+if not isinstance(custom, dict):
+    custom = {}
+providers["custom"] = custom
+
+custom["api_key"] = api_key
+custom["api_base"] = api_base
+if model.strip():
+    defaults["model"] = model.strip()
+
+config_path.parent.mkdir(parents=True, exist_ok=True)
+config_path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+PY
+}
+
 # --- Setup PostgreSQL database ---
 setup_postgres() {
   log "Setting up PostgreSQL database..."
@@ -440,11 +492,14 @@ build_services() {
     uv venv "$INSTALL_DIR/nanobot/.venv"
     uv pip install --python "$INSTALL_DIR/nanobot/.venv/bin/python" .
 
-    # Copy nanobot config
+    # Copy and seed nanobot config
     mkdir -p "$INSTALL_DIR/nanobot-data"
     if [ -f "$INSTALL_DIR/Nukara_Backend/configs/nanobot/config.json" ]; then
       cp "$INSTALL_DIR/Nukara_Backend/configs/nanobot/config.json" "$INSTALL_DIR/nanobot-data/config.json"
+    else
+      echo '{}' > "$INSTALL_DIR/nanobot-data/config.json"
     fi
+    seed_nanobot_config "$INSTALL_DIR/nanobot-data/config.json"
   else
     log "Skipping nanobot build (no changes)"
   fi
@@ -558,9 +613,6 @@ WorkingDirectory=$INSTALL_DIR/nanobot
 ExecStart=$INSTALL_DIR/nanobot/.venv/bin/nanobot gateway
 Restart=on-failure
 RestartSec=5
-Environment=NANOBOT_PROVIDERS__CUSTOM__API_KEY=${LLM_API_KEY}
-Environment=NANOBOT_PROVIDERS__CUSTOM__API_BASE=${LLM_API_BASE}
-Environment=NANOBOT_AGENTS__DEFAULTS__MODEL=${LLM_MODEL}
 Environment=HOME=/root
 
 [Install]
