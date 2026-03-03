@@ -299,13 +299,16 @@ prepare_sources() {
     local loop_py="$dir/nanobot/agent/loop.py"
     local context_py="$dir/nanobot/agent/context.py"
     local provider_py="$dir/nanobot/providers/litellm_provider.py"
+    local commands_py="$dir/nanobot/cli/commands.py"
     [ -f "$dir/pyproject.toml" ] || [ -f "$dir/setup.py" ] || return 1
     [ -f "$loop_py" ] || return 1
     [ -f "$context_py" ] || return 1
     [ -f "$provider_py" ] || return 1
+    [ -f "$commands_py" ] || return 1
     python3 -m py_compile "$loop_py" >/dev/null 2>&1 || return 1
     python3 -m py_compile "$context_py" >/dev/null 2>&1 || return 1
     python3 -m py_compile "$provider_py" >/dev/null 2>&1 || return 1
+    python3 -m py_compile "$commands_py" >/dev/null 2>&1 || return 1
 
     # Guard against runtime NameError in loop.py
     if grep -q 'if TYPE_CHECKING:' "$loop_py"; then
@@ -325,6 +328,17 @@ prepare_sources() {
     if grep -q 'secrets\.choice' "$provider_py"; then
       grep -Eq '^[[:space:]]*import[[:space:]]+secrets([[:space:]]|$)' "$provider_py" || return 1
     fi
+
+    # Guard against runtime NameError in commands.py
+    if grep -q 'SessionManager(' "$commands_py"; then
+      grep -Eq '^[[:space:]]*from[[:space:]]+nanobot\.session\.manager[[:space:]]+import[[:space:]]+SessionManager([[:space:]]|$)' "$commands_py" || return 1
+    fi
+    if grep -q '\bhb_cfg\b' "$commands_py"; then
+      grep -Eq '^[[:space:]]*hb_cfg[[:space:]]*=[[:space:]]*config\.gateway\.heartbeat([[:space:]]|$)' "$commands_py" || return 1
+    fi
+    if grep -Eq 'heartbeat\.(start|stop)\(' "$commands_py"; then
+      grep -Eq '^[[:space:]]*heartbeat[[:space:]]*=[[:space:]]*HeartbeatService\(' "$commands_py" || return 1
+    fi
   }
 
   # Backend
@@ -342,7 +356,7 @@ prepare_sources() {
 
   # Nanobot
   local nanobot_ready=false
-  local branch_primary="${NANOBOT_BRANCH:-multi-thread}"
+  local branch_primary="${NANOBOT_BRANCH:-main}"
   local branch_fallback="main"
   if [ -d "./nanobot" ]; then
     if is_valid_nanobot_source "./nanobot"; then

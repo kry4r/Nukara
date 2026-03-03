@@ -24,6 +24,7 @@ wait_for_health() {
 validate_nanobot_static_imports() {
   local loop_py="$1"
   local provider_py="$2"
+  local commands_py="$3"
 
   if grep -q 'if TYPE_CHECKING:' "$loop_py"; then
     grep -Eq '^[[:space:]]*from[[:space:]]+typing[[:space:]]+import[[:space:]].*\bTYPE_CHECKING\b' "$loop_py" || return 1
@@ -40,6 +41,15 @@ validate_nanobot_static_imports() {
   if grep -q 'secrets\.choice' "$provider_py"; then
     grep -Eq '^[[:space:]]*import[[:space:]]+secrets([[:space:]]|$)' "$provider_py" || return 1
   fi
+  if grep -q 'SessionManager(' "$commands_py"; then
+    grep -Eq '^[[:space:]]*from[[:space:]]+nanobot\.session\.manager[[:space:]]+import[[:space:]]+SessionManager([[:space:]]|$)' "$commands_py" || return 1
+  fi
+  if grep -q '\bhb_cfg\b' "$commands_py"; then
+    grep -Eq '^[[:space:]]*hb_cfg[[:space:]]*=[[:space:]]*config\.gateway\.heartbeat([[:space:]]|$)' "$commands_py" || return 1
+  fi
+  if grep -Eq 'heartbeat\.(start|stop)\(' "$commands_py"; then
+    grep -Eq '^[[:space:]]*heartbeat[[:space:]]*=[[:space:]]*HeartbeatService\(' "$commands_py" || return 1
+  fi
 }
 
 # Validate current nanobot runtime. Return non-zero if project/runtime is broken.
@@ -48,6 +58,7 @@ validate_nanobot_runtime() {
   local loop_py="$INSTALL_DIR/nanobot/nanobot/agent/loop.py"
   local context_py="$INSTALL_DIR/nanobot/nanobot/agent/context.py"
   local provider_py="$INSTALL_DIR/nanobot/nanobot/providers/litellm_provider.py"
+  local commands_py="$INSTALL_DIR/nanobot/nanobot/cli/commands.py"
   local project_toml="$INSTALL_DIR/nanobot/pyproject.toml"
   local project_setup="$INSTALL_DIR/nanobot/setup.py"
 
@@ -56,11 +67,13 @@ validate_nanobot_runtime() {
   [ -f "$loop_py" ] || return 1
   [ -f "$context_py" ] || return 1
   [ -f "$provider_py" ] || return 1
+  [ -f "$commands_py" ] || return 1
 
   "$py_bin" -m py_compile "$loop_py" >/tmp/nukara-nanobot-compile.log 2>&1 || return 1
   "$py_bin" -m py_compile "$context_py" >/tmp/nukara-nanobot-compile.log 2>&1 || return 1
   "$py_bin" -m py_compile "$provider_py" >/tmp/nukara-nanobot-compile.log 2>&1 || return 1
-  validate_nanobot_static_imports "$loop_py" "$provider_py"
+  "$py_bin" -m py_compile "$commands_py" >/tmp/nukara-nanobot-compile.log 2>&1 || return 1
+  validate_nanobot_static_imports "$loop_py" "$provider_py" "$commands_py"
 }
 
 # Rebuild nanobot virtualenv and reinstall package from source.
@@ -79,9 +92,11 @@ rebuild_nanobot_runtime() {
   "$INSTALL_DIR/nanobot/.venv/bin/python" -m py_compile "$INSTALL_DIR/nanobot/nanobot/agent/loop.py"
   "$INSTALL_DIR/nanobot/.venv/bin/python" -m py_compile "$INSTALL_DIR/nanobot/nanobot/agent/context.py"
   "$INSTALL_DIR/nanobot/.venv/bin/python" -m py_compile "$INSTALL_DIR/nanobot/nanobot/providers/litellm_provider.py"
+  "$INSTALL_DIR/nanobot/.venv/bin/python" -m py_compile "$INSTALL_DIR/nanobot/nanobot/cli/commands.py"
   validate_nanobot_static_imports \
     "$INSTALL_DIR/nanobot/nanobot/agent/loop.py" \
-    "$INSTALL_DIR/nanobot/nanobot/providers/litellm_provider.py" || \
+    "$INSTALL_DIR/nanobot/nanobot/providers/litellm_provider.py" \
+    "$INSTALL_DIR/nanobot/nanobot/cli/commands.py" || \
     err "Nanobot static import validation failed after runtime rebuild"
 }
 

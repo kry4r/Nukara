@@ -466,13 +466,16 @@ prepare_sources() {
     local loop_py="$dir/nanobot/agent/loop.py"
     local context_py="$dir/nanobot/agent/context.py"
     local provider_py="$dir/nanobot/providers/litellm_provider.py"
+    local commands_py="$dir/nanobot/cli/commands.py"
     [ -f "$dir/pyproject.toml" ] || [ -f "$dir/setup.py" ] || return 1
     [ -f "$loop_py" ] || return 1
     [ -f "$context_py" ] || return 1
     [ -f "$provider_py" ] || return 1
+    [ -f "$commands_py" ] || return 1
     python3 -m py_compile "$loop_py" >/dev/null 2>&1 || return 1
     python3 -m py_compile "$context_py" >/dev/null 2>&1 || return 1
     python3 -m py_compile "$provider_py" >/dev/null 2>&1 || return 1
+    python3 -m py_compile "$commands_py" >/dev/null 2>&1 || return 1
 
     # Guard against runtime NameError in loop.py
     if grep -q 'if TYPE_CHECKING:' "$loop_py"; then
@@ -491,6 +494,17 @@ prepare_sources() {
     fi
     if grep -q 'secrets\.choice' "$provider_py"; then
       grep -Eq '^[[:space:]]*import[[:space:]]+secrets([[:space:]]|$)' "$provider_py" || return 1
+    fi
+
+    # Guard against runtime NameError in commands.py
+    if grep -q 'SessionManager(' "$commands_py"; then
+      grep -Eq '^[[:space:]]*from[[:space:]]+nanobot\.session\.manager[[:space:]]+import[[:space:]]+SessionManager([[:space:]]|$)' "$commands_py" || return 1
+    fi
+    if grep -q '\bhb_cfg\b' "$commands_py"; then
+      grep -Eq '^[[:space:]]*hb_cfg[[:space:]]*=[[:space:]]*config\.gateway\.heartbeat([[:space:]]|$)' "$commands_py" || return 1
+    fi
+    if grep -Eq 'heartbeat\.(start|stop)\(' "$commands_py"; then
+      grep -Eq '^[[:space:]]*heartbeat[[:space:]]*=[[:space:]]*HeartbeatService\(' "$commands_py" || return 1
     fi
   }
 
@@ -541,7 +555,7 @@ prepare_sources() {
   fi
 
   if [ "$nanobot_ready" = false ]; then
-    local branch_primary="${NANOBOT_BRANCH:-multi-thread}"
+    local branch_primary="${NANOBOT_BRANCH:-main}"
     local branch_fallback="main"
     if [ -d "$INSTALL_DIR/nanobot/.git" ]; then
       log "Updating nanobot to origin/${branch_primary}..."
@@ -620,6 +634,7 @@ build_services() {
     "$INSTALL_DIR/nanobot/.venv/bin/python" -m py_compile "$INSTALL_DIR/nanobot/nanobot/agent/loop.py"
     "$INSTALL_DIR/nanobot/.venv/bin/python" -m py_compile "$INSTALL_DIR/nanobot/nanobot/agent/context.py"
     "$INSTALL_DIR/nanobot/.venv/bin/python" -m py_compile "$INSTALL_DIR/nanobot/nanobot/providers/litellm_provider.py"
+    "$INSTALL_DIR/nanobot/.venv/bin/python" -m py_compile "$INSTALL_DIR/nanobot/nanobot/cli/commands.py"
 
     # Copy and seed nanobot config
     mkdir -p "$INSTALL_DIR/nanobot-data"
