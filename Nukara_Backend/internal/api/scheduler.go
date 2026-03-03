@@ -2,7 +2,9 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"log"
+	"math/rand"
 	"os"
 	"strings"
 	"time"
@@ -60,6 +62,9 @@ var perTriggerCooldown = map[string]time.Duration{
 	"curiosity_after_silence": 1 * time.Hour,
 	"worry_after_long_silence": 4 * time.Hour,
 	"random_share":            3 * time.Hour,
+	"share_personal_moment":   8 * time.Hour,
+	"share_interesting_fact":  10 * time.Hour,
+	"share_emotion":           12 * time.Hour,
 }
 
 // inactivityThreshold returns the duration after which a user is considered inactive.
@@ -186,6 +191,7 @@ func (ps *proactiveScheduler) processUser(userID string, now time.Time) {
 
 func (ps *proactiveScheduler) detectTrigger(now time.Time, conversations []store.Conversation) string {
 	hour := now.Hour()
+	config := ps.getProactiveConfig()
 
 	// Check time-based triggers (morning/evening care).
 	for _, tw := range triggerWindows {
@@ -193,7 +199,9 @@ func (ps *proactiveScheduler) detectTrigger(now time.Time, conversations []store
 			continue // handled separately below
 		}
 		if hour >= tw.StartHour && hour < tw.EndHour {
-			return tw.TriggerType
+			if isMessageTypeEnabled(config, tw.TriggerType) {
+				return tw.TriggerType
+			}
 		}
 	}
 
@@ -205,15 +213,41 @@ func (ps *proactiveScheduler) detectTrigger(now time.Time, conversations []store
 	if len(conversations) > 0 && (inActiveHours || threshold < time.Hour) {
 		gap := now.Sub(conversations[0].LastMessageAt)
 		if gap >= longThreshold {
-			return "worry_after_long_silence"
+			if isMessageTypeEnabled(config, "worry_after_long_silence") {
+				return "worry_after_long_silence"
+			}
 		}
 		if gap >= threshold {
-			return "curiosity_after_silence"
+			if isMessageTypeEnabled(config, "curiosity_after_silence") {
+				return "curiosity_after_silence"
+			}
+		}
+	}
+
+	// Share triggers - new proactive message types
+	// share_personal_moment: bot shares personal moments (10:00-20:00, 30% chance)
+	if hour >= 10 && hour < 20 && isMessageTypeEnabled(config, "share_personal_moment") {
+		if rand.Float32() < 0.3 {
+			return "share_personal_moment"
+		}
+	}
+
+	// share_interesting_fact: bot shares interesting facts (12:00-18:00, 25% chance)
+	if hour >= 12 && hour < 18 && isMessageTypeEnabled(config, "share_interesting_fact") {
+		if rand.Float32() < 0.25 {
+			return "share_interesting_fact"
+		}
+	}
+
+	// share_emotion: bot shares emotions/thoughts (14:00-21:00, 20% chance)
+	if hour >= 14 && hour < 21 && isMessageTypeEnabled(config, "share_emotion") {
+		if rand.Float32() < 0.2 {
+			return "share_emotion"
 		}
 	}
 
 	// Random share during daytime active hours (10-20).
-	if hour >= 10 && hour < 20 {
+	if hour >= 10 && hour < 20 && isMessageTypeEnabled(config, "random_share") {
 		// Use minute-based deterministic check so it doesn't fire every tick.
 		// Fires roughly once per hour window when cooldown allows.
 		if now.Minute() < 5 {
@@ -340,4 +374,78 @@ func parseHHMM(s string) int {
 		return -1
 	}
 	return h*60 + m
+}
+
+// ProactiveConfig represents system-level proactive message configuration
+type ProactiveConfig struct {
+	Enabled              bool     `json:"enabled"`
+	CheckInterval        string   `json:"check_interval"`
+	InactivityThreshold  string   `json:"inactivity_threshold"`
+	Cooldown             string   `json:"cooldown"`
+	TimeWindowStart      string   `json:"time_window_start"`
+	TimeWindowEnd        string   `json:"time_window_end"`
+	EnabledMessageTypes  []string `json:"enabled_message_types"`
+}
+
+// getProactiveConfig reads configuration from database
+func (ps *proactiveScheduler) getProactiveConfig() ProactiveConfig {
+	// Try to read from database if PostgresStore is available
+	if pgStore, ok := ps.server.store.(*store.PostgresStore); ok {
+		var config ProactiveConfig
+		var enabledTypesJSON []byte
+
+		err := pgStore.DB().QueryRow(`
+			SELECT enabled, check_interval, inactivity_threshold, cooldown,
+			       time_window_start, time_window_end, enabled_message_types
+			FROM proactive_config LIMIT 1
+		`).Scan(&config.Enabled, &config.CheckInterval, &config.InactivityThreshold,
+			&config.Cooldown, &config.TimeWindowStart, &config.TimeWindowEnd,
+			&enabledTypesJSON)
+
+		if err == nil {
+			// Parse JSON array
+			if len(enabledTypesJSON) > 0 {
+				var types []string
+				if err := json.Unmarshal(enabledTypesJSON, &types); err == nil {
+					config.EnabledMessageTypes = types
+				}
+			}
+			return config
+		}
+	}
+
+	// Return default configuration if database read fails or not using PostgresStore
+	return defaultProactiveConfig()
+}
+
+// defaultProactiveConfig returns default configuration
+func defaultProactiveConfig() ProactiveConfig {
+	return ProactiveConfig{
+		Enabled:             true,
+		CheckInterval:       "5m",
+		InactivityThreshold: "30m",
+		Cooldown:            "60m",
+		TimeWindowStart:     "08:00",
+		TimeWindowEnd:       "22:00",
+		EnabledMessageTypes: []string{
+			"morning_care",
+			"evening_care",
+			"curiosity_after_silence",
+			"worry_after_long_silence",
+			"random_share",
+			"share_personal_moment",
+			"share_interesting_fact",
+			"share_emotion",
+		},
+	}
+}
+
+// isMessageTypeEnabled checks if a message type is enabled in config
+func isMessageTypeEnabled(config ProactiveConfig, msgType string) bool {
+	for _, t := range config.EnabledMessageTypes {
+		if t == msgType {
+			return true
+		}
+	}
+	return false
 }

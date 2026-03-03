@@ -19,11 +19,56 @@ NC='\033[0m'
 DEPLOY_DIR="$(cd "$(dirname "$0")" && pwd)"
 ENV_FILE="$DEPLOY_DIR/.env"
 INSTALL_DIR="/opt/nukara"
+ADMIN_WEB_PORT_DEFAULT="9527"
+ADMIN_API_PORT_DEFAULT="19527"
 
 log()  { echo -e "${GREEN}[Nukara]${NC} $*"; }
 warn() { echo -e "${YELLOW}[WARN]${NC} $*"; }
 err()  { echo -e "${RED}[ERROR]${NC} $*" >&2; exit 1; }
 info() { echo -e "${CYAN}[INFO]${NC} $*"; }
+
+# --- Parse command line arguments ---
+INCREMENTAL_MODE=false
+FORCE_FULL_DEPLOY=false
+DRY_RUN=false
+FORCE_CLEAN=false
+
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    --incremental)
+      INCREMENTAL_MODE=true
+      shift
+      ;;
+    --full)
+      FORCE_FULL_DEPLOY=true
+      shift
+      ;;
+    --dry-run)
+      DRY_RUN=true
+      shift
+      ;;
+    --force-clean)
+      FORCE_CLEAN=true
+      shift
+      ;;
+    *)
+      echo "Unknown option: $1"
+      echo "Usage: $0 [--incremental|--full|--dry-run|--force-clean]"
+      exit 1
+      ;;
+  esac
+done
+
+if [ "$DRY_RUN" = true ] && [ -z "${STATE_FILE:-}" ]; then
+  STATE_FILE="/tmp/nukara-deploy-state.json"
+fi
+
+# --- Load library functions ---
+source "$(dirname "$0")/lib/deploy-state.sh"
+source "$(dirname "$0")/lib/change-detection.sh"
+source "$(dirname "$0")/lib/service-restart.sh"
+source "$(dirname "$0")/lib/cleanup.sh"
+source "$(dirname "$0")/lib/admin-bootstrap.sh"
 
 # --- Detect distro ---
 detect_distro() {
@@ -220,9 +265,11 @@ collect_config() {
 
   read -rp "  Gateway API port [${GATEWAY_PORT:-8080}]: " input
   GATEWAY_PORT="${input:-${GATEWAY_PORT:-8080}}"
+  ADMIN_WEB_PORT="${ADMIN_WEB_PORT:-$ADMIN_WEB_PORT_DEFAULT}"
+  ADMIN_API_PORT="${ADMIN_API_PORT:-$ADMIN_API_PORT_DEFAULT}"
 
   echo ""
-  echo -e "${CYAN}[3/4] Security${NC}"
+  echo -e "${CYAN}[3/5] Security${NC}"
   DEFAULT_JWT=$(openssl rand -hex 16 2>/dev/null || head -c 32 /dev/urandom | xxd -p | head -c 32)
   read -rp "  JWT Secret [auto-generated]: " input
   JWT_SECRET="${input:-${JWT_SECRET:-$DEFAULT_JWT}}"
@@ -231,13 +278,34 @@ collect_config() {
   POSTGRES_PASSWORD="${input:-${POSTGRES_PASSWORD:-nukara123}}"
 
   echo ""
-  echo -e "${CYAN}[4/4] Proactive Messaging${NC}"
+  echo -e "${CYAN}[4/5] Admin Account${NC}"
+  read -rp "  Admin username [${NUKARA_ADMIN_USERNAME:-admin}]: " input
+  NUKARA_ADMIN_USERNAME="${input:-${NUKARA_ADMIN_USERNAME:-admin}}"
+
+  read -rsp "  Admin password: " input
+  echo ""
+  NUKARA_ADMIN_PASSWORD="${input:-${NUKARA_ADMIN_PASSWORD:-}}"
+  [ -z "$NUKARA_ADMIN_PASSWORD" ] && err "Admin password is required"
+
+  echo ""
+  echo -e "${CYAN}[5/5] Proactive + Default Provider${NC}"
   read -rp "  Check interval [${PROACTIVE_INTERVAL:-5m}]: " input
   PROACTIVE_INTERVAL="${input:-${PROACTIVE_INTERVAL:-5m}}"
   read -rp "  Inactivity threshold [${INACTIVITY_THRESHOLD:-30m}]: " input
   INACTIVITY_THRESHOLD="${input:-${INACTIVITY_THRESHOLD:-30m}}"
   read -rp "  Cooldown [${PROACTIVE_COOLDOWN:-60m}]: " input
   PROACTIVE_COOLDOWN="${input:-${PROACTIVE_COOLDOWN:-60m}}"
+
+  read -rp "  Default provider name [${DEFAULT_PROVIDER_NAME:-astron}]: " input
+  DEFAULT_PROVIDER_NAME="${input:-${DEFAULT_PROVIDER_NAME:-astron}}"
+  read -rp "  Default provider base URL [${DEFAULT_PROVIDER_BASE_URL:-$LLM_API_BASE}]: " input
+  DEFAULT_PROVIDER_BASE_URL="${input:-${DEFAULT_PROVIDER_BASE_URL:-$LLM_API_BASE}}"
+  read -rp "  Default provider API key [${DEFAULT_PROVIDER_API_KEY:-$LLM_API_KEY}]: " input
+  DEFAULT_PROVIDER_API_KEY="${input:-${DEFAULT_PROVIDER_API_KEY:-$LLM_API_KEY}}"
+  read -rp "  Default provider models [${DEFAULT_PROVIDER_MODELS:-$LLM_MODEL}]: " input
+  DEFAULT_PROVIDER_MODELS="${input:-${DEFAULT_PROVIDER_MODELS:-$LLM_MODEL}}"
+  read -rp "  Default provider priority [${DEFAULT_PROVIDER_PRIORITY:-1}]: " input
+  DEFAULT_PROVIDER_PRIORITY="${input:-${DEFAULT_PROVIDER_PRIORITY:-1}}"
 
   cat > "$ENV_FILE" <<EOF
 # Nukara Local Deploy — generated $(date +%Y-%m-%d)
@@ -252,6 +320,15 @@ POSTGRES_PASSWORD=$POSTGRES_PASSWORD
 PROACTIVE_INTERVAL=$PROACTIVE_INTERVAL
 INACTIVITY_THRESHOLD=$INACTIVITY_THRESHOLD
 PROACTIVE_COOLDOWN=$PROACTIVE_COOLDOWN
+ADMIN_WEB_PORT=$ADMIN_WEB_PORT
+ADMIN_API_PORT=$ADMIN_API_PORT
+NUKARA_ADMIN_USERNAME=$NUKARA_ADMIN_USERNAME
+NUKARA_ADMIN_PASSWORD=$NUKARA_ADMIN_PASSWORD
+DEFAULT_PROVIDER_NAME=$DEFAULT_PROVIDER_NAME
+DEFAULT_PROVIDER_BASE_URL=$DEFAULT_PROVIDER_BASE_URL
+DEFAULT_PROVIDER_API_KEY=$DEFAULT_PROVIDER_API_KEY
+DEFAULT_PROVIDER_MODELS=$DEFAULT_PROVIDER_MODELS
+DEFAULT_PROVIDER_PRIORITY=$DEFAULT_PROVIDER_PRIORITY
 EOF
 
   log "Config saved to $ENV_FILE"
@@ -269,6 +346,19 @@ setup_postgres() {
     sudo -u postgres psql -c "CREATE DATABASE nukara OWNER nukara;"
 
   sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE nukara TO nukara;" 2>/dev/null || true
+
+  # Execute migrations
+  log "Running database migrations..."
+  if [ -d "$INSTALL_DIR/Nukara_Backend/migrations" ]; then
+    for migration in "$INSTALL_DIR/Nukara_Backend/migrations"/*.sql; do
+      if [ -f "$migration" ]; then
+        log "  Applying $(basename "$migration")..."
+        sudo -u postgres psql -d nukara -f "$migration" || warn "Migration failed: $migration"
+      fi
+    done
+  else
+    warn "Migrations directory not found, skipping migrations"
+  fi
 
   log "PostgreSQL database ready"
 }
@@ -309,41 +399,71 @@ prepare_sources() {
     rm -rf _tmp2
   fi
 
+  # Admin web frontend
+  if [ -d "$INSTALL_DIR/Nukara_Admin_Web" ]; then
+    log "Updating Nukara_Admin_Web..."
+    cd "$INSTALL_DIR/Nukara_Admin_Web" && git pull --ff-only 2>/dev/null || true
+  else
+    log "Cloning Nukara_Admin_Web..."
+    git clone --depth 1 https://github.com/kry4r/Nukara.git _tmp3
+    mv _tmp3/Nukara_Admin_Web "$INSTALL_DIR/Nukara_Admin_Web"
+    rm -rf _tmp3
+  fi
+
   log "Source code ready at $INSTALL_DIR"
 }
 
 # --- Build all services ---
 build_services() {
   log "Building services..."
+  mkdir -p "$INSTALL_DIR/bin"
 
-  # Build Go backend (gateway + proactive)
-  cd "$INSTALL_DIR/Nukara_Backend"
-  export GOPROXY=https://goproxy.cn,direct
-  log "Building gateway..."
-  CGO_ENABLED=0 go build -o "$INSTALL_DIR/bin/gateway" ./cmd/gateway
-  log "Building proactive..."
-  CGO_ENABLED=0 go build -o "$INSTALL_DIR/bin/proactive" ./cmd/proactive
-
-  # Build nanobot (Python)
-  cd "$INSTALL_DIR/nanobot"
-  log "Installing nanobot Python deps..."
-  export UV_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/
-  uv venv "$INSTALL_DIR/nanobot/.venv"
-  uv pip install --python "$INSTALL_DIR/nanobot/.venv/bin/python" .
-
-  # Copy nanobot config
-  mkdir -p "$INSTALL_DIR/nanobot-data"
-  if [ -f "$INSTALL_DIR/Nukara_Backend/configs/nanobot/config.json" ]; then
-    cp "$INSTALL_DIR/Nukara_Backend/configs/nanobot/config.json" "$INSTALL_DIR/nanobot-data/config.json"
+  # Build Go backend (gateway + proactive) - only if changed
+  if [ "$REBUILD_BACKEND" = true ]; then
+    cd "$INSTALL_DIR/Nukara_Backend"
+    export GOPROXY=https://goproxy.cn,direct
+    log "Building gateway..."
+    CGO_ENABLED=0 go build -o "$INSTALL_DIR/bin/gateway" ./cmd/gateway
+    log "Building proactive..."
+    CGO_ENABLED=0 go build -o "$INSTALL_DIR/bin/proactive" ./cmd/proactive
+    log "Building admin..."
+    CGO_ENABLED=0 go build -o "$INSTALL_DIR/bin/admin" ./cmd/admin
+  else
+    log "Skipping backend build (no changes)"
   fi
 
-  # Build frontend
-  cd "$INSTALL_DIR/Nukara_Web"
-  log "Building frontend..."
-  npm ci --registry https://registry.npmmirror.com
-  npm run build
+  # Build nanobot (Python) - only if changed
+  if [ "$REBUILD_NANOBOT" = true ]; then
+    cd "$INSTALL_DIR/nanobot"
+    log "Installing nanobot Python deps..."
+    export UV_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/
+    uv venv "$INSTALL_DIR/nanobot/.venv"
+    uv pip install --python "$INSTALL_DIR/nanobot/.venv/bin/python" .
 
-  mkdir -p "$INSTALL_DIR/bin"
+    # Copy nanobot config
+    mkdir -p "$INSTALL_DIR/nanobot-data"
+    if [ -f "$INSTALL_DIR/Nukara_Backend/configs/nanobot/config.json" ]; then
+      cp "$INSTALL_DIR/Nukara_Backend/configs/nanobot/config.json" "$INSTALL_DIR/nanobot-data/config.json"
+    fi
+  else
+    log "Skipping nanobot build (no changes)"
+  fi
+
+  # Build frontend - only if changed
+  if [ "$REBUILD_WEB" = true ]; then
+    cd "$INSTALL_DIR/Nukara_Web"
+    log "Building frontend..."
+    npm ci --registry https://registry.npmmirror.com
+    npm run build
+
+    cd "$INSTALL_DIR/Nukara_Admin_Web"
+    log "Building admin web..."
+    npm ci --registry https://registry.npmmirror.com
+    npm run build
+  else
+    log "Skipping frontend build (no changes)"
+  fi
+
   log "All services built"
 }
 
@@ -401,7 +521,28 @@ Environment=NUKARA_PROACTIVE_INTERVAL=${PROACTIVE_INTERVAL}
 WantedBy=multi-user.target
 EOF
 
-  log "Gateway + Proactive services created"
+  # --- Admin ---
+  cat > /etc/systemd/system/nukara-admin.service <<EOF
+[Unit]
+Description=Nukara Admin API
+After=postgresql.service redis.service
+Wants=postgresql.service redis.service
+
+[Service]
+Type=simple
+ExecStart=$INSTALL_DIR/bin/admin
+Restart=on-failure
+RestartSec=5
+Environment=NUKARA_ADMIN_PORT=${ADMIN_API_PORT}
+Environment=NUKARA_ADMIN_USERNAME=${NUKARA_ADMIN_USERNAME}
+Environment=NUKARA_ADMIN_PASSWORD=${NUKARA_ADMIN_PASSWORD}
+Environment=NUKARA_POSTGRES_DSN=${PG_DSN}
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  log "Gateway + Proactive + Admin services created"
 }
 
 # --- Create nanobot systemd service ---
@@ -471,6 +612,17 @@ server {
 }
 EOF
 
+  local admin_template="$DEPLOY_DIR/templates/nginx-admin.conf.template"
+  local admin_web_root="$INSTALL_DIR/Nukara_Admin_Web/dist"
+
+  [ -f "$admin_template" ] || err "Missing template: $admin_template"
+  sed \
+    -e "s|\${ADMIN_WEB_PORT}|${ADMIN_WEB_PORT}|g" \
+    -e "s|\${DOMAIN}|${DOMAIN}|g" \
+    -e "s|\${ADMIN_WEB_ROOT}|${admin_web_root}|g" \
+    -e "s|\${ADMIN_API_PORT}|${ADMIN_API_PORT}|g" \
+    "$admin_template" > /etc/nginx/conf.d/nukara-admin.conf
+
   # Remove default site if it conflicts
   rm -f /etc/nginx/sites-enabled/default 2>/dev/null || true
 
@@ -483,18 +635,18 @@ start_services() {
   log "Starting Nukara services..."
   systemctl daemon-reload
 
-  systemctl enable nukara-nanobot nukara-gateway nukara-proactive
-  systemctl restart nukara-nanobot
-  sleep 3
-  systemctl restart nukara-gateway
-  sleep 2
-  systemctl restart nukara-proactive
+  # Use selective restart logic
+  restart_services
+
+  # Update global deployment state
+  local current_commit=$(git -C "$INSTALL_DIR/Nukara_Backend" rev-parse HEAD 2>/dev/null || echo "unknown")
+  update_deploy_state "$current_commit" "" ""
 
   echo ""
   echo -e "${BOLD}=========================================${NC}"
   echo -e "${BOLD}  Service Status${NC}"
   echo -e "${BOLD}=========================================${NC}"
-  for svc in postgresql redis nginx nukara-nanobot nukara-gateway nukara-proactive; do
+  for svc in postgresql redis nginx nukara-nanobot nukara-gateway nukara-proactive nukara-admin; do
     if systemctl is-active --quiet "$svc" 2>/dev/null; then
       echo -e "  ${GREEN}●${NC} $svc"
     else
@@ -517,9 +669,47 @@ main() {
   echo -e "${BOLD}  Local Native Deploy (No Docker)${NC}"
   echo ""
 
-  [[ "$EUID" -ne 0 ]] && err "Please run as root: sudo bash $0"
+  if [[ "$EUID" -ne 0 ]] && [ "$DRY_RUN" != true ]; then
+    err "Please run as root: sudo bash $0"
+  fi
+  if [[ "$EUID" -ne 0 ]] && [ "$DRY_RUN" = true ]; then
+    warn "Running in dry-run mode without root privileges"
+  fi
 
   detect_distro
+
+  # Initialize deployment state
+  init_deploy_state
+
+  if [ "$FORCE_CLEAN" = true ]; then
+    cleanup_pre_deploy "$DRY_RUN"
+  fi
+
+  # Dry run mode
+  if [ "$DRY_RUN" = true ]; then
+    dry_run_changes
+  fi
+
+  # Incremental deployment mode
+  if [ "$INCREMENTAL_MODE" = true ]; then
+    log "Running in incremental deployment mode"
+    detect_changes
+
+    # If no changes, exit early
+    if [ "$REBUILD_BACKEND" = false ] && [ "$REBUILD_NANOBOT" = false ] && \
+       [ "$REBUILD_WEB" = false ] && [ "$RELOAD_CONFIG" = false ]; then
+      log "No changes detected - deployment skipped"
+      exit 0
+    fi
+  else
+    # Full deployment mode
+    log "Running in full deployment mode"
+    REBUILD_BACKEND=true
+    REBUILD_NANOBOT=true
+    REBUILD_WEB=true
+    RELOAD_CONFIG=true
+  fi
+
   install_deps
   install_go
   install_node
@@ -532,14 +722,17 @@ main() {
   create_nanobot_service
   configure_nginx
   start_services
+  bootstrap_default_provider
 
   echo -e "${GREEN}${BOLD}Nukara deployed successfully!${NC}"
   echo ""
   info "Web UI:     http://${DOMAIN}:${HTTP_PORT}"
   info "Gateway:    http://${DOMAIN}:${GATEWAY_PORT}"
+  info "Admin UI:   http://${DOMAIN}:${ADMIN_WEB_PORT}"
   echo ""
   info "Manage services:"
   info "  systemctl status nukara-gateway"
+  info "  systemctl status nukara-admin"
   info "  systemctl status nukara-nanobot"
   info "  journalctl -u nukara-gateway -f    # follow logs"
   info "  sudo bash $0                       # re-deploy / update"

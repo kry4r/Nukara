@@ -1,13 +1,22 @@
 <script setup>
-defineProps({
+import { computed } from 'vue'
+
+const props = defineProps({
   conv: { type: Object, required: true },
 })
+
+const avatarText = computed(() => {
+  const name = String(props.conv.bot_name || '').trim()
+  if (!name) return 'AI'
+  return Array.from(name)[0].toUpperCase()
+})
+
 </script>
 
 <template>
-  <router-link :to="`/chat/${conv.id}`" class="conv-item">
+  <router-link :to="`/chat/${conv.id}`" class="conv-item" :aria-label="`打开会话 ${conv.bot_name || '未命名 Bot'}`">
     <div class="conv-avatar">
-      {{ conv.bot_status_emoji || '🤖' }}
+      {{ avatarText }}
     </div>
     <div class="conv-body">
       <div class="conv-top">
@@ -32,37 +41,96 @@ defineProps({
 .conv-item {
   display: flex;
   align-items: center;
-  padding: 14px 16px;
+  gap: var(--spacing-md);
+  padding: var(--spacing-md) var(--spacing-lg);
   text-decoration: none;
   color: inherit;
-  border-bottom: 0.5px solid #f0f0f0;
-  transition: background 0.15s;
+  background: linear-gradient(145deg, #ffffff 0%, #fbfdf7 100%);
+  border: 1px solid #dce6cd;
+  border-radius: var(--radius-lg);
+  transition: all var(--transition-base);
+  box-shadow: 0 5px 14px rgba(102, 126, 74, 0.08);
 }
-.conv-item:active { background: #f5f5f5; }
+
+.conv-item:hover {
+  box-shadow: 0 8px 18px rgba(102, 126, 74, 0.14);
+  transform: translateY(-2px);
+}
+
+.conv-item:active {
+  background: #f2f7e8;
+}
+
+.conv-item:focus-visible {
+  outline: 2px solid #5f8247;
+  outline-offset: 2px;
+}
+
 .conv-avatar {
-  width: 48px; height: 48px;
+  width: 48px;
+  height: 48px;
   border-radius: 50%;
-  background: #f0f0f0;
-  display: flex; align-items: center; justify-content: center;
-  font-size: 24px;
-  margin-right: 12px;
+  background: radial-gradient(circle at 30% 20%, #f5f8ef 0%, #e6efdc 100%);
+  border: 1px solid #d0dcc2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--accent-dark);
   flex-shrink: 0;
 }
-.conv-body { flex: 1; min-width: 0; }
-.conv-top { display: flex; justify-content: space-between; margin-bottom: 4px; }
-.conv-name { font-size: 16px; font-weight: 500; }
-.conv-time { font-size: 12px; color: #999; }
-.conv-bottom { display: flex; justify-content: space-between; align-items: center; }
+
+.conv-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.conv-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 4px;
+}
+
+.conv-name {
+  font-size: var(--font-size-base);
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.conv-time {
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+}
+
+.conv-bottom {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
 .conv-msg {
-  font-size: 14px; color: #999;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: var(--font-size-sm);
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   flex: 1;
 }
-.conv-msg.proactive { color: #007aff; }
+
+.conv-msg.proactive {
+  color: var(--accent-primary);
+}
+
 .conv-badge {
-  background: #ff3b30; color: #fff;
-  font-size: 11px; padding: 2px 6px;
-  border-radius: 10px; margin-left: 8px;
+  background: var(--status-negative);
+  color: var(--text-on-accent);
+  font-size: 11px;
+  padding: 2px 6px;
+  border-radius: 10px;
+  margin-left: var(--spacing-sm);
   flex-shrink: 0;
+  font-weight: 600;
 }
 </style>

@@ -18,8 +18,19 @@ const showNav = () => !route.path.startsWith('/auth') && !route.path.startsWith(
   height: 100vh;
   display: flex;
   flex-direction: column;
-  max-width: 480px;
+  width: min(100%, 520px);
   margin: 0 auto;
   background: #fff;
+  border-radius: 20px;
+  overflow: hidden;
+  box-shadow: 0 20px 50px rgba(80, 98, 62, 0.2);
+}
+
+@media (max-width: 640px) {
+  #app-root {
+    width: 100%;
+    border-radius: 0;
+    box-shadow: none;
+  }
 }
 </style>

@@ -79,6 +79,21 @@ func (p *PostgresStore) Close() {
 	}
 }
 
+// DB returns the underlying database connection
+func (p *PostgresStore) DB() *sql.DB {
+	return p.db
+}
+
+// HasRedis returns true if Redis client is available
+func (p *PostgresStore) HasRedis() bool {
+	if p.redis == nil {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	return p.redis.Ping(ctx).Err() == nil
+}
+
 func ensurePostgresSchema(ctx context.Context, db *sql.DB) error {
 	const schema = `
 CREATE TABLE IF NOT EXISTS users (

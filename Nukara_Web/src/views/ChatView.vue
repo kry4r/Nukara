@@ -71,21 +71,21 @@ function goBack() {
 <template>
   <div class="chat-page">
     <header class="chat-header">
-      <button class="back-btn" @click="goBack">←</button>
+      <button class="back-btn" aria-label="返回会话列表" @click="goBack">←</button>
       <div class="header-info">
         <span class="bot-name">{{ chat.botName }}</span>
         <BotStatusBadge :emoji="chat.botStatus.emoji" :text="chat.botStatus.text" />
       </div>
-      <span class="ws-dot" :class="{ online: ws.isConnected.value }"></span>
+      <span class="ws-dot" :class="{ online: ws.isConnected.value }" aria-hidden="true"></span>
     </header>
 
-    <div ref="listEl" class="message-list">
+    <main ref="listEl" class="message-list" aria-label="聊天消息列表">
       <div v-if="chat.isLoading" class="center-hint">加载中...</div>
       <MessageBubble v-for="msg in chat.messages" :key="msg.id" :msg="msg" />
       <div v-if="chat.isRemoteTyping" class="typing-row">
         <TypingIndicator />
       </div>
-    </div>
+    </main>
 
     <MessageInput @send="handleSend" />
   </div>
@@ -93,33 +93,89 @@ function goBack() {
 
 <style scoped>
 .chat-page {
-  flex: 1; display: flex; flex-direction: column;
-  background: #fff; height: 100vh;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  background: radial-gradient(circle at 20% -20%, #ffffff 0%, #f6f8f0 45%, #eef3e5 100%);
+  min-height: 100%;
 }
+
 .chat-header {
-  display: flex; align-items: center; gap: 10px;
-  padding: 12px 16px;
-  border-bottom: 0.5px solid #e5e5e5;
-  background: #fff;
-  padding-top: calc(12px + env(safe-area-inset-top, 0));
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-md);
+  padding: var(--spacing-md) var(--spacing-lg);
+  background: rgba(255, 255, 255, 0.85);
+  border-bottom: 1px solid #dbe3ca;
+  backdrop-filter: blur(8px);
+  padding-top: calc(var(--spacing-md) + env(safe-area-inset-top, 0));
 }
+
 .back-btn {
-  background: none; border: none; font-size: 20px;
-  padding: 4px 8px; cursor: pointer;
+  border: 1px solid #d7dfc8;
+  background: #ffffff;
+  border-radius: 9999px;
+  font-size: 18px;
+  width: 36px;
+  height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  color: #4d6640;
+  transition: transform var(--transition-base), box-shadow var(--transition-base);
 }
-.header-info { flex: 1; display: flex; align-items: center; gap: 8px; }
-.bot-name { font-size: 17px; font-weight: 600; }
+
+.back-btn:hover {
+  transform: translateX(-1px);
+  box-shadow: 0 4px 10px rgba(93, 120, 65, 0.18);
+}
+
+.back-btn:focus-visible {
+  outline: 2px solid #5a7d42;
+  outline-offset: 2px;
+}
+
+.header-info {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+}
+
+.bot-name {
+  font-size: var(--font-size-lg);
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
 .ws-dot {
-  width: 8px; height: 8px; border-radius: 50%;
-  background: #ccc; flex-shrink: 0;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  flex-shrink: 0;
+  box-shadow: 0 0 0 5px rgba(149, 164, 126, 0.18);
 }
-.ws-dot.online { background: #34c759; }
+
+.ws-dot.online {
+  background: var(--status-positive);
+}
+
 .message-list {
-  flex: 1; overflow-y: auto; padding: 12px 0;
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--spacing-lg) 0;
 }
+
 .center-hint {
-  text-align: center; padding: 40px 20px;
-  color: #999; font-size: 14px;
+  text-align: center;
+  padding: var(--spacing-3xl) var(--spacing-xl);
+  color: var(--text-muted);
+  font-size: var(--font-size-sm);
 }
-.typing-row { padding: 4px 16px; }
+
+.typing-row {
+  padding: var(--spacing-xs) var(--spacing-lg);
+}
 </style>

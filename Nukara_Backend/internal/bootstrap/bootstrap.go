@@ -67,6 +67,7 @@ func NewHandler(role string) (string, http.Handler) {
 		"bot":          "8002",
 		"conversation": "8003",
 		"proactive":    "8006",
+		"analysis":     "8007",
 	}[role]
 
 	if defaultPort == "" {

@@ -1,0 +1,98 @@
+#!/usr/bin/env bash
+
+# 等待服务健康检查
+wait_for_health() {
+  local url=$1
+  local timeout=${2:-30}
+  local elapsed=0
+
+  log "Waiting for health check: $url"
+
+  while [ $elapsed -lt $timeout ]; do
+    if curl --noproxy '*' -sf "$url" > /dev/null 2>&1; then
+      log "  ✓ Service healthy"
+      return 0
+    fi
+    sleep 1
+    elapsed=$((elapsed + 1))
+  done
+
+  err "Service health check failed: $url (timeout after ${timeout}s)"
+}
+
+# 重启后端服务
+restart_backend_services() {
+  log "Restarting backend services..."
+
+  systemctl enable nukara-gateway nukara-proactive nukara-admin 2>/dev/null || true
+  systemctl restart nukara-gateway
+  systemctl restart nukara-proactive
+  systemctl restart nukara-admin
+
+  # 健康检查
+  wait_for_health "http://localhost:8080/health" 30
+  wait_for_health "http://localhost:${ADMIN_API_PORT:-19527}/health" 30
+
+  # 更新部署状态
+  local gateway_hash=$(calculate_hash "$INSTALL_DIR/bin/gateway")
+  local proactive_hash=$(calculate_hash "$INSTALL_DIR/bin/proactive")
+  update_deploy_state "" "gateway" "$gateway_hash"
+  update_deploy_state "" "proactive" "$proactive_hash"
+
+  log "Backend services restarted successfully"
+}
+
+# 重启 nanobot 服务
+restart_nanobot_service() {
+  log "Restarting nanobot service..."
+
+  systemctl enable nukara-nanobot 2>/dev/null || true
+  systemctl restart nukara-nanobot
+
+  # 健康检查
+  wait_for_health "http://localhost:8081/health" 30
+
+  # 更新部署状态
+  local nanobot_hash=$(calculate_hash "$INSTALL_DIR/nanobot/.venv/bin/nanobot")
+  update_deploy_state "" "nanobot" "$nanobot_hash"
+
+  log "Nanobot service restarted successfully"
+}
+
+# 重载 nginx
+reload_nginx() {
+  log "Reloading nginx..."
+
+  nginx -t || err "Nginx configuration test failed"
+  systemctl reload nginx
+
+  # 更新部署状态
+  local web_hash=$(calculate_hash "$INSTALL_DIR/Nukara_Web/dist/index.html")
+  update_deploy_state "" "web" "$web_hash"
+
+  log "Nginx reloaded successfully"
+}
+
+# 选择性重启服务
+restart_services() {
+  local any_restart=false
+
+  if [ "$REBUILD_BACKEND" = true ]; then
+    restart_backend_services
+    any_restart=true
+  fi
+
+  if [ "$REBUILD_NANOBOT" = true ]; then
+    restart_nanobot_service
+    any_restart=true
+  fi
+
+  if [ "$REBUILD_WEB" = true ]; then
+    reload_nginx
+    any_restart=true
+  fi
+
+  if [ "$any_restart" = false ]; then
+    log "No services need to be restarted"
+  fi
+}

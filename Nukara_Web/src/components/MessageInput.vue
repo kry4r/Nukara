@@ -13,41 +13,83 @@ function handleSend() {
 
 <template>
   <div class="input-bar">
-    <input
-      v-model="text"
-      type="text"
-      placeholder="说点什么..."
-      @keydown.enter="handleSend"
-    />
-    <button :disabled="!text.trim()" @click="handleSend">发送</button>
+    <button type="button" class="attach-btn" aria-label="添加附件">+</button>
+    <div class="input-shell">
+      <input
+        v-model="text"
+        type="text"
+        placeholder="输入消息..."
+        aria-label="消息输入框"
+        @keydown.enter="handleSend"
+      />
+      <button type="button" class="send-btn" :disabled="!text.trim()" aria-label="发送消息" @click="handleSend">发送</button>
+    </div>
   </div>
 </template>
 
 <style scoped>
 .input-bar {
   display: flex;
-  gap: 8px;
-  padding: 10px 16px;
-  border-top: 0.5px solid #e5e5e5;
-  background: #fff;
+  align-items: center;
+  gap: var(--spacing-sm);
+  padding: 10px var(--spacing-lg);
+  border-top: 1px solid #dce6cb;
+  background: rgba(255, 255, 255, 0.9);
+  backdrop-filter: blur(6px);
   padding-bottom: calc(10px + env(safe-area-inset-bottom, 0));
 }
+
+.attach-btn {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: 1px solid #d5dec5;
+  background: #ffffff;
+  color: #597946;
+  font-size: 21px;
+  line-height: 1;
+}
+
+.attach-btn:focus-visible,
+.send-btn:focus-visible,
+.input-bar input:focus-visible {
+  outline: 2px solid #5d8046;
+  outline-offset: 2px;
+}
+
+.input-shell {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid #d9e2c8;
+  border-radius: 9999px;
+  background: #ffffff;
+  padding: 4px 6px 4px 14px;
+}
+
 .input-bar input {
   flex: 1;
-  padding: 10px 16px;
-  border: 1px solid #e5e5e5;
-  border-radius: 20px;
-  font-size: 15px;
+  padding: 8px 0;
+  border: 0;
+  font-size: 14px;
+  color: var(--text-primary);
+  background: transparent;
   outline: none;
 }
-.input-bar input:focus { border-color: #007aff; }
-.input-bar button {
-  padding: 10px 20px;
-  background: #007aff;
+
+.send-btn {
+  min-width: 58px;
+  padding: 7px 14px;
+  background: linear-gradient(145deg, #7fa860 0%, #628347 100%);
   color: #fff;
-  border: none;
-  border-radius: 20px;
-  font-size: 15px;
+  border: 0;
+  border-radius: 9999px;
+  font-size: 14px;
+  font-weight: 600;
 }
-.input-bar button:disabled { background: #ccc; }
+
+.send-btn:disabled {
+  background: #b9c7aa;
+}
 </style>

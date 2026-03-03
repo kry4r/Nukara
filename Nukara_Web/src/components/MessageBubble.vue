@@ -11,7 +11,7 @@ function formatTime(ts) {
 </script>
 
 <template>
-  <div :class="['bubble-row', msg.sender_type === 'user' ? 'right' : 'left']">
+  <div :class="['bubble-row', msg.sender_type === 'user' ? 'right' : 'left']" role="listitem">
     <div :class="['bubble', msg.sender_type === 'user' ? 'user' : 'bot']">
       <span v-if="msg.is_proactive" class="proactive-tag">主动消息</span>
       <p class="bubble-text">{{ msg.content?.text || '' }}</p>
@@ -21,41 +21,65 @@ function formatTime(ts) {
 </template>
 
 <style scoped>
-.bubble-row { display: flex; margin: 4px 16px; }
-.bubble-row.right { justify-content: flex-end; }
-.bubble-row.left { justify-content: flex-start; }
+.bubble-row {
+  display: flex;
+  margin: var(--spacing-sm) var(--spacing-lg);
+  animation: slideUp var(--transition-base);
+}
+
+.bubble-row.right {
+  justify-content: flex-end;
+}
+
+.bubble-row.left {
+  justify-content: flex-start;
+}
+
 .bubble {
   max-width: 75%;
-  padding: 10px 14px;
-  border-radius: 16px;
+  padding: 10px 14px 9px;
+  border-radius: var(--radius-lg);
   word-break: break-word;
   position: relative;
+  transition: all var(--transition-base);
+  box-shadow: 0 8px 20px rgba(101, 120, 81, 0.09);
 }
+
 .bubble.user {
-  background: #007aff;
-  color: #fff;
+  background: linear-gradient(150deg, #81a864 0%, #5f7f46 100%);
+  color: var(--text-on-accent);
   border-bottom-right-radius: 4px;
 }
+
 .bubble.bot {
-  background: #f0f0f0;
-  color: #333;
+  background: linear-gradient(145deg, #ffffff 0%, #fffcf2 100%);
+  color: var(--text-primary);
   border-bottom-left-radius: 4px;
+  border: 1px solid #e2e9d4;
 }
-.bubble-text { margin: 0; font-size: 15px; line-height: 1.5; }
+
+.bubble-text {
+  margin: 0;
+  font-size: var(--font-size-base);
+  line-height: var(--line-height-relaxed);
+}
+
 .bubble-time {
   display: block;
-  font-size: 11px;
+  font-size: var(--font-size-xs);
   margin-top: 4px;
-  opacity: 0.6;
+  opacity: 0.7;
   text-align: right;
 }
+
 .proactive-tag {
   display: inline-block;
-  font-size: 10px;
-  background: rgba(0,122,255,0.15);
-  color: #007aff;
-  padding: 1px 6px;
-  border-radius: 4px;
+  font-size: var(--font-size-xs);
+  background: var(--accent-light);
+  color: var(--accent-primary);
+  padding: var(--spacing-xs) var(--spacing-sm);
+  border-radius: var(--radius-sm);
   margin-bottom: 4px;
+  font-weight: 600;
 }
 </style>
