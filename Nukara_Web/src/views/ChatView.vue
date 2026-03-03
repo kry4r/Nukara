@@ -45,6 +45,7 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
+  chat.sendTyping(false)
   ws.disconnect()
   chat.clear()
 })
@@ -61,6 +62,10 @@ function scrollToBottom() {
 
 function handleSend(text) {
   chat.sendMessage(text)
+}
+
+function handleTyping(isTyping) {
+  chat.sendTyping(isTyping)
 }
 
 function goBack() {
@@ -87,7 +92,7 @@ function goBack() {
       </div>
     </main>
 
-    <MessageInput @send="handleSend" />
+    <MessageInput @send="handleSend" @typing="handleTyping" />
   </div>
 </template>
 

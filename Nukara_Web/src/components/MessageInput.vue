@@ -1,14 +1,49 @@
 <script setup>
-import { ref } from 'vue'
+import { ref, onBeforeUnmount } from 'vue'
 
-const emit = defineEmits(['send'])
+const emit = defineEmits(['send', 'typing'])
 const text = ref('')
+const isTyping = ref(false)
+let typingStopTimer = null
 
 function handleSend() {
   if (!text.value.trim()) return
   emit('send', text.value.trim())
   text.value = ''
+  emitTyping(false)
 }
+
+function emitTyping(next) {
+  if (isTyping.value === next) return
+  isTyping.value = next
+  emit('typing', next)
+}
+
+function scheduleTypingStop() {
+  if (typingStopTimer) clearTimeout(typingStopTimer)
+  typingStopTimer = setTimeout(() => {
+    emitTyping(false)
+    typingStopTimer = null
+  }, 900)
+}
+
+function handleInput() {
+  if (text.value.trim()) {
+    emitTyping(true)
+    scheduleTypingStop()
+    return
+  }
+  if (typingStopTimer) {
+    clearTimeout(typingStopTimer)
+    typingStopTimer = null
+  }
+  emitTyping(false)
+}
+
+onBeforeUnmount(() => {
+  if (typingStopTimer) clearTimeout(typingStopTimer)
+  emitTyping(false)
+})
 </script>
 
 <template>
@@ -20,6 +55,7 @@ function handleSend() {
         type="text"
         placeholder="输入消息..."
         aria-label="消息输入框"
+        @input="handleInput"
         @keydown.enter="handleSend"
       />
       <button type="button" class="send-btn" :disabled="!text.trim()" aria-label="发送消息" @click="handleSend">发送</button>

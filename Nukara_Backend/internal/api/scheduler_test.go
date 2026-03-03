@@ -1,6 +1,7 @@
 package api
 
 import (
+	"math/rand"
 	"testing"
 	"time"
 
@@ -118,6 +119,8 @@ func TestParseHHMM(t *testing.T) {
 }
 
 func TestSchedulerDetectTrigger(t *testing.T) {
+	rand.Seed(1)
+
 	st := store.NewStore()
 	user, _ := st.CreateUser("13900000001", "scheduler-test")
 	bot := st.CreateBot(user.ID, store.Bot{
@@ -139,9 +142,9 @@ func TestSchedulerDetectTrigger(t *testing.T) {
 		{"morning window", 8, baseTime, "morning_care"},
 		{"evening window", 21, baseTime, "evening_care"},
 		{"short inactivity during day", 14, baseTime.Add(-5 * time.Hour), "worry_after_long_silence"},
-		{"curiosity after brief silence", 14, baseTime.Add(2*time.Hour + 25*time.Minute), "curiosity_after_silence"},
+		{"curiosity after 8m silence", 14, baseTime.Add(2*time.Hour + 21*time.Minute), "curiosity_after_silence"},
 		{"no trigger at night", 2, baseTime, ""},
-		{"no inactivity if recent", 14, baseTime.Add(2*time.Hour + 28*time.Minute), ""},
+		{"no inactivity if recent", 14, baseTime.Add(2*time.Hour + 23*time.Minute), ""},
 	}
 
 	for _, tt := range tests {
@@ -156,6 +159,29 @@ func TestSchedulerDetectTrigger(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestInactivityThreshold(t *testing.T) {
+	t.Run("default 8 minutes", func(t *testing.T) {
+		t.Setenv("NUKARA_INACTIVITY_THRESHOLD", "")
+		if got := inactivityThreshold(); got != 8*time.Minute {
+			t.Fatalf("inactivityThreshold() = %v, want %v", got, 8*time.Minute)
+		}
+	})
+
+	t.Run("override from env", func(t *testing.T) {
+		t.Setenv("NUKARA_INACTIVITY_THRESHOLD", "15m")
+		if got := inactivityThreshold(); got != 15*time.Minute {
+			t.Fatalf("inactivityThreshold() = %v, want %v", got, 15*time.Minute)
+		}
+	})
+
+	t.Run("invalid env falls back", func(t *testing.T) {
+		t.Setenv("NUKARA_INACTIVITY_THRESHOLD", "bad")
+		if got := inactivityThreshold(); got != 8*time.Minute {
+			t.Fatalf("inactivityThreshold() = %v, want %v", got, 8*time.Minute)
+		}
+	})
 }
 
 func TestSchedulerCooldownEnforcement(t *testing.T) {

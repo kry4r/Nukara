@@ -104,6 +104,43 @@ func TestWSChatMessageFlow(t *testing.T) {
 	_ = botID
 }
 
+func TestWSChatDisconnectStillSavesReply(t *testing.T) {
+	server, token, userID, _, convID, st, closeFn := setupTestServerWithStore(t, fakeNanobotHandler())
+	defer closeFn()
+
+	ws := mustDialWS(t, server.URL, token)
+	ws.SendJSON(t, map[string]any{
+		"type":            "message",
+		"conversation_id": convID,
+		"client_msg_id":   "client-disconnect-1",
+		"content": map[string]any{
+			"type": "text",
+			"text": "hi",
+		},
+	})
+
+	// Simulate leaving chat page before aggregation window flushes.
+	time.Sleep(100 * time.Millisecond)
+	ws.Close()
+
+	deadline := time.Now().Add(6 * time.Second)
+	for time.Now().Before(deadline) {
+		msgs, ok := st.ListMessages(userID, convID, 0)
+		if !ok {
+			t.Fatalf("conversation disappeared for user=%s conv=%s", userID, convID)
+		}
+		for _, msg := range msgs {
+			if msg.SenderType == "bot" && strings.TrimSpace(msg.Content.Text) != "" {
+				return
+			}
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	msgs, _ := st.ListMessages(userID, convID, 0)
+	t.Fatalf("expected bot reply saved after websocket disconnect, got %d messages", len(msgs))
+}
+
 func TestUserStatusAPI(t *testing.T) {
 	server, token, _, _, closeFn := setupTestServer(t)
 	defer closeFn()
@@ -202,9 +239,14 @@ func TestProactiveMessageBroadcastToWS(t *testing.T) {
 }
 
 func setupTestServer(t *testing.T) (*httptest.Server, string, string, string, func()) {
+	httpServer, token, _, botID, convID, _, closeFn := setupTestServerWithStore(t, fakeNanobotHandler())
+	return httpServer, token, botID, convID, closeFn
+}
+
+func setupTestServerWithStore(t *testing.T, nanobotHandler http.Handler) (*httptest.Server, string, string, string, string, *store.Store, func()) {
 	t.Helper()
 
-	fakeNanobot := httptest.NewServer(fakeNanobotHandler())
+	fakeNanobot := httptest.NewServer(nanobotHandler)
 
 	st := store.NewStore()
 	user, err := st.CreateUser("13900139000", "tester")
@@ -242,7 +284,7 @@ func setupTestServer(t *testing.T) (*httptest.Server, string, string, string, fu
 	}
 
 	httpServer := httptest.NewServer(apiServer.HandlerFor("gateway"))
-	return httpServer, token, bot.ID, conv.ID, func() {
+	return httpServer, token, user.ID, bot.ID, conv.ID, st, func() {
 		httpServer.Close()
 		agentClient.Close()
 		fakeNanobot.Close()

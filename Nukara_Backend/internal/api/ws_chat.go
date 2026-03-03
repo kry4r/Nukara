@@ -206,16 +206,19 @@ func (ma *messageAggregator) doFlush(buf *aggregateBuffer) {
 	}
 }
 
-// closeAll cancels all pending timers.
+// closeAll flushes all pending buffers before session teardown so
+// user messages are not dropped when the websocket disconnects.
 func (ma *messageAggregator) closeAll() {
 	ma.mu.Lock()
-	defer ma.mu.Unlock()
+	buffers := make([]*aggregateBuffer, 0, len(ma.buffers))
 	for id, buf := range ma.buffers {
-		buf.timer.Stop()
-		if buf.hardTimer != nil {
-			buf.hardTimer.Stop()
-		}
 		delete(ma.buffers, id)
+		buffers = append(buffers, buf)
+	}
+	ma.mu.Unlock()
+
+	for _, buf := range buffers {
+		ma.doFlush(buf)
 	}
 }
 
@@ -272,15 +275,13 @@ func (sc *sessionConsumers) setLastUserPrompt(convID, prompt string) {
 	}
 }
 
-// closeAll unsubscribes all active consumers from nanobot and signals them to stop.
-// This prevents duplicate consumers when the user reconnects.
+// closeAll detaches all active consumers from WS delivery for this session.
+// The goroutines continue consuming nanobot events until reply completion or timeout,
+// then self-unsubscribe in consumeNanobotEvents.
 func (sc *sessionConsumers) closeAll() {
 	sc.mu.Lock()
 	defer sc.mu.Unlock()
 	for id, sub := range sc.active {
-		// Unsubscribe immediately to prevent duplicate event delivery on reconnect.
-		// This closes the event channel, causing the goroutine to exit.
-		sc.server.agent.Unsubscribe(sub.nanobotConvID, sub.eventCh)
 		select {
 		case <-sub.detached:
 		default:

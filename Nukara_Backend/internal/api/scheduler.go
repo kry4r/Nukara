@@ -68,14 +68,14 @@ var perTriggerCooldown = map[string]time.Duration{
 }
 
 // inactivityThreshold returns the duration after which a user is considered inactive.
-// Configurable via NUKARA_INACTIVITY_THRESHOLD env var (e.g. "3m", "4h"). Default: 3m.
+// Configurable via NUKARA_INACTIVITY_THRESHOLD env var (e.g. "8m", "4h"). Default: 8m.
 func inactivityThreshold() time.Duration {
 	if v := os.Getenv("NUKARA_INACTIVITY_THRESHOLD"); v != "" {
 		if d, err := time.ParseDuration(v); err == nil {
 			return d
 		}
 	}
-	return 3 * time.Minute
+	return 8 * time.Minute
 }
 
 func newScheduler(server *Server, interval time.Duration) *proactiveScheduler {

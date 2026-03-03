@@ -11,6 +11,9 @@ var statusRe = regexp.MustCompile(`\s*\[status:(.+?),(.+?)\]\s*$`)
 // toolCallRe matches leaked LLM tool call XML tags (e.g. <minimax:tool_call>...</minimax:tool_call>).
 var toolCallRe = regexp.MustCompile(`(?s)<\w+:tool_call>.*?</\w+:tool_call>`)
 
+// thinkTagRe matches leaked CoT tags (e.g. <think>...</think>).
+var thinkTagRe = regexp.MustCompile(`(?is)<think>.*?</think>`)
+
 // reasoningBlockRe matches leaked markdown reasoning headers (e.g. "**Reflection:**", "**Results:**").
 // Strips the header line and any immediately following non-empty lines.
 var reasoningBlockRe = regexp.MustCompile(`(?m)^\*\*(Reflection|Results|Next Steps|Analysis|Thinking|思考|分析|结果)[:：]\*\*.*$`)
@@ -21,6 +24,7 @@ var systemTagRe = regexp.MustCompile(`\[(?:system|memory|internal|debug):[^\]]*\
 // SanitizeLLMReply strips leaked tool call XML, reasoning blocks, and other non-user-facing artifacts from LLM output.
 func SanitizeLLMReply(text string) string {
 	text = toolCallRe.ReplaceAllString(text, "")
+	text = thinkTagRe.ReplaceAllString(text, "")
 	text = reasoningBlockRe.ReplaceAllString(text, "")
 	text = systemTagRe.ReplaceAllString(text, "")
 	// Collapse multiple blank lines left by stripping.

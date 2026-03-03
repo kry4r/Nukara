@@ -19,6 +19,30 @@ export const useChatStore = defineStore('chat', () => {
 
   function setWsSend(fn) { wsSend = fn }
 
+  function sanitizeDisplayText(input) {
+    if (typeof input !== 'string') return ''
+    let text = input
+      .replace(/<think>[\s\S]*?<\/think>/gi, '')
+      .replace(/```(?:thinking|analysis)[\s\S]*?```/gi, '')
+      .replace(/^\s*(?:thinking|analysis|思考|推理)[:：].*$/gim, '')
+    while (text.includes('\n\n\n')) {
+      text = text.replaceAll('\n\n\n', '\n\n')
+    }
+    return text.trim()
+  }
+
+  function sanitizeIncomingMessage(raw) {
+    const content = raw?.content || {}
+    const text = sanitizeDisplayText(content.text || '')
+    return {
+      ...raw,
+      content: {
+        ...content,
+        text,
+      },
+    }
+  }
+
   async function loadMessages(convId) {
     conversationId.value = convId
     isLoading.value = true
@@ -26,7 +50,7 @@ export const useChatStore = defineStore('chat', () => {
       const data = await api.get(
         `/api/v1/conversations/${convId}/messages?limit=50`
       )
-      messages.value = Array.isArray(data) ? data : []
+      messages.value = Array.isArray(data) ? data.map(sanitizeIncomingMessage) : []
     } catch (_) {}
     isLoading.value = false
   }
@@ -78,6 +102,14 @@ export const useChatStore = defineStore('chat', () => {
     })
   }
 
+  function sendTyping(isTyping) {
+    if (!conversationId.value || !wsSend) return false
+    return wsSend({
+      type: isTyping ? 'typing_start' : 'typing_stop',
+      conversation_id: conversationId.value,
+    })
+  }
+
   function handleAck(data) {
     const msg = messages.value.find(
       m => m.id === data.client_msg_id || m.id === data.client_message_id
@@ -109,30 +141,35 @@ export const useChatStore = defineStore('chat', () => {
     const msgId = data.msg_id || data.id
     if (messages.value.some(m => m.id === msgId)) return
 
+    const normalized = sanitizeIncomingMessage(data)
+    if ((normalized.sender_type === 'bot' || !normalized.sender_type) && !normalized.content?.text) {
+      return
+    }
+
     messages.value.push({
       id: msgId,
-      conversation_id: data.conversation_id || conversationId.value,
-      sender_type: data.sender_type || 'bot',
-      content: data.content,
-      emotion_tag: data.emotion_tag,
-      is_proactive: data.is_proactive,
-      reply_group_id: data.reply_group_id,
-      sequence: data.sequence,
-      created_at: data.created_at || new Date(data.timestamp * 1000).toISOString(),
+      conversation_id: normalized.conversation_id || conversationId.value,
+      sender_type: normalized.sender_type || 'bot',
+      content: normalized.content,
+      emotion_tag: normalized.emotion_tag,
+      is_proactive: normalized.is_proactive,
+      reply_group_id: normalized.reply_group_id,
+      sequence: normalized.sequence,
+      created_at: normalized.created_at || new Date(normalized.timestamp * 1000).toISOString(),
     })
 
     // Track reply group progress
-    if (data.reply_group_id && activeReplyGroups.value[data.reply_group_id]) {
-      activeReplyGroups.value[data.reply_group_id].received++
+    if (normalized.reply_group_id && activeReplyGroups.value[normalized.reply_group_id]) {
+      activeReplyGroups.value[normalized.reply_group_id].received++
     }
 
     // Sync conversation list
-    if (data.sender_type === 'bot' || !data.sender_type) {
+    if (normalized.sender_type === 'bot' || !normalized.sender_type) {
       const convStore = useConversationsStore()
       convStore.updateConversation(
-        data.conversation_id || conversationId.value,
+        normalized.conversation_id || conversationId.value,
         {
-          last_message: data.content?.text || '',
+          last_message: normalized.content?.text || '',
           last_message_at: new Date().toISOString(),
         }
       )
@@ -184,7 +221,7 @@ export const useChatStore = defineStore('chat', () => {
     conversationId, botName, botStatus,
     messages, inputText, isRemoteTyping,
     isLoading, activeReplyGroups,
-    setWsSend, loadMessages, sendMessage, clear,
+    setWsSend, loadMessages, sendMessage, sendTyping, clear,
     handleAck, handleTyping,
     handleMultiReplyStart, handleMessage,
     handleMultiReplyEnd, handleBotStatusUpdate,

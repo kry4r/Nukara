@@ -90,3 +90,35 @@ func TestExtractEmotionThenStatus(t *testing.T) {
 		t.Errorf("status = %q, want 好天气", stat)
 	}
 }
+
+func TestSanitizeLLMReply(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "strip think tags",
+			input: "<think>先分析一下用户问题</think>\n你好呀",
+			want:  "你好呀",
+		},
+		{
+			name:  "strip tool and system tags",
+			input: "<minimax:tool_call>{\"x\":1}</minimax:tool_call>\n[system:debug]\n回复内容",
+			want:  "回复内容",
+		},
+		{
+			name:  "strip markdown reasoning header",
+			input: "**Thinking:**\n先想一想\n正式回复",
+			want:  "先想一想\n正式回复",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := SanitizeLLMReply(tt.input); got != tt.want {
+				t.Fatalf("SanitizeLLMReply() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
