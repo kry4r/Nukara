@@ -476,13 +476,18 @@ prepare_sources() {
 
   # Nanobot
   if ! sync_from_workspace "nanobot" "$workspace_root/nanobot" "$INSTALL_DIR/nanobot"; then
-    if [ -d "$INSTALL_DIR/nanobot/.git" ]; then
-      log "Updating nanobot..."
-      git -C "$INSTALL_DIR/nanobot" pull --ff-only
-    else
-      [ -d "$INSTALL_DIR/nanobot" ] && rm -rf "$INSTALL_DIR/nanobot"
-      log "Cloning nanobot..."
-      git clone --depth 1 -b multi-thread https://github.com/kry4r/nanobot.git "$INSTALL_DIR/nanobot"
+    if ! sync_from_workspace "nanobot (embedded)" "$workspace_root/Nukara_Backend/nanobot" "$INSTALL_DIR/nanobot"; then
+      if [ -d "$INSTALL_DIR/nanobot/.git" ]; then
+        # Keep deployment deterministic: always align to remote multi-thread tip.
+        log "Updating nanobot to origin/multi-thread..."
+        git -C "$INSTALL_DIR/nanobot" fetch --depth 1 origin multi-thread
+        git -C "$INSTALL_DIR/nanobot" checkout -B multi-thread origin/multi-thread
+        git -C "$INSTALL_DIR/nanobot" reset --hard origin/multi-thread
+      else
+        [ -d "$INSTALL_DIR/nanobot" ] && rm -rf "$INSTALL_DIR/nanobot"
+        log "Cloning nanobot..."
+        git clone --depth 1 -b multi-thread https://github.com/kry4r/nanobot.git "$INSTALL_DIR/nanobot"
+      fi
     fi
   fi
 
@@ -529,6 +534,7 @@ build_services() {
     export UV_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/
     uv venv "$INSTALL_DIR/nanobot/.venv"
     uv pip install --python "$INSTALL_DIR/nanobot/.venv/bin/python" .
+    "$INSTALL_DIR/nanobot/.venv/bin/python" -m py_compile "$INSTALL_DIR/nanobot/nanobot/agent/context.py"
 
     # Copy and seed nanobot config
     mkdir -p "$INSTALL_DIR/nanobot-data"

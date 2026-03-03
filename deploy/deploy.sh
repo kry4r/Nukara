@@ -310,6 +310,21 @@ prepare_sources() {
   # Nanobot
   if [ -d "./nanobot" ]; then
     log "nanobot found locally"
+  elif [ -d "./Nukara_Backend/nanobot" ]; then
+    log "Using embedded nanobot from Nukara_Backend..."
+    mkdir -p ./nanobot
+    if command -v rsync >/dev/null 2>&1; then
+      rsync -a --delete \
+        --exclude '.git' \
+        --exclude '.venv' \
+        --exclude '__pycache__' \
+        ./Nukara_Backend/nanobot/ ./nanobot/
+    else
+      rm -rf ./nanobot
+      mkdir -p ./nanobot
+      cp -a ./Nukara_Backend/nanobot/. ./nanobot/
+      rm -rf ./nanobot/.git ./nanobot/.venv ./nanobot/__pycache__
+    fi
   else
     log "Cloning nanobot..."
     git clone --depth 1 -b multi-thread https://github.com/kry4r/nanobot.git ./nanobot

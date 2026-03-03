@@ -17,7 +17,7 @@ wait_for_health() {
     elapsed=$((elapsed + 1))
   done
 
-  err "Service health check failed: $url (timeout after ${timeout}s)"
+  return 1
 }
 
 # 重启后端服务
@@ -30,8 +30,10 @@ restart_backend_services() {
   systemctl restart nukara-admin
 
   # 健康检查（gateway 实际路由为 /api/v1/gateway/health）
-  wait_for_health "http://localhost:${GATEWAY_PORT:-8080}/api/v1/gateway/health" 30
-  wait_for_health "http://localhost:${ADMIN_API_PORT:-19527}/health" 30
+  wait_for_health "http://localhost:${GATEWAY_PORT:-8080}/api/v1/gateway/health" 30 || \
+    err "Service health check failed: http://localhost:${GATEWAY_PORT:-8080}/api/v1/gateway/health (timeout after 30s)"
+  wait_for_health "http://localhost:${ADMIN_API_PORT:-19527}/health" 30 || \
+    err "Service health check failed: http://localhost:${ADMIN_API_PORT:-19527}/health (timeout after 30s)"
 
   # 更新部署状态
   local gateway_hash=$(calculate_hash "$INSTALL_DIR/bin/gateway")
@@ -50,7 +52,11 @@ restart_nanobot_service() {
   systemctl restart nukara-nanobot
 
   # 健康检查
-  wait_for_health "http://localhost:8081/health" 30
+  if ! wait_for_health "http://localhost:8081/health" 90; then
+    warn "Nanobot health check failed, dumping recent logs..."
+    journalctl -u nukara-nanobot -n 120 --no-pager 2>/dev/null || true
+    err "Service health check failed: http://localhost:8081/health (timeout after 90s)"
+  fi
 
   # 更新部署状态
   local nanobot_hash=$(calculate_hash "$INSTALL_DIR/nanobot/.venv/bin/nanobot")
@@ -89,6 +95,13 @@ restart_services() {
 
   if [ "$REBUILD_WEB" = true ]; then
     reload_nginx
+    any_restart=true
+  fi
+
+  # 增量部署场景下，即使未重建 nanobot，也确保其处于可用状态
+  if ! systemctl is-active --quiet nukara-nanobot 2>/dev/null; then
+    warn "Nanobot service is not active; attempting recovery restart..."
+    restart_nanobot_service
     any_restart=true
   fi
 
