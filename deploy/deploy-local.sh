@@ -465,7 +465,17 @@ prepare_sources() {
     local dir="$1"
     [ -f "$dir/pyproject.toml" ] || [ -f "$dir/setup.py" ] || return 1
     [ -f "$dir/nanobot/agent/context.py" ] || return 1
-    python3 -m py_compile "$dir/nanobot/agent/context.py" >/dev/null 2>&1
+    [ -f "$dir/nanobot/providers/litellm_provider.py" ] || return 1
+    python3 -m py_compile "$dir/nanobot/agent/context.py" >/dev/null 2>&1 || return 1
+    python3 -m py_compile "$dir/nanobot/providers/litellm_provider.py" >/dev/null 2>&1 || return 1
+
+    # Guard against runtime NameError in litellm_provider.py
+    if grep -q 'string\.ascii_letters' "$dir/nanobot/providers/litellm_provider.py"; then
+      grep -Eq '^[[:space:]]*import[[:space:]]+string([[:space:]]|$)' "$dir/nanobot/providers/litellm_provider.py" || return 1
+    fi
+    if grep -q 'secrets\.choice' "$dir/nanobot/providers/litellm_provider.py"; then
+      grep -Eq '^[[:space:]]*import[[:space:]]+secrets([[:space:]]|$)' "$dir/nanobot/providers/litellm_provider.py" || return 1
+    fi
   }
 
   ensure_repo_snapshot() {
@@ -592,6 +602,8 @@ build_services() {
     uv venv "$INSTALL_DIR/nanobot/.venv"
     uv pip install --python "$INSTALL_DIR/nanobot/.venv/bin/python" .
     "$INSTALL_DIR/nanobot/.venv/bin/python" -m py_compile "$INSTALL_DIR/nanobot/nanobot/agent/context.py"
+    "$INSTALL_DIR/nanobot/.venv/bin/python" -m py_compile "$INSTALL_DIR/nanobot/nanobot/providers/litellm_provider.py"
+    "$INSTALL_DIR/nanobot/.venv/bin/python" -c "import nanobot.agent.loop; import nanobot.providers.litellm_provider"
 
     # Copy and seed nanobot config
     mkdir -p "$INSTALL_DIR/nanobot-data"

@@ -24,14 +24,19 @@ wait_for_health() {
 validate_nanobot_runtime() {
   local py_bin="$INSTALL_DIR/nanobot/.venv/bin/python"
   local context_py="$INSTALL_DIR/nanobot/nanobot/agent/context.py"
+  local provider_py="$INSTALL_DIR/nanobot/nanobot/providers/litellm_provider.py"
   local project_toml="$INSTALL_DIR/nanobot/pyproject.toml"
   local project_setup="$INSTALL_DIR/nanobot/setup.py"
 
   [ -f "$project_toml" ] || [ -f "$project_setup" ] || return 1
   [ -x "$py_bin" ] || return 1
   [ -f "$context_py" ] || return 1
+  [ -f "$provider_py" ] || return 1
 
-  "$py_bin" -m py_compile "$context_py" >/tmp/nukara-nanobot-compile.log 2>&1
+  "$py_bin" -m py_compile "$context_py" >/tmp/nukara-nanobot-compile.log 2>&1 || return 1
+  "$py_bin" -m py_compile "$provider_py" >/tmp/nukara-nanobot-compile.log 2>&1 || return 1
+  "$py_bin" -c "import nanobot.agent.loop; import nanobot.providers.litellm_provider" \
+    >/tmp/nukara-nanobot-compile.log 2>&1
 }
 
 # Rebuild nanobot virtualenv and reinstall package from source.
@@ -48,6 +53,8 @@ rebuild_nanobot_runtime() {
   uv venv "$INSTALL_DIR/nanobot/.venv"
   uv pip install --python "$INSTALL_DIR/nanobot/.venv/bin/python" .
   "$INSTALL_DIR/nanobot/.venv/bin/python" -m py_compile "$INSTALL_DIR/nanobot/nanobot/agent/context.py"
+  "$INSTALL_DIR/nanobot/.venv/bin/python" -m py_compile "$INSTALL_DIR/nanobot/nanobot/providers/litellm_provider.py"
+  "$INSTALL_DIR/nanobot/.venv/bin/python" -c "import nanobot.agent.loop; import nanobot.providers.litellm_provider"
 }
 
 # 重启后端服务
