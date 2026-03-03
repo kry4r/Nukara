@@ -461,9 +461,11 @@ prepare_sources() {
     return 0
   }
 
-  is_python_project_dir() {
+  is_valid_nanobot_source() {
     local dir="$1"
-    [ -f "$dir/pyproject.toml" ] || [ -f "$dir/setup.py" ]
+    [ -f "$dir/pyproject.toml" ] || [ -f "$dir/setup.py" ] || return 1
+    [ -f "$dir/nanobot/agent/context.py" ] || return 1
+    python3 -m py_compile "$dir/nanobot/agent/context.py" >/dev/null 2>&1
   }
 
   ensure_repo_snapshot() {
@@ -495,34 +497,51 @@ prepare_sources() {
   # Nanobot
   local nanobot_ready=false
   if sync_from_workspace "nanobot" "$workspace_root/nanobot" "$INSTALL_DIR/nanobot"; then
-    if is_python_project_dir "$INSTALL_DIR/nanobot"; then
+    if is_valid_nanobot_source "$INSTALL_DIR/nanobot"; then
       nanobot_ready=true
     else
-      warn "Workspace nanobot source missing pyproject.toml/setup.py, will fallback."
+      warn "Workspace nanobot source invalid (structure or syntax), will fallback."
     fi
   fi
 
   if [ "$nanobot_ready" = false ]; then
     if sync_from_workspace "nanobot (embedded)" "$workspace_root/Nukara_Backend/nanobot" "$INSTALL_DIR/nanobot"; then
-      if is_python_project_dir "$INSTALL_DIR/nanobot"; then
+      if is_valid_nanobot_source "$INSTALL_DIR/nanobot"; then
         nanobot_ready=true
       else
-        warn "Embedded nanobot source is incomplete (submodule likely not initialized), will fallback."
+        warn "Embedded nanobot source invalid (submodule missing or syntax broken), will fallback."
       fi
     fi
   fi
 
   if [ "$nanobot_ready" = false ]; then
+    local branch_primary="${NANOBOT_BRANCH:-multi-thread}"
+    local branch_fallback="main"
     if [ -d "$INSTALL_DIR/nanobot/.git" ]; then
-      # Keep deployment deterministic: always align to remote multi-thread tip.
-      log "Updating nanobot to origin/multi-thread..."
-      git -C "$INSTALL_DIR/nanobot" fetch --depth 1 origin multi-thread
-      git -C "$INSTALL_DIR/nanobot" checkout -B multi-thread origin/multi-thread
-      git -C "$INSTALL_DIR/nanobot" reset --hard origin/multi-thread
+      log "Updating nanobot to origin/${branch_primary}..."
+      if git -C "$INSTALL_DIR/nanobot" fetch --depth 1 origin "$branch_primary" && \
+         git -C "$INSTALL_DIR/nanobot" checkout -B "$branch_primary" "origin/$branch_primary" && \
+         git -C "$INSTALL_DIR/nanobot" reset --hard "origin/$branch_primary" && \
+         is_valid_nanobot_source "$INSTALL_DIR/nanobot"; then
+        nanobot_ready=true
+      else
+        warn "Nanobot branch ${branch_primary} invalid; falling back to ${branch_fallback}."
+      fi
     else
       [ -d "$INSTALL_DIR/nanobot" ] && rm -rf "$INSTALL_DIR/nanobot"
-      log "Cloning nanobot..."
-      git clone --depth 1 -b multi-thread https://github.com/kry4r/nanobot.git "$INSTALL_DIR/nanobot"
+      log "Cloning nanobot (${branch_primary})..."
+      if git clone --depth 1 -b "$branch_primary" https://github.com/kry4r/nanobot.git "$INSTALL_DIR/nanobot" && \
+         is_valid_nanobot_source "$INSTALL_DIR/nanobot"; then
+        nanobot_ready=true
+      else
+        warn "Cloned nanobot ${branch_primary} is invalid; falling back to ${branch_fallback}."
+      fi
+    fi
+    if [ "$nanobot_ready" = false ]; then
+      [ -d "$INSTALL_DIR/nanobot" ] && rm -rf "$INSTALL_DIR/nanobot"
+      log "Cloning nanobot (${branch_fallback})..."
+      git clone --depth 1 -b "$branch_fallback" https://github.com/kry4r/nanobot.git "$INSTALL_DIR/nanobot"
+      is_valid_nanobot_source "$INSTALL_DIR/nanobot" || err "Nanobot source validation failed on fallback branch ${branch_fallback}"
     fi
   fi
 

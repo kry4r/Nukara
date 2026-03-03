@@ -294,9 +294,11 @@ PY
 prepare_sources() {
   cd "$DEPLOY_DIR"
 
-  is_python_project_dir() {
+  is_valid_nanobot_source() {
     local dir="$1"
-    [ -f "$dir/pyproject.toml" ] || [ -f "$dir/setup.py" ]
+    [ -f "$dir/pyproject.toml" ] || [ -f "$dir/setup.py" ] || return 1
+    [ -f "$dir/nanobot/agent/context.py" ] || return 1
+    python3 -m py_compile "$dir/nanobot/agent/context.py" >/dev/null 2>&1
   }
 
   # Backend
@@ -314,12 +316,14 @@ prepare_sources() {
 
   # Nanobot
   local nanobot_ready=false
+  local branch_primary="${NANOBOT_BRANCH:-multi-thread}"
+  local branch_fallback="main"
   if [ -d "./nanobot" ]; then
-    if is_python_project_dir "./nanobot"; then
+    if is_valid_nanobot_source "./nanobot"; then
       log "nanobot found locally"
       nanobot_ready=true
     else
-      warn "Local ./nanobot exists but is missing pyproject.toml/setup.py, will fallback."
+      warn "Local ./nanobot source invalid (structure or syntax), will fallback."
     fi
   fi
 
@@ -339,18 +343,26 @@ prepare_sources() {
       rm -rf ./nanobot/.git ./nanobot/.venv ./nanobot/__pycache__
     fi
 
-    if is_python_project_dir "./nanobot"; then
+    if is_valid_nanobot_source "./nanobot"; then
       nanobot_ready=true
     else
-      warn "Embedded nanobot source is incomplete (submodule likely not initialized), will fallback."
+      warn "Embedded nanobot source invalid (submodule missing or syntax broken), will fallback."
       rm -rf ./nanobot
     fi
   fi
 
   if [ "$nanobot_ready" = false ]; then
-    log "Cloning nanobot..."
+    log "Cloning nanobot (${branch_primary})..."
     rm -rf ./nanobot
-    git clone --depth 1 -b multi-thread https://github.com/kry4r/nanobot.git ./nanobot
+    if git clone --depth 1 -b "$branch_primary" https://github.com/kry4r/nanobot.git ./nanobot && \
+       is_valid_nanobot_source "./nanobot"; then
+      nanobot_ready=true
+    else
+      warn "Cloned nanobot ${branch_primary} is invalid; falling back to ${branch_fallback}."
+      rm -rf ./nanobot
+      git clone --depth 1 -b "$branch_fallback" https://github.com/kry4r/nanobot.git ./nanobot
+      is_valid_nanobot_source "./nanobot" || err "Nanobot source validation failed on fallback branch ${branch_fallback}"
+    fi
   fi
 
   # Web frontend
