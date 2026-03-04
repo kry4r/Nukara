@@ -40,8 +40,21 @@ func TestProactivePromptShareTriggers(t *testing.T) {
 
 func TestProactivePromptIncludesEmotionHint(t *testing.T) {
 	got := proactivePrompt("morning_care", map[string]any{"emotion_trend": "anxious"})
-	if !strings.Contains(got, "用户最近的情绪倾向：anxious") {
+	if !strings.Contains(got, "用户最近情绪倾向：anxious") {
 		t.Fatalf("prompt missing emotion hint: %q", got)
+	}
+}
+
+func TestProactivePromptContainsNoGuiltTrippingRule(t *testing.T) {
+	got := proactivePrompt("worry_after_long_silence", map[string]any{
+		"last_user_message":            "我今天有点累",
+		"time_since_last_user_message": "3h0m0s",
+	})
+	if !strings.Contains(got, "你怎么不理我") {
+		t.Fatalf("prompt should include anti guilt-tripping rule, got=%q", got)
+	}
+	if !strings.Contains(got, "用户上次消息") {
+		t.Fatalf("prompt should include last user message context, got=%q", got)
 	}
 }
 

@@ -57,14 +57,14 @@ var triggerWindows = []triggerWindow{
 
 // perTriggerCooldown prevents the same trigger type from firing too often.
 var perTriggerCooldown = map[string]time.Duration{
-	"morning_care":            20 * time.Hour, // once per day
-	"evening_care":            20 * time.Hour,
-	"curiosity_after_silence": 1 * time.Hour,
-	"worry_after_long_silence": 4 * time.Hour,
-	"random_share":            3 * time.Hour,
-	"share_personal_moment":   8 * time.Hour,
-	"share_interesting_fact":  10 * time.Hour,
-	"share_emotion":           12 * time.Hour,
+	"morning_care":             20 * time.Hour, // once per day
+	"evening_care":             20 * time.Hour,
+	"curiosity_after_silence":  3 * time.Hour,
+	"worry_after_long_silence": 8 * time.Hour,
+	"random_share":             3 * time.Hour,
+	"share_personal_moment":    8 * time.Hour,
+	"share_interesting_fact":   10 * time.Hour,
+	"share_emotion":            12 * time.Hour,
 }
 
 // inactivityThreshold returns the duration after which a user is considered inactive.
@@ -141,6 +141,8 @@ func (ps *proactiveScheduler) processUser(userID string, now time.Time) {
 	if len(conversations) == 0 {
 		return
 	}
+	online := ps.server.store.IsUserWSOnline(userID)
+	lastUserAt, _ := ps.server.store.GetLastUserMessageAt(userID)
 
 	// Back-off: if user hasn't responded since last proactive message, increase cooldown.
 	// Check the most recent conversation's messages to see if user replied.
@@ -164,10 +166,17 @@ func (ps *proactiveScheduler) processUser(userID string, now time.Time) {
 			}
 		}
 	}
+	emotionTrend := ""
+	if emoCtx, ok := ps.server.store.GetEmotionContext(userID, conv.BotID); ok {
+		emotionTrend = strings.TrimSpace(emoCtx.EmotionTrend)
+	}
 
 	// Determine trigger type based on current time.
-	triggerType := ps.detectTrigger(now, conversations)
+	triggerType := ps.detectTrigger(now, conversations, emotionTrend)
 	if triggerType == "" {
+		return
+	}
+	if shouldBlockTriggerForPresence(triggerType, online, lastUserAt, now) {
 		return
 	}
 
@@ -189,7 +198,7 @@ func (ps *proactiveScheduler) processUser(userID string, now time.Time) {
 	ps.server.sendProactiveMessage(userID, bot, conv, triggerType)
 }
 
-func (ps *proactiveScheduler) detectTrigger(now time.Time, conversations []store.Conversation) string {
+func (ps *proactiveScheduler) detectTrigger(now time.Time, conversations []store.Conversation, emotionTrend string) string {
 	hour := now.Hour()
 	config := ps.getProactiveConfig()
 
@@ -207,14 +216,17 @@ func (ps *proactiveScheduler) detectTrigger(now time.Time, conversations []store
 
 	// Check inactivity triggers (curiosity vs worry based on gap duration).
 	threshold := inactivityThreshold()
-	longThreshold := 2 * time.Hour
+	longThreshold := 3 * time.Hour
 	inActiveHours := hour >= 9 && hour < 21
 
 	if len(conversations) > 0 && (inActiveHours || threshold < time.Hour) {
 		gap := now.Sub(conversations[0].LastMessageAt)
 		if gap >= longThreshold {
-			if isMessageTypeEnabled(config, "worry_after_long_silence") {
+			if strings.EqualFold(emotionTrend, "negative") && isMessageTypeEnabled(config, "worry_after_long_silence") {
 				return "worry_after_long_silence"
+			}
+			if isMessageTypeEnabled(config, "curiosity_after_silence") {
+				return "curiosity_after_silence"
 			}
 		}
 		if gap >= threshold {
@@ -258,16 +270,55 @@ func (ps *proactiveScheduler) detectTrigger(now time.Time, conversations []store
 	return ""
 }
 
+func isNudgeTrigger(trigger string) bool {
+	switch trigger {
+	case "curiosity_after_silence", "worry_after_long_silence":
+		return true
+	default:
+		return false
+	}
+}
+
+func isShareTrigger(trigger string) bool {
+	switch trigger {
+	case "random_share", "share_personal_moment", "share_interesting_fact", "share_emotion":
+		return true
+	default:
+		return false
+	}
+}
+
+func shouldBlockTriggerForPresence(trigger string, online bool, lastUserAt, now time.Time) bool {
+	if !online {
+		return false
+	}
+	if isNudgeTrigger(trigger) {
+		return true
+	}
+	if isShareTrigger(trigger) && !lastUserAt.IsZero() && now.Sub(lastUserAt) < 3*time.Minute {
+		return true
+	}
+	return false
+}
+
 // sendProactiveMessage generates and delivers a proactive message for a user+bot pair.
 // Reused by both the scheduler and the manual trigger API.
 func (s *Server) sendProactiveMessage(userID string, bot store.Bot, conv store.Conversation, triggerType string) {
 	convID := agent.NanobotConvID(userID, bot.ID, conv.ID)
 	sysCtx := agent.BuildSystemContext(bot, nil)
+	now := time.Now().UTC()
 
 	// Inject emotion context if available
 	if emoCtx, ok := s.store.GetEmotionContext(userID, bot.ID); ok {
 		sysCtx["emotion_trend"] = emoCtx.EmotionTrend
 		sysCtx["last_tone"] = emoCtx.LastTone
+	}
+	if lastUserAt, ok := s.store.GetLastUserMessageAt(userID); ok && !lastUserAt.IsZero() {
+		sysCtx["last_user_message_at"] = lastUserAt.UTC().Format(time.RFC3339)
+		sysCtx["time_since_last_user_message"] = now.Sub(lastUserAt).Round(time.Minute).String()
+	}
+	if lastText, ok := s.lastUserText(userID, conv.ID, 30); ok {
+		sysCtx["last_user_message"] = lastText
 	}
 
 	message, err := s.agent.Proactive(context.Background(), convID, "proactive", triggerType, sysCtx)
@@ -326,6 +377,36 @@ func (s *Server) sendProactiveMessage(userID string, bot store.Bot, conv store.C
 	log.Printf("[scheduler] sent proactive message user=%s bot=%s trigger=%s ws=%t apns=%t", userID, bot.ID, triggerType, sentByWS, sentAPNs)
 }
 
+func (s *Server) lastUserText(userID, conversationID string, limit int) (string, bool) {
+	messages, ok := s.store.ListMessages(userID, conversationID, limit)
+	if !ok {
+		return "", false
+	}
+	for i := len(messages) - 1; i >= 0; i-- {
+		msg := messages[i]
+		if msg.SenderType != "user" {
+			continue
+		}
+		text := strings.TrimSpace(msg.Content.Text)
+		if text == "" {
+			switch msg.Content.Type {
+			case "image":
+				text = "[图片]"
+			case "location":
+				if strings.TrimSpace(msg.Content.Name) != "" {
+					text = "📍" + strings.TrimSpace(msg.Content.Name)
+				} else {
+					text = "📍位置"
+				}
+			}
+		}
+		if text != "" {
+			return text, true
+		}
+	}
+	return "", false
+}
+
 // StartScheduler launches the proactive message scheduler in the background.
 func (s *Server) StartScheduler(interval time.Duration) {
 	sched := newScheduler(s, interval)
@@ -378,13 +459,13 @@ func parseHHMM(s string) int {
 
 // ProactiveConfig represents system-level proactive message configuration
 type ProactiveConfig struct {
-	Enabled              bool     `json:"enabled"`
-	CheckInterval        string   `json:"check_interval"`
-	InactivityThreshold  string   `json:"inactivity_threshold"`
-	Cooldown             string   `json:"cooldown"`
-	TimeWindowStart      string   `json:"time_window_start"`
-	TimeWindowEnd        string   `json:"time_window_end"`
-	EnabledMessageTypes  []string `json:"enabled_message_types"`
+	Enabled             bool     `json:"enabled"`
+	CheckInterval       string   `json:"check_interval"`
+	InactivityThreshold string   `json:"inactivity_threshold"`
+	Cooldown            string   `json:"cooldown"`
+	TimeWindowStart     string   `json:"time_window_start"`
+	TimeWindowEnd       string   `json:"time_window_end"`
+	EnabledMessageTypes []string `json:"enabled_message_types"`
 }
 
 // getProactiveConfig reads configuration from database

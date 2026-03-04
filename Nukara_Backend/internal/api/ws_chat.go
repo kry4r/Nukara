@@ -17,11 +17,12 @@ import (
 )
 
 const wsIdleTimeout = 5 * time.Minute
+const wsPresenceTTL = 90 * time.Second
 const (
-	hardAggregateLimit    = 8 * time.Second  // max wait time regardless of typing
-	maxAggregateMessages  = 10               // max messages before forced flush
-	typingResumeBuffer    = 500 * time.Millisecond // extra buffer after typing stops
-	replyInactivityTimeout = 90 * time.Second // max wait for nanobot reply event
+	hardAggregateLimit     = 8 * time.Second        // max wait time regardless of typing
+	maxAggregateMessages   = 10                     // max messages before forced flush
+	typingResumeBuffer     = 500 * time.Millisecond // extra buffer after typing stops
+	replyInactivityTimeout = 90 * time.Second       // max wait for nanobot reply event
 )
 
 type wsIncomingMessage struct {
@@ -40,9 +41,9 @@ type wsIncomingMessage struct {
 
 // convSubscription tracks a persistent nanobot event consumer for one conversation.
 type convSubscription struct {
-	nanobotConvID string
-	eventCh       <-chan agent.NanobotEvent
-	detached      chan struct{}
+	nanobotConvID  string
+	eventCh        <-chan agent.NanobotEvent
+	detached       chan struct{}
 	lastUserPrompt string // set by handleWSChatMessage for memory extraction
 }
 
@@ -71,11 +72,11 @@ type messageAggregator struct {
 type aggregateBuffer struct {
 	prompts      []string
 	timer        *time.Timer
-	hardTimer    *time.Timer   // 8s hard cap timer
-	isTyping     bool          // user is currently typing
-	firstMsgTime time.Time     // when first message arrived
-	convID       string        // nukara conv.ID
-	nbConvID     string        // nanobot conv.ID
+	hardTimer    *time.Timer // 8s hard cap timer
+	isTyping     bool        // user is currently typing
+	firstMsgTime time.Time   // when first message arrived
+	convID       string      // nukara conv.ID
+	nbConvID     string      // nanobot conv.ID
 	userID       string
 	bot          store.Bot
 	conv         store.Conversation
@@ -304,6 +305,7 @@ func (s *Server) handleWSChat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	session := s.wsHub.register(userID, conn)
+	s.store.TouchWSPresence(userID, wsPresenceTTL)
 	consumers := newSessionConsumers(s)
 	aggregator := newMessageAggregator(s)
 	defer func() {
@@ -339,9 +341,11 @@ func (s *Server) handleWSChat(w http.ResponseWriter, r *http.Request) {
 		case "message":
 			s.handleWSChatMessage(userID, msg, consumers, aggregator)
 		case "typing_start", "typing_stop":
+			s.store.TouchWSPresence(userID, wsPresenceTTL)
 			s.handleWSTypingEvent(userID, msg)
 			aggregator.handleTyping(msg.ConversationID, msg.Type == "typing_start")
 		case "ping":
+			s.store.TouchWSPresence(userID, wsPresenceTTL)
 			_ = conn.WriteJSON(map[string]any{"type": "pong", "timestamp": time.Now().Unix()})
 		default:
 			_ = conn.WriteJSON(map[string]any{"type": "error", "message": "unsupported event type"})
@@ -401,6 +405,8 @@ func (s *Server) handleWSChatMessage(userID string, message wsIncomingMessage, c
 		s.wsHub.publishToUser(userID, map[string]any{"type": "error", "message": errConversationNotFound.Error()})
 		return
 	}
+	s.store.TouchWSPresence(userID, wsPresenceTTL)
+	s.store.SetLastUserMessageAt(userID, userMessage.CreatedAt)
 
 	s.wsHub.publishToUser(userID, map[string]any{
 		"type":          "ack",

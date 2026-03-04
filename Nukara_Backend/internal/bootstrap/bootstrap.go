@@ -51,7 +51,7 @@ func NewHandler(role string) (string, http.Handler) {
 	server := api.NewServer(sharedStore, agentClient, apnsClient, tokenSecret, redisAddr)
 	handler := server.HandlerFor(role)
 
-	if role == "proactive" || role == "gateway" {
+	if shouldStartScheduler(role) {
 		intervalStr := envOr("NUKARA_PROACTIVE_INTERVAL", "5m")
 		interval, err := time.ParseDuration(intervalStr)
 		if err != nil {
@@ -83,4 +83,15 @@ func envOr(key, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func shouldStartScheduler(role string) bool {
+	switch strings.TrimSpace(role) {
+	case "proactive":
+		return true
+	case "gateway":
+		return strings.EqualFold(strings.TrimSpace(os.Getenv("NUKARA_GATEWAY_ENABLE_SCHEDULER")), "true")
+	default:
+		return false
+	}
 }

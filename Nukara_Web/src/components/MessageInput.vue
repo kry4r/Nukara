@@ -98,10 +98,16 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: 8px;
-  border: 1px solid #d9e2c8;
+  border: 1px solid transparent;
   border-radius: 9999px;
-  background: #ffffff;
+  background: rgba(255, 255, 255, 0.58);
+  backdrop-filter: blur(4px);
   padding: 4px 6px 4px 14px;
+}
+
+.input-shell:focus-within {
+  background: rgba(255, 255, 255, 0.82);
+  box-shadow: 0 0 0 2px rgba(93, 128, 70, 0.24);
 }
 
 .input-bar input {

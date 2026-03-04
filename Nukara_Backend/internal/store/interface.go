@@ -8,6 +8,10 @@ type DataStore interface {
 	IncrementRequests()
 	SnapshotMetrics() Metrics
 	SetWSConnections(count int)
+	TouchWSPresence(userID string, ttl time.Duration)
+	IsUserWSOnline(userID string) bool
+	SetLastUserMessageAt(userID string, at time.Time)
+	GetLastUserMessageAt(userID string) (time.Time, bool)
 
 	SaveSMSCode(phone, purpose, code string, ttl time.Duration)
 	ValidateSMSCode(phone, purpose, code string) bool

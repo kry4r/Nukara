@@ -141,6 +141,85 @@ func TestWSChatDisconnectStillSavesReply(t *testing.T) {
 	t.Fatalf("expected bot reply saved after websocket disconnect, got %d messages", len(msgs))
 }
 
+func TestWSPingUpdatesPresence(t *testing.T) {
+	server, token, userID, _, convID, st, closeFn := setupTestServerWithStore(t, fakeNanobotHandler())
+	defer closeFn()
+
+	ws := mustDialWS(t, server.URL, token)
+	defer ws.Close()
+
+	ws.SendJSON(t, map[string]any{
+		"type":            "ping",
+		"conversation_id": convID,
+	})
+	_ = ws.ReadJSON(t, 2*time.Second)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if st.IsUserWSOnline(userID) {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("expected ws presence online for user=%s", userID)
+}
+
+func TestWSMessageAndHTTPSendUpdateLastUserMessageAt(t *testing.T) {
+	server, token, userID, _, convID, st, closeFn := setupTestServerWithStore(t, fakeNanobotHandler())
+	defer closeFn()
+
+	ws := mustDialWS(t, server.URL, token)
+	defer ws.Close()
+
+	ws.SendJSON(t, map[string]any{
+		"type":            "message",
+		"conversation_id": convID,
+		"client_msg_id":   "presence-last-msg",
+		"content": map[string]any{
+			"type": "text",
+			"text": "WS 测试消息",
+		},
+	})
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		event := ws.ReadJSON(t, time.Second)
+		if event["type"] == "ack" {
+			break
+		}
+	}
+
+	firstAt, ok := st.GetLastUserMessageAt(userID)
+	if !ok || firstAt.IsZero() {
+		t.Fatalf("expected last user message at from ws message")
+	}
+
+	time.Sleep(1100 * time.Millisecond)
+	body, _ := json.Marshal(map[string]any{
+		"client_msg_id": "presence-http-send",
+		"content": map[string]any{
+			"type": "text",
+			"text": "HTTP 测试消息",
+		},
+	})
+	req, _ := http.NewRequest(http.MethodPost, server.URL+"/api/v1/conversations/"+convID+"/send", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("http send failed: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("http send unexpected status=%d", resp.StatusCode)
+	}
+
+	secondAt, ok := st.GetLastUserMessageAt(userID)
+	if !ok || !secondAt.After(firstAt) {
+		t.Fatalf("expected updated last user message at after http send, first=%v second=%v ok=%v", firstAt, secondAt, ok)
+	}
+}
+
 func TestUserStatusAPI(t *testing.T) {
 	server, token, _, _, closeFn := setupTestServer(t)
 	defer closeFn()

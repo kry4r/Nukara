@@ -33,7 +33,7 @@ onMounted(() => {
       <router-link
         v-for="bot in bots.list"
         :key="bot.id"
-        :to="`/bots/${bot.id}/edit`"
+        :to="`/bots/${bot.id}`"
         class="bot-card"
       >
         <span class="bot-avatar">{{ avatarText(bot.name) }}</span>

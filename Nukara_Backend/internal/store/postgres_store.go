@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -16,9 +17,11 @@ import (
 )
 
 const (
-	metricKeyRequests  = "metrics:requests_total"
-	metricKeyWS        = "metrics:active_ws_connections"
-	metricKeyProactive = "metrics:proactive_message_sent"
+	metricKeyRequests       = "metrics:requests_total"
+	metricKeyWS             = "metrics:active_ws_connections"
+	metricKeyProactive      = "metrics:proactive_message_sent"
+	presenceWSKeyPrefix     = "presence:ws:"
+	lastUserMessageAtPrefix = "presence:last_user_message_at:"
 )
 
 type PostgresStore struct {
@@ -248,6 +251,14 @@ func (p *PostgresStore) metricKey(suffix string) string {
 	return p.metricsKeyPrefix + suffix
 }
 
+func (p *PostgresStore) presenceWSKey(userID string) string {
+	return p.metricKey(presenceWSKeyPrefix + userID)
+}
+
+func (p *PostgresStore) lastUserMessageAtKey(userID string) string {
+	return p.metricKey(lastUserMessageAtPrefix + userID)
+}
+
 func (p *PostgresStore) IncrementRequests() {
 	p.Store.IncrementRequests()
 	if p.redis == nil {
@@ -266,6 +277,74 @@ func (p *PostgresStore) SetWSConnections(count int) {
 	if err := p.redis.Set(context.Background(), p.metricKey(metricKeyWS), count, 0).Err(); err != nil {
 		log.Printf("redis set ws connections failed: %v", err)
 	}
+}
+
+func (p *PostgresStore) TouchWSPresence(userID string, ttl time.Duration) {
+	p.Store.TouchWSPresence(userID, ttl)
+	userID = strings.TrimSpace(userID)
+	if p.redis == nil || userID == "" {
+		return
+	}
+	if ttl <= 0 {
+		ttl = 90 * time.Second
+	}
+	if err := p.redis.Set(context.Background(), p.presenceWSKey(userID), "1", ttl).Err(); err != nil {
+		log.Printf("redis set ws presence failed for user=%s: %v", userID, err)
+	}
+}
+
+func (p *PostgresStore) IsUserWSOnline(userID string) bool {
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return false
+	}
+	if p.redis == nil {
+		return p.Store.IsUserWSOnline(userID)
+	}
+
+	exists, err := p.redis.Exists(context.Background(), p.presenceWSKey(userID)).Result()
+	if err != nil {
+		log.Printf("redis read ws presence failed for user=%s: %v", userID, err)
+		return p.Store.IsUserWSOnline(userID)
+	}
+	return exists > 0
+}
+
+func (p *PostgresStore) SetLastUserMessageAt(userID string, at time.Time) {
+	p.Store.SetLastUserMessageAt(userID, at)
+	userID = strings.TrimSpace(userID)
+	if p.redis == nil || userID == "" || at.IsZero() {
+		return
+	}
+	if err := p.redis.Set(context.Background(), p.lastUserMessageAtKey(userID), at.UTC().Unix(), 0).Err(); err != nil {
+		log.Printf("redis set last user message at failed for user=%s: %v", userID, err)
+	}
+}
+
+func (p *PostgresStore) GetLastUserMessageAt(userID string) (time.Time, bool) {
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return time.Time{}, false
+	}
+	if p.redis == nil {
+		return p.Store.GetLastUserMessageAt(userID)
+	}
+
+	value, err := p.redis.Get(context.Background(), p.lastUserMessageAtKey(userID)).Result()
+	if err != nil {
+		if errors.Is(err, redis.Nil) {
+			return time.Time{}, false
+		}
+		log.Printf("redis get last user message at failed for user=%s: %v", userID, err)
+		return p.Store.GetLastUserMessageAt(userID)
+	}
+
+	unixValue, parseErr := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
+	if parseErr != nil {
+		log.Printf("redis parse last user message at failed for user=%s value=%q: %v", userID, value, parseErr)
+		return p.Store.GetLastUserMessageAt(userID)
+	}
+	return time.Unix(unixValue, 0).UTC(), true
 }
 
 func (p *PostgresStore) SnapshotMetrics() Metrics {

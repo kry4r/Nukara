@@ -141,7 +141,7 @@ func TestSchedulerDetectTrigger(t *testing.T) {
 	}{
 		{"morning window", 8, baseTime, "morning_care"},
 		{"evening window", 21, baseTime, "evening_care"},
-		{"short inactivity during day", 14, baseTime.Add(-5 * time.Hour), "worry_after_long_silence"},
+		{"short inactivity during day", 14, baseTime.Add(-5 * time.Hour), "curiosity_after_silence"},
 		{"curiosity after 8m silence", 14, baseTime.Add(2*time.Hour + 21*time.Minute), "curiosity_after_silence"},
 		{"no trigger at night", 2, baseTime, ""},
 		{"no inactivity if recent", 14, baseTime.Add(2*time.Hour + 23*time.Minute), ""},
@@ -153,7 +153,7 @@ func TestSchedulerDetectTrigger(t *testing.T) {
 			conversations := []store.Conversation{conv}
 
 			now := time.Date(2026, 2, 14, tt.hour, 30, 0, 0, time.Local)
-			got := sched.detectTrigger(now, conversations)
+			got := sched.detectTrigger(now, conversations, "")
 			if got != tt.expected {
 				t.Fatalf("detectTrigger(hour=%d) = %q, want %q", tt.hour, got, tt.expected)
 			}
@@ -216,5 +216,58 @@ func TestSchedulerCooldownEnforcement(t *testing.T) {
 	elapsed := time.Since(recentLogs[0].CreatedAt)
 	if elapsed >= cooldown {
 		t.Fatalf("expected recent log to be within cooldown, elapsed=%v cooldown=%v", elapsed, cooldown)
+	}
+}
+
+func TestSchedulerBlocksNudgeWhenUserOnline(t *testing.T) {
+	now := time.Date(2026, 2, 14, 14, 0, 0, 0, time.Local)
+	lastUserAt := now.Add(-20 * time.Minute)
+
+	if !shouldBlockTriggerForPresence("curiosity_after_silence", true, lastUserAt, now) {
+		t.Fatalf("expected curiosity trigger blocked while user online")
+	}
+	if !shouldBlockTriggerForPresence("worry_after_long_silence", true, lastUserAt, now) {
+		t.Fatalf("expected worry trigger blocked while user online")
+	}
+}
+
+func TestSchedulerBlocksShareWhenRecentlyActiveOnline(t *testing.T) {
+	now := time.Date(2026, 2, 14, 14, 0, 0, 0, time.Local)
+	lastUserAt := now.Add(-2 * time.Minute)
+
+	if !shouldBlockTriggerForPresence("share_personal_moment", true, lastUserAt, now) {
+		t.Fatalf("expected share trigger blocked while user recently active")
+	}
+
+	if shouldBlockTriggerForPresence("share_personal_moment", true, now.Add(-5*time.Minute), now) {
+		t.Fatalf("expected share trigger allowed when activity is older than 3 minutes")
+	}
+}
+
+func TestDetectTriggerLongSilenceUsesEmotionTrend(t *testing.T) {
+	st := store.NewStore()
+	user, _ := st.CreateUser("13900000003", "emotion-check")
+	bot := st.CreateBot(user.ID, store.Bot{
+		Name: "MoodBot", Summary: "test", SpeakingStyle: "test",
+		Background: "test", Traits: []string{"test"}, Gender: "female",
+	})
+	conv, _ := st.FindConversationByBot(user.ID, bot.ID)
+
+	sched := &proactiveScheduler{server: &Server{store: st}}
+	now := time.Date(2026, 2, 14, 14, 0, 0, 0, time.Local)
+	conv.LastMessageAt = now.Add(-4 * time.Hour)
+	conversations := []store.Conversation{conv}
+
+	gotNeutral := sched.detectTrigger(now, conversations, "neutral")
+	if gotNeutral == "worry_after_long_silence" {
+		t.Fatalf("expected non-negative trend to avoid worry trigger")
+	}
+	if gotNeutral != "curiosity_after_silence" {
+		t.Fatalf("expected curiosity trigger for non-negative long silence, got=%q", gotNeutral)
+	}
+
+	gotNegative := sched.detectTrigger(now, conversations, "negative")
+	if gotNegative != "worry_after_long_silence" {
+		t.Fatalf("expected worry trigger for negative trend, got=%q", gotNegative)
 	}
 }

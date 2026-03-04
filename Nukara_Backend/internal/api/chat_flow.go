@@ -74,6 +74,7 @@ func (s *Server) processChatMessage(userID string, req chatMessageRequest) (chat
 	if !ok {
 		return chatMessageResult{}, errConversationNotFound
 	}
+	s.store.SetLastUserMessageAt(userID, userMessage.CreatedAt)
 
 	convID := agent.NanobotConvID(userID, bot.ID, conv.ID)
 	var userStatusStr string
