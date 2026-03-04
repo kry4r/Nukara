@@ -9,9 +9,9 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math/rand"
 	"net/http"
 	"strconv"
-	"math/rand"
 	"strings"
 	"time"
 
@@ -294,9 +294,21 @@ func (s *Server) handleBotByID(w http.ResponseWriter, r *http.Request) {
 	botID := parts[0]
 
 	// Sub-resource: /bots/{botID}/directives[/{id}]
-	if len(parts) >= 2 && parts[1] == "directives" {
-		s.handleBotDirectives(w, r, userID, botID, parts[2:])
-		return
+	if len(parts) >= 2 {
+		switch parts[1] {
+		case "directives":
+			s.handleBotDirectives(w, r, userID, botID, parts[2:])
+			return
+		case "profile":
+			s.handleBotProfile(w, r, userID, botID)
+			return
+		case "impression":
+			s.handleBotImpression(w, r, userID, botID)
+			return
+		case "iterate":
+			s.handleBotIterate(w, r, userID, botID)
+			return
+		}
 	}
 
 	switch r.Method {
@@ -703,7 +715,7 @@ func (s *Server) handleGatewayTestChat(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Debug {
 		resp["debug"] = map[string]any{
-			"model_used":         "nanobot",
+			"model_used":          "nanobot",
 			"total_input_tokens":  len(req.Message),
 			"total_output_tokens": len(reply),
 		}

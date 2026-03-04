@@ -32,6 +32,12 @@ const routes = [
     meta: { auth: true },
   },
   {
+    path: '/bots/:id',
+    name: 'BotDetail',
+    component: () => import('../views/BotDetailView.vue'),
+    meta: { auth: true },
+  },
+  {
     path: '/bots/:id/edit',
     name: 'BotEdit',
     component: () => import('../views/BotFormView.vue'),

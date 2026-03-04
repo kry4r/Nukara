@@ -122,9 +122,9 @@ type ProactiveLog struct {
 
 // EmotionContext tracks user emotion trends for a specific bot relationship.
 type EmotionContext struct {
-	RecentEmotions []string `json:"recent_emotions"` // last batch emotions
-	EmotionTrend   string   `json:"emotion_trend"`   // positive/negative/neutral
-	LastTone       string   `json:"last_tone"`        // tone of last message
+	RecentEmotions []string  `json:"recent_emotions"` // last batch emotions
+	EmotionTrend   string    `json:"emotion_trend"`   // positive/negative/neutral
+	LastTone       string    `json:"last_tone"`       // tone of last message
 	UpdatedAt      time.Time `json:"updated_at"`
 }
 
@@ -145,6 +145,11 @@ type Metrics struct {
 	RequestsTotal       int `json:"requests_total"`
 	ActiveWSConnections int `json:"active_websocket_connections"`
 	ProactiveSentTotal  int `json:"proactive_message_sent"`
+}
+
+type presenceState struct {
+	wsExpiresAt   time.Time
+	lastUserMsgAt time.Time
 }
 
 type Store struct {
@@ -168,8 +173,9 @@ type Store struct {
 	proactiveLogs     []ProactiveLog
 	directivesByBot   map[string][]Directive
 
-	emotionBuffers map[string][]string        // key: userID:botID
-	emotionCtxs    map[string]EmotionContext   // key: userID:botID
+	emotionBuffers map[string][]string       // key: userID:botID
+	emotionCtxs    map[string]EmotionContext // key: userID:botID
+	presenceByUser map[string]presenceState
 
 	metrics Metrics
 }
@@ -192,6 +198,7 @@ func NewStore() *Store {
 		directivesByBot:     map[string][]Directive{},
 		emotionBuffers:      map[string][]string{},
 		emotionCtxs:         map[string]EmotionContext{},
+		presenceByUser:      map[string]presenceState{},
 	}
 
 	// seed dev user so the preset phone 13800138000 works for login
@@ -229,6 +236,86 @@ func (s *Store) SetWSConnections(count int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.metrics.ActiveWSConnections = count
+}
+
+func (s *Store) TouchWSPresence(userID string, ttl time.Duration) {
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return
+	}
+	if ttl <= 0 {
+		ttl = 90 * time.Second
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	st := s.presenceByUser[userID]
+	st.wsExpiresAt = time.Now().UTC().Add(ttl)
+	s.presenceByUser[userID] = st
+}
+
+func (s *Store) IsUserWSOnline(userID string) bool {
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return false
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	st, ok := s.presenceByUser[userID]
+	if !ok {
+		return false
+	}
+	if st.wsExpiresAt.IsZero() {
+		return false
+	}
+	now := time.Now().UTC()
+	if now.After(st.wsExpiresAt) {
+		if st.lastUserMsgAt.IsZero() {
+			delete(s.presenceByUser, userID)
+		} else {
+			st.wsExpiresAt = time.Time{}
+			s.presenceByUser[userID] = st
+		}
+		return false
+	}
+	return true
+}
+
+func (s *Store) SetLastUserMessageAt(userID string, at time.Time) {
+	userID = strings.TrimSpace(userID)
+	if userID == "" || at.IsZero() {
+		return
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	st := s.presenceByUser[userID]
+	st.lastUserMsgAt = at.UTC()
+	s.presenceByUser[userID] = st
+}
+
+func (s *Store) GetLastUserMessageAt(userID string) (time.Time, bool) {
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return time.Time{}, false
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	st, ok := s.presenceByUser[userID]
+	if !ok || st.lastUserMsgAt.IsZero() {
+		return time.Time{}, false
+	}
+	if !st.wsExpiresAt.IsZero() && time.Now().UTC().After(st.wsExpiresAt) {
+		st.wsExpiresAt = time.Time{}
+		s.presenceByUser[userID] = st
+	}
+	return st.lastUserMsgAt, true
 }
 
 func (s *Store) SaveSMSCode(phone, purpose, code string, ttl time.Duration) {

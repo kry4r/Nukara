@@ -17,6 +17,7 @@ const ws = useWebSocket()
 
 const listEl = ref(null)
 const convId = route.params.convId
+const nearBottomThreshold = 120
 
 // Find conversation info
 const conv = convStore.list.find(c => c.id === convId)
@@ -41,7 +42,7 @@ onMounted(async () => {
   const wsUrl = `${protocol}//${location.host}/ws/chat?token=${token}&conversation_id=${convId}`
   ws.connect(wsUrl)
   await chat.loadMessages(convId)
-  scrollToBottom()
+  scrollToBottom(true)
 })
 
 onUnmounted(() => {
@@ -51,11 +52,26 @@ onUnmounted(() => {
 })
 
 watch(() => chat.messages.length, () => {
-  nextTick(scrollToBottom)
+  const shouldStickBottom = isNearBottom()
+  nextTick(() => scrollToBottom(shouldStickBottom))
 })
 
-function scrollToBottom() {
+watch(() => chat.isRemoteTyping, (typing) => {
+  if (!typing) return
+  const shouldStickBottom = isNearBottom()
+  nextTick(() => scrollToBottom(shouldStickBottom))
+})
+
+function isNearBottom() {
+  if (!listEl.value) return true
+  const el = listEl.value
+  const remain = el.scrollHeight - el.scrollTop - el.clientHeight
+  return remain <= nearBottomThreshold
+}
+
+function scrollToBottom(force = false) {
   if (listEl.value) {
+    if (!force && !isNearBottom()) return
     listEl.value.scrollTop = listEl.value.scrollHeight
   }
 }
