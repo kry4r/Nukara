@@ -13,10 +13,13 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"nukara/backend/internal/agent"
+	"nukara/backend/internal/agentx"
+	"nukara/backend/internal/agentx/llm"
 	"nukara/backend/internal/apns"
 	"nukara/backend/internal/store"
 )
@@ -39,11 +42,13 @@ func TestWSChatMessageFlow(t *testing.T) {
 	})
 
 	required := map[string]bool{
-		"ack":               false,
-		"multi_reply_start": false,
-		"message":           false,
-		"multi_reply_end":   false,
-		"bot_status_update": false,
+		"ack":          false,
+		"typing_true":  false,
+		"stream_start": false,
+		"stream_chunk": false,
+		"stream_end":   false,
+		"message":      false,
+		"typing_false": false,
 	}
 
 	deadline := time.Now().Add(5 * time.Second)
@@ -53,33 +58,41 @@ func TestWSChatMessageFlow(t *testing.T) {
 			continue
 		}
 		eventType, _ := event["type"].(string)
-		if _, ok := required[eventType]; ok {
-			required[eventType] = true
-		}
 		if eventType == "ack" {
+			required["ack"] = true
 			if got := event["client_msg_id"]; got != "client-msg-1" {
 				t.Fatalf("unexpected client_msg_id: %v", got)
 			}
 		}
+		if eventType == "typing" {
+			isTyping, _ := event["is_typing"].(bool)
+			if isTyping {
+				required["typing_true"] = true
+			} else {
+				required["typing_false"] = true
+			}
+		}
+		if eventType == "stream_start" {
+			required["stream_start"] = true
+		}
+		if eventType == "stream_chunk" {
+			delta, _ := event["delta"].(string)
+			if strings.TrimSpace(delta) != "" {
+				required["stream_chunk"] = true
+			}
+		}
+		if eventType == "stream_end" {
+			required["stream_end"] = true
+		}
 		// Verify status extraction: message text should be cleaned (no tags)
 		if eventType == "message" {
+			required["message"] = true
 			content, _ := event["content"].(map[string]any)
 			if content != nil {
 				text, _ := content["text"].(string)
 				if strings.Contains(text, "[status:") || strings.Contains(text, "[emotion:") {
 					t.Fatalf("message text still contains tags: %s", text)
 				}
-			}
-		}
-		// Verify bot_status_update has extracted emoji/status
-		if eventType == "bot_status_update" {
-			emoji, _ := event["emoji"].(string)
-			statusText, _ := event["text"].(string)
-			if emoji == "" {
-				t.Fatal("bot_status_update missing emoji")
-			}
-			if statusText == "" {
-				t.Fatal("bot_status_update missing status text")
 			}
 		}
 
@@ -102,6 +115,104 @@ func TestWSChatMessageFlow(t *testing.T) {
 	}
 
 	_ = botID
+}
+
+func TestWSChatQueueingWaitsForFinalMessageBeforeNextStreamStart(t *testing.T) {
+	var callIndex int32
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		idx := atomic.AddInt32(&callIndex, 1)
+		if idx == 1 {
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"第一段回复\"}}]}\n\n"))
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
+			time.Sleep(4 * time.Second)
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"，还在继续\"}}]}\n\n"))
+			_, _ = w.Write([]byte("data: [DONE]\n\n"))
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
+			return
+		}
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"第二段回复\"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+	}))
+	defer provider.Close()
+
+	server, token, _, convID, closeFn := setupTestServerWithInjectedRuntime(t, agentx.NewRuntime(agentx.RuntimeDeps{
+		ProviderClient: llm.NewOpenAICompatClient(provider.URL, "test-key", "test-model", provider.Client()),
+	}))
+	defer closeFn()
+
+	ws := mustDialWS(t, server.URL, token)
+	defer ws.Close()
+
+	ws.SendJSON(t, map[string]any{
+		"type":            "message",
+		"conversation_id": convID,
+		"client_msg_id":   "msg-a",
+		"content": map[string]any{
+			"type": "text",
+			"text": "A",
+		},
+	})
+
+	var sentB bool
+	var ackB bool
+	var aReplyID string
+	var seenAMessage bool
+	var seenBStart bool
+	deadline := time.Now().Add(20 * time.Second)
+	for time.Now().Before(deadline) {
+		event := ws.ReadJSON(t, 3*time.Second)
+		if event == nil {
+			continue
+		}
+		eventType, _ := event["type"].(string)
+		switch eventType {
+		case "stream_chunk":
+			if !sentB {
+				sentB = true
+				ws.SendJSON(t, map[string]any{
+					"type":            "message",
+					"conversation_id": convID,
+					"client_msg_id":   "msg-b",
+					"content": map[string]any{
+						"type": "text",
+						"text": "B",
+					},
+				})
+			}
+		case "ack":
+			if event["client_msg_id"] == "msg-b" {
+				ackB = true
+			}
+		case "stream_start":
+			replyID, _ := event["reply_id"].(string)
+			if aReplyID == "" {
+				aReplyID = replyID
+			} else if replyID != aReplyID {
+				seenBStart = true
+				if !seenAMessage {
+					t.Fatalf("stream_start for B arrived before final message of A")
+				}
+			}
+		case "message":
+			replyID, _ := event["reply_id"].(string)
+			if replyID == aReplyID && aReplyID != "" {
+				seenAMessage = true
+			}
+		}
+		if ackB && seenAMessage && seenBStart {
+			return
+		}
+	}
+
+	t.Fatalf("queueing assertion not satisfied ackB=%v seenAMessage=%v seenBStart=%v", ackB, seenAMessage, seenBStart)
 }
 
 func TestWSChatDisconnectStillSavesReply(t *testing.T) {
@@ -320,6 +431,40 @@ func TestProactiveMessageBroadcastToWS(t *testing.T) {
 func setupTestServer(t *testing.T) (*httptest.Server, string, string, string, func()) {
 	httpServer, token, _, botID, convID, _, closeFn := setupTestServerWithStore(t, fakeNanobotHandler())
 	return httpServer, token, botID, convID, closeFn
+}
+
+func setupTestServerWithInjectedRuntime(t *testing.T, runtime wsChatRuntime) (*httptest.Server, string, string, string, func()) {
+	t.Helper()
+
+	st := store.NewStore()
+	user, err := st.CreateUser("13900139002", "runtime-tester")
+	if err != nil {
+		t.Fatalf("create user failed: %v", err)
+	}
+	bot := st.CreateBot(user.ID, store.Bot{
+		Name:          "runtime-bot",
+		Summary:       "温柔",
+		SpeakingStyle: "自然",
+		Background:    "测试",
+		Gender:        "female",
+	})
+	conv, found := st.FindConversationByBot(user.ID, bot.ID)
+	if !found {
+		t.Fatalf("conversation not found")
+	}
+
+	apiServer := NewServer(st, nil, apns.NewClient("com.nukara.app"), "test-secret", "")
+	apiServer.SetChatRuntime(runtime)
+
+	token, err := apiServer.issueToken(user.ID)
+	if err != nil {
+		t.Fatalf("issue token failed: %v", err)
+	}
+
+	httpServer := httptest.NewServer(apiServer.HandlerFor("gateway"))
+	return httpServer, token, bot.ID, conv.ID, func() {
+		httpServer.Close()
+	}
 }
 
 func setupTestServerWithStore(t *testing.T, nanobotHandler http.Handler) (*httptest.Server, string, string, string, string, *store.Store, func()) {
@@ -619,26 +764,9 @@ func writeServerJSON(conn net.Conn, msg any) {
 	conn.Write(frame)
 }
 
-func TestCalcDelay(t *testing.T) {
-	tests := []struct {
-		name     string
-		msgLen   int
-		expected time.Duration
-	}{
-		{"short message", 3, 2 * time.Second},
-		{"boundary 9 chars", 9, 2 * time.Second},
-		{"boundary 10 chars", 10, 1500 * time.Millisecond},
-		{"medium message", 30, 1500 * time.Millisecond},
-		{"boundary 50 chars", 50, 1500 * time.Millisecond},
-		{"long message", 80, 1 * time.Second},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := calcDelay(tt.msgLen)
-			if got != tt.expected {
-				t.Fatalf("calcDelay(%d) = %v, want %v", tt.msgLen, got, tt.expected)
-			}
-		})
+func TestAggregateWindowIsFixedThreeSeconds(t *testing.T) {
+	if aggregateWindow != 3*time.Second {
+		t.Fatalf("aggregateWindow=%v want %v", aggregateWindow, 3*time.Second)
 	}
 }
 

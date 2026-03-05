@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -64,84 +65,102 @@ func (s *Server) handleProviderByID(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) listProviders(w http.ResponseWriter, r *http.Request) {
-	s.configMu.Lock()
-	defer s.configMu.Unlock()
-
-	cfg, err := s.loadNanobotConfig()
-	if err != nil {
-		http.Error(w, "Failed to load nanobot config: "+err.Error(), http.StatusInternalServerError)
+	if s.db == nil {
+		http.Error(w, "Database is not configured", http.StatusServiceUnavailable)
 		return
 	}
-	state, err := s.loadProviderState()
+
+	providers, err := s.listProvidersFromDB()
 	if err != nil {
-		http.Error(w, "Failed to load provider state: "+err.Error(), http.StatusInternalServerError)
+		http.Error(w, "Failed to list providers: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(providersFromConfig(cfg, state))
+	_ = json.NewEncoder(w).Encode(providers)
 }
 
 func (s *Server) createProvider(w http.ResponseWriter, r *http.Request) {
-	var p store.Provider
-	if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
+	if s.db == nil {
+		http.Error(w, "Database is not configured", http.StatusServiceUnavailable)
+		return
+	}
+
+	var req store.Provider
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
 
-	id := sanitizeProviderID(p.Name)
-	if id == "" {
+	name := strings.TrimSpace(req.Name)
+	if name == "" {
+		http.Error(w, "Provider name is required", http.StatusBadRequest)
+		return
+	}
+	id := sanitizeProviderID(name)
+	if id == "" || id == "custom" {
 		http.Error(w, "Provider name is invalid", http.StatusBadRequest)
 		return
 	}
 
-	s.configMu.Lock()
-	defer s.configMu.Unlock()
-
-	cfg, err := s.loadNanobotConfig()
-	if err != nil {
-		http.Error(w, "Failed to load nanobot config: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	state, err := s.loadProviderState()
-	if err != nil {
-		http.Error(w, "Failed to load provider state: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	if _, exists := cfg.Providers[id]; exists {
-		http.Error(w, "Provider already exists", http.StatusConflict)
-		return
-	}
-
-	cfg.Providers[id] = nanobotProvider{
-		APIKey:  p.APIKey,
-		APIBase: p.BaseURL,
-	}
-
-	model := firstModel(p.Models)
-	if p.IsActive || len(cfg.Providers) == 1 {
-		if err := applyProviderToConfig(&cfg, id, model); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+	models := normalizeModels(req.Models)
+	priority := req.Priority
+	if priority <= 0 {
+		nextPriority, err := s.nextProviderPriority()
+		if err != nil {
+			http.Error(w, "Failed to allocate provider priority: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
-		state.ActiveProviderID = id
-	} else if strings.TrimSpace(cfg.Agents.Defaults.Model) == "" && model != "" {
-		cfg.Agents.Defaults.Model = model
-	}
-	if strings.TrimSpace(model) != "" {
-		state.ProviderModels[id] = model
+		priority = nextPriority
 	}
 
-	if err := s.saveProviderConfigAndState(cfg, state); err != nil {
-		http.Error(w, "Failed to persist provider data: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	created, err := providerFromConfig(id, cfg, state, detectActiveProviderID(cfg, state), providerPriority(cfg, id))
+	createdAt := time.Time{}
+	updatedAt := time.Time{}
+	modelsRaw, err := json.Marshal(models)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(w, "Invalid provider models", http.StatusBadRequest)
 		return
 	}
+
+	err = s.db.QueryRow(`
+		INSERT INTO providers(id, name, api_key, base_url, models, is_active, priority, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, NOW(), NOW())
+		RETURNING created_at, updated_at
+	`, id, name, strings.TrimSpace(req.APIKey), strings.TrimSpace(req.BaseURL), string(modelsRaw), req.IsActive, priority).
+		Scan(&createdAt, &updatedAt)
+	if err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "duplicate key") {
+			http.Error(w, "Provider already exists", http.StatusConflict)
+			return
+		}
+		http.Error(w, "Failed to create provider: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	model := firstModel(models)
+	if req.IsActive {
+		if err := s.syncActiveProviderToDB(id, model); err != nil {
+			http.Error(w, "Failed to sync active provider: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+	} else if err := s.ensureDefaultProviderReady(); err != nil {
+		http.Error(w, "Failed to initialize default provider: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	created, err := s.getProviderByID(id)
+	if err != nil {
+		http.Error(w, "Failed to load created provider: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if createdAt.IsZero() {
+		createdAt = created.CreatedAt
+	}
+	if updatedAt.IsZero() {
+		updatedAt = created.UpdatedAt
+	}
+	created.CreatedAt = createdAt
+	created.UpdatedAt = updatedAt
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
@@ -149,26 +168,18 @@ func (s *Server) createProvider(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) getProvider(w http.ResponseWriter, r *http.Request, id string) {
-	s.configMu.Lock()
-	defer s.configMu.Unlock()
+	if s.db == nil {
+		http.Error(w, "Database is not configured", http.StatusServiceUnavailable)
+		return
+	}
 
-	cfg, err := s.loadNanobotConfig()
+	provider, err := s.getProviderByID(id)
 	if err != nil {
-		http.Error(w, "Failed to load nanobot config: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	state, err := s.loadProviderState()
-	if err != nil {
-		http.Error(w, "Failed to load provider state: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	provider, err := providerFromConfig(id, cfg, state, detectActiveProviderID(cfg, state), providerPriority(cfg, id))
-	if err != nil {
-		if errors.Is(err, errProviderNotFound) {
+		if errors.Is(err, sql.ErrNoRows) {
 			http.Error(w, "Provider not found", http.StatusNotFound)
 			return
 		}
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(w, "Failed to get provider: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
@@ -177,130 +188,140 @@ func (s *Server) getProvider(w http.ResponseWriter, r *http.Request, id string) 
 }
 
 func (s *Server) updateProvider(w http.ResponseWriter, r *http.Request, id string) {
-	var p store.Provider
-	if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
+	if s.db == nil {
+		http.Error(w, "Database is not configured", http.StatusServiceUnavailable)
+		return
+	}
+
+	current, err := s.getProviderByID(id)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			http.Error(w, "Provider not found", http.StatusNotFound)
+			return
+		}
+		http.Error(w, "Failed to load provider: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	var req store.Provider
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
 
-	s.configMu.Lock()
-	defer s.configMu.Unlock()
-
-	cfg, err := s.loadNanobotConfig()
+	name := strings.TrimSpace(req.Name)
+	if name == "" {
+		name = current.Name
+	}
+	if name == "" {
+		name = current.ID
+	}
+	models := current.Models
+	if req.Models != nil {
+		models = normalizeModels(req.Models)
+	}
+	priority := current.Priority
+	if req.Priority > 0 {
+		priority = req.Priority
+	}
+	isActive := current.IsActive || req.IsActive
+	modelsRaw, err := json.Marshal(models)
 	if err != nil {
-		http.Error(w, "Failed to load nanobot config: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	state, err := s.loadProviderState()
-	if err != nil {
-		http.Error(w, "Failed to load provider state: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	existing, exists := cfg.Providers[id]
-	if !exists {
-		http.Error(w, "Provider not found", http.StatusNotFound)
+		http.Error(w, "Invalid provider models", http.StatusBadRequest)
 		return
 	}
 
-	newID := id
-	if strings.TrimSpace(p.Name) != "" {
-		newID = sanitizeProviderID(p.Name)
-	}
-	if newID == "" {
-		http.Error(w, "Provider name is invalid", http.StatusBadRequest)
+	_, err = s.db.Exec(`
+		UPDATE providers
+		SET name = $1,
+		    api_key = $2,
+		    base_url = $3,
+		    models = $4::jsonb,
+		    is_active = $5,
+		    priority = $6,
+		    updated_at = NOW()
+		WHERE id = $7
+	`, name, strings.TrimSpace(req.APIKey), strings.TrimSpace(req.BaseURL), string(modelsRaw), isActive, priority, id)
+	if err != nil {
+		http.Error(w, "Failed to update provider: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	if newID != id {
-		if _, exists := cfg.Providers[newID]; exists {
-			http.Error(w, "Provider already exists", http.StatusConflict)
+
+	if req.IsActive {
+		if err := s.syncActiveProviderToDB(id, firstModel(models)); err != nil {
+			http.Error(w, "Failed to sync active provider: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
 	}
 
-	entry := existing
-	entry.APIKey = p.APIKey
-	entry.APIBase = p.BaseURL
-
-	activeID := detectActiveProviderID(cfg, state)
-
-	if newID != id {
-		delete(cfg.Providers, id)
-		if model, ok := state.ProviderModels[id]; ok {
-			state.ProviderModels[newID] = model
-		}
-		delete(state.ProviderModels, id)
-	}
-	cfg.Providers[newID] = entry
-
-	model := firstModel(p.Models)
-	if strings.TrimSpace(model) != "" {
-		state.ProviderModels[newID] = model
-	}
-	if p.IsActive || activeID == id || activeID == newID {
-		if err := applyProviderToConfig(&cfg, newID, model); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		state.ActiveProviderID = newID
-	} else if strings.TrimSpace(model) != "" && detectActiveProviderID(cfg, state) == newID {
-		cfg.Agents.Defaults.Model = model
-	}
-
-	if err := s.saveProviderConfigAndState(cfg, state); err != nil {
-		http.Error(w, "Failed to persist provider data: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	updated, err := providerFromConfig(newID, cfg, state, detectActiveProviderID(cfg, state), providerPriority(cfg, newID))
+	updated, err := s.getProviderByID(id)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(w, "Failed to load updated provider: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
+
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(updated)
 }
 
 func (s *Server) deleteProvider(w http.ResponseWriter, r *http.Request, id string) {
-	if id == "custom" {
+	if s.db == nil {
+		http.Error(w, "Database is not configured", http.StatusServiceUnavailable)
+		return
+	}
+	if strings.EqualFold(strings.TrimSpace(id), "custom") {
 		http.Error(w, "Provider custom cannot be deleted", http.StatusBadRequest)
 		return
 	}
 
-	s.configMu.Lock()
-	defer s.configMu.Unlock()
-
-	cfg, err := s.loadNanobotConfig()
+	var existed bool
+	var wasActive bool
+	err := s.db.QueryRow(`SELECT EXISTS(SELECT 1 FROM providers WHERE id = $1), COALESCE((SELECT is_active FROM providers WHERE id = $1), FALSE)`, strings.TrimSpace(id)).
+		Scan(&existed, &wasActive)
 	if err != nil {
-		http.Error(w, "Failed to load nanobot config: "+err.Error(), http.StatusInternalServerError)
+		http.Error(w, "Failed to query provider: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	state, err := s.loadProviderState()
-	if err != nil {
-		http.Error(w, "Failed to load provider state: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	if _, exists := cfg.Providers[id]; !exists {
+	if !existed {
 		http.Error(w, "Provider not found", http.StatusNotFound)
 		return
 	}
-	delete(cfg.Providers, id)
-	delete(state.ProviderModels, id)
-	if state.ActiveProviderID == id {
-		state.ActiveProviderID = "custom"
-	}
 
-	if err := s.saveProviderConfigAndState(cfg, state); err != nil {
-		http.Error(w, "Failed to persist provider data: "+err.Error(), http.StatusInternalServerError)
+	if _, err := s.db.Exec(`DELETE FROM providers WHERE id = $1`, strings.TrimSpace(id)); err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "foreign key") {
+			http.Error(w, "Provider is in use by users/bots; clear assignments before delete", http.StatusConflict)
+			return
+		}
+		http.Error(w, "Failed to delete provider: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte(`{"message":"Provider deleted"}`))
+	defaultID, err := s.readSystemSettingValue("default_chat_provider_id")
+	if err != nil {
+		http.Error(w, "Failed to check default provider: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if wasActive || strings.EqualFold(strings.TrimSpace(defaultID), strings.TrimSpace(id)) {
+		if err := s.ensureDefaultProviderReady(); err != nil {
+			http.Error(w, "Failed to re-elect default provider: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"message": "Provider deleted",
+		"id":      id,
+	})
 }
 
 func (s *Server) switchProvider(w http.ResponseWriter, r *http.Request, id string) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.db == nil {
+		http.Error(w, "Database is not configured", http.StatusServiceUnavailable)
 		return
 	}
 
@@ -309,55 +330,35 @@ func (s *Server) switchProvider(w http.ResponseWriter, r *http.Request, id strin
 		Models []string `json:"models"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&req)
+
+	provider, err := s.getProviderByID(id)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			http.Error(w, "Provider not found", http.StatusNotFound)
+			return
+		}
+		http.Error(w, "Failed to load provider: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
 	model := strings.TrimSpace(req.Model)
 	if model == "" {
 		model = firstModel(req.Models)
 	}
-
-	s.configMu.Lock()
-	defer s.configMu.Unlock()
-
-	cfg, err := s.loadNanobotConfig()
-	if err != nil {
-		http.Error(w, "Failed to load nanobot config: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	state, err := s.loadProviderState()
-	if err != nil {
-		http.Error(w, "Failed to load provider state: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	if _, exists := cfg.Providers[id]; !exists {
-		http.Error(w, "Provider not found", http.StatusNotFound)
-		return
-	}
 	if model == "" {
-		model = firstModel([]string{state.ProviderModels[id]})
+		model = firstModel(provider.Models)
 	}
 
-	if err := applyProviderToConfig(&cfg, id, model); err != nil {
-		if errors.Is(err, errProviderNotFound) {
-			http.Error(w, "Provider not found", http.StatusNotFound)
-			return
-		}
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	if strings.TrimSpace(model) != "" {
-		state.ProviderModels[id] = strings.TrimSpace(model)
-	}
-	state.ActiveProviderID = id
-	if err := s.saveProviderConfigAndState(cfg, state); err != nil {
-		http.Error(w, "Failed to persist provider data: "+err.Error(), http.StatusInternalServerError)
+	if err := s.syncActiveProviderToDB(id, model); err != nil {
+		http.Error(w, "Failed to switch provider: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	responseModel := strings.TrimSpace(cfg.Agents.Defaults.Model)
-	w.WriteHeader(http.StatusOK)
+	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"message":            "Provider switched",
 		"active_provider_id": id,
-		"model":              responseModel,
+		"model":              model,
 	})
 }
 
@@ -380,7 +381,7 @@ func (s *Server) testProvider(w http.ResponseWriter, r *http.Request, id string)
 
 	w.Header().Set("Content-Type", "application/json")
 	if err != nil {
-		if errors.Is(err, errProviderNotFound) {
+		if errors.Is(err, sql.ErrNoRows) {
 			http.Error(w, "Provider not found", http.StatusNotFound)
 			return
 		}
@@ -401,22 +402,129 @@ func (s *Server) testProvider(w http.ResponseWriter, r *http.Request, id string)
 	})
 }
 
-func providerPriority(cfg nanobotConfig, id string) int {
-	ids := sortedProviderIDs(cfg.Providers)
-	for i, candidate := range ids {
-		if candidate == id {
-			return i + 1
-		}
+func (s *Server) nextProviderPriority() (int, error) {
+	var next int
+	err := s.db.QueryRow(`SELECT COALESCE(MAX(priority), 0) + 1 FROM providers`).Scan(&next)
+	if err != nil {
+		return 0, err
 	}
-	return 0
+	if next <= 0 {
+		next = 1
+	}
+	return next, nil
 }
 
-func (s *Server) saveProviderConfigAndState(cfg nanobotConfig, state adminProviderState) error {
-	if err := s.saveNanobotConfig(cfg); err != nil {
+func (s *Server) listProvidersFromDB() ([]store.Provider, error) {
+	rows, err := s.db.Query(`
+		SELECT id, name, api_key, base_url, models, is_active, priority, created_at, updated_at
+		FROM providers
+		WHERE id <> 'custom'
+		ORDER BY priority ASC, created_at DESC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	providers := make([]store.Provider, 0, 8)
+	for rows.Next() {
+		var p store.Provider
+		var modelsRaw []byte
+		if scanErr := rows.Scan(&p.ID, &p.Name, &p.APIKey, &p.BaseURL, &modelsRaw, &p.IsActive, &p.Priority, &p.CreatedAt, &p.UpdatedAt); scanErr != nil {
+			return nil, scanErr
+		}
+		p.Models = unmarshalModels(modelsRaw)
+		p.Name = strings.TrimSpace(p.Name)
+		if p.Name == "" {
+			p.Name = p.ID
+		}
+		providers = append(providers, p)
+	}
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+	return providers, nil
+}
+
+func (s *Server) getProviderByID(id string) (store.Provider, error) {
+	var p store.Provider
+	var modelsRaw []byte
+	err := s.db.QueryRow(`
+		SELECT id, name, api_key, base_url, models, is_active, priority, created_at, updated_at
+		FROM providers
+		WHERE id = $1 AND id <> 'custom'
+	`, strings.TrimSpace(id)).
+		Scan(&p.ID, &p.Name, &p.APIKey, &p.BaseURL, &modelsRaw, &p.IsActive, &p.Priority, &p.CreatedAt, &p.UpdatedAt)
+	if err != nil {
+		return store.Provider{}, err
+	}
+	p.Models = unmarshalModels(modelsRaw)
+	p.Name = strings.TrimSpace(p.Name)
+	if p.Name == "" {
+		p.Name = p.ID
+	}
+	return p, nil
+}
+
+func (s *Server) ensureDefaultProviderReady() error {
+	defaultProviderID, err := s.readSystemSettingValue("default_chat_provider_id")
+	if err != nil {
 		return err
 	}
-	if err := s.saveProviderState(state); err != nil {
+	if defaultProviderID != "" {
+		var exists bool
+		if err := s.db.QueryRow(`SELECT EXISTS (SELECT 1 FROM providers WHERE id = $1)`, strings.TrimSpace(defaultProviderID)).Scan(&exists); err != nil {
+			return err
+		}
+		if exists {
+			return nil
+		}
+	}
+
+	providers, err := s.listProvidersFromDB()
+	if err != nil {
 		return err
 	}
-	return nil
+	if len(providers) == 0 {
+		return nil
+	}
+	chosen := providers[0]
+	return s.syncActiveProviderToDB(chosen.ID, firstModel(chosen.Models))
+}
+
+func (s *Server) syncActiveProviderToDB(activeProviderID, model string) error {
+	if s.db == nil {
+		return nil
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if _, err = tx.Exec(`UPDATE providers SET is_active = FALSE`); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(`UPDATE providers SET is_active = TRUE, updated_at = NOW() WHERE id = $1`, strings.TrimSpace(activeProviderID)); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(`
+		INSERT INTO system_settings(key, value, updated_at)
+		VALUES ('default_chat_provider_id', jsonb_build_object('value', $1), NOW())
+		ON CONFLICT (key)
+		DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
+	`, strings.TrimSpace(activeProviderID)); err != nil {
+		return err
+	}
+	if strings.TrimSpace(model) != "" {
+		if _, err = tx.Exec(`
+			INSERT INTO system_settings(key, value, updated_at)
+			VALUES ('default_chat_model', jsonb_build_object('value', $1), NOW())
+			ON CONFLICT (key)
+			DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
+		`, strings.TrimSpace(model)); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }

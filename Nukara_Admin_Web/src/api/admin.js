@@ -123,8 +123,33 @@ export function chatTestProvider(id, message, model = '') {
   })
 }
 
-export function restartNanobot() {
-  return request('/runtime/restart-nanobot', {
+export function restartRuntime() {
+  return request('/runtime/restart-agent-runtime', {
     method: 'POST',
+  })
+}
+
+export function listUserProviderSettings({ q = '', limit = 50, offset = 0 } = {}) {
+  const search = new URLSearchParams()
+  if (q) search.set('q', q)
+  if (limit !== undefined) search.set('limit', String(limit))
+  if (offset !== undefined) search.set('offset', String(offset))
+  const query = search.toString()
+  return request(`/users/provider-settings${query ? `?${query}` : ''}`)
+}
+
+export function updateUserProviderSetting(userId, payload) {
+  return request(`/users/provider-settings/${userId}`, {
+    method: 'PUT',
+    body: {
+      provider_id: payload.provider_id,
+      model: payload.model || '',
+    },
+  })
+}
+
+export function clearUserProviderSetting(userId) {
+  return request(`/users/provider-settings/${userId}`, {
+    method: 'DELETE',
   })
 }

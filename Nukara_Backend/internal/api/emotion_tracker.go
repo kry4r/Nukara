@@ -42,16 +42,19 @@ func (s *Server) bufferAndAnalyzeEmotion(userID string, bot store.Bot, conv stor
 
 // runEmotionAnalysis sends buffered messages to the LLM for batch emotion analysis.
 func (s *Server) runEmotionAnalysis(userID string, bot store.Bot, conv store.Conversation, messages []string) {
+	if s.runtime == nil {
+		return
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
 	prompt := buildEmotionPrompt(messages)
 	convID := agent.NanobotConvID(userID, bot.ID, conv.ID)
 	sysCtx := agent.BuildSystemContext(bot, nil)
-
-	reply, err := s.agent.Chat(ctx, convID, "default", prompt, sysCtx)
+	reply, _, _, _, err := s.runRuntimeChatText(ctx, userID, bot.ID, convID, prompt, sysCtx)
 	if err != nil {
-		log.Printf("[emotion] LLM analysis failed: user=%s bot=%s err=%v", userID, bot.ID, err)
+		log.Printf("[emotion] runtime analysis failed: user=%s bot=%s err=%v", userID, bot.ID, err)
 		return
 	}
 

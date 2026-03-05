@@ -1,7 +1,7 @@
 #!/bin/bash
 # ============================================================
 # Nukara 一键 Docker 启动脚本
-# 启动全部服务：postgres + redis + nanobot + gateway
+# 启动全部服务：postgres + redis + gateway
 # 启动后 iOS App 可直接对接测试
 # ============================================================
 set -euo pipefail
@@ -52,15 +52,15 @@ echo "============================================================"
 echo ""
 
 # ---- Step 1: 停止旧容器（如果有）----
-echo "[1/5] 清理旧容器..."
+echo "[1/4] 清理旧容器..."
 docker compose -f "$COMPOSE_FILE" down --remove-orphans 2>/dev/null || true
 
 # ---- Step 2: 构建镜像 ----
-echo "[2/5] 构建镜像（gateway + nanobot）..."
+echo "[2/4] 构建镜像（gateway）..."
 docker compose -f "$COMPOSE_FILE" build --parallel 2>&1 | tail -5
 
 # ---- Step 3: 启动基础设施 ----
-echo "[3/5] 启动 postgres + redis..."
+echo "[3/4] 启动 postgres + redis..."
 docker compose -f "$COMPOSE_FILE" up -d postgres redis
 
 echo "     等待 postgres 就绪..."
@@ -90,20 +90,8 @@ for i in $(seq 1 15); do
   sleep 1
 done
 
-# ---- Step 4: 启动 nanobot ----
-echo "[4/5] 启动 nanobot（AI agent）..."
-docker compose -f "$COMPOSE_FILE" up -d nanobot
-sleep 2
-
-if ! docker compose -f "$COMPOSE_FILE" ps nanobot --format '{{.State}}' 2>/dev/null | grep -q "running"; then
-  echo "⚠️  nanobot 可能未正常启动，查看日志："
-  docker compose -f "$COMPOSE_FILE" logs nanobot | tail -10
-  echo ""
-  echo "继续启动 gateway（agent 会 fallback 到 stub 回复）..."
-fi
-
-# ---- Step 5: 启动 gateway ----
-echo "[5/5] 启动 gateway..."
+# ---- Step 4: 启动 gateway ----
+echo "[4/4] 启动 gateway..."
 docker compose -f "$COMPOSE_FILE" up -d gateway
 
 echo "     等待 gateway 就绪..."

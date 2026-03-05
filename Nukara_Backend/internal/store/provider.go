@@ -19,12 +19,15 @@ type Provider struct {
 
 func (ps *PostgresStore) CreateProvider(p Provider) (Provider, error) {
 	modelsJSON, _ := json.Marshal(p.Models)
+	if p.ID == "" {
+		p.ID = NewID()
+	}
 
 	err := ps.db.QueryRow(`
-		INSERT INTO providers (name, api_key, base_url, models, is_active, priority)
-		VALUES ($1, $2, $3, $4, $5, $6)
+		INSERT INTO providers (id, name, api_key, base_url, models, is_active, priority, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW())
 		RETURNING id, created_at, updated_at
-	`, p.Name, p.APIKey, p.BaseURL, modelsJSON, p.IsActive, p.Priority).
+	`, p.ID, p.Name, p.APIKey, p.BaseURL, modelsJSON, p.IsActive, p.Priority).
 		Scan(&p.ID, &p.CreatedAt, &p.UpdatedAt)
 
 	return p, err

@@ -11,9 +11,6 @@ services:
       NUKARA_JWT_SECRET: ${NUKARA_JWT_SECRET:-nukara-dev-secret}
       NUKARA_POSTGRES_DSN: postgres://postgres:postgres@postgres:5432/nukara?sslmode=disable
       NUKARA_REDIS_ADDR: redis:6379
-      NUKARA_NANOBOT_HTTP_URL: http://nanobot:8081
-      NUKARA_NANOBOT_WS_URL: ws://nanobot:8081/ws/chat
-      NUKARA_NANOBOT_TOKEN: ${NUKARA_NANOBOT_TOKEN:-}
       NUKARA_APNS_TOPIC: ${NUKARA_APNS_TOPIC:-com.nukara.app}
       NUKARA_PROACTIVE_INTERVAL: ${NUKARA_PROACTIVE_INTERVAL:-1m}
       NUKARA_INACTIVITY_THRESHOLD: ${NUKARA_INACTIVITY_THRESHOLD:-3m}
@@ -25,8 +22,6 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-      nanobot:
-        condition: service_started
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8080/api/v1/gateway/health"]
       interval: 5s
@@ -64,28 +59,6 @@ services:
       retries: 10
     restart: unless-stopped
 
-  # --- Nanobot AI Agent (extend-chat gateway) ---
-  nanobot:
-    build:
-      context: ${NANOBOT_SRC_DIR:-/Users/nidhogg/Desktop/nanobot}
-    command: ["gateway"]
-    environment:
-      NANOBOT_PROVIDERS__CUSTOM__API_KEY: ${NUKARA_ASTRON_API_KEY:-}
-      NANOBOT_PROVIDERS__CUSTOM__API_BASE: ${NUKARA_ASTRON_BASE_URL:-https://maas-api.cn-huabei-1.xf-yun.com/v2}
-      NANOBOT_AGENTS__DEFAULTS__MODEL: ${NUKARA_ASTRON_CHAT_MODEL:-xminimaxm25}
-    volumes:
-      - ./nanobot/config.json:/root/.nanobot/config.json:ro
-      - nanobot-data:/data
-    ports:
-      - "9091:8081"
-    healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:8081/health"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
-      start_period: 15s
-    restart: unless-stopped
-
   # --- Proactive messaging scheduler ---
   proactive:
     build:
@@ -99,9 +72,6 @@ services:
       NUKARA_JWT_SECRET: ${NUKARA_JWT_SECRET:-nukara-dev-secret}
       NUKARA_POSTGRES_DSN: postgres://postgres:postgres@postgres:5432/nukara?sslmode=disable
       NUKARA_REDIS_ADDR: redis:6379
-      NUKARA_NANOBOT_HTTP_URL: http://nanobot:8081
-      NUKARA_NANOBOT_WS_URL: ws://nanobot:8081/ws/chat
-      NUKARA_NANOBOT_TOKEN: ${NUKARA_NANOBOT_TOKEN:-}
       NUKARA_APNS_TOPIC: ${NUKARA_APNS_TOPIC:-com.nukara.app}
       NUKARA_PROACTIVE_INTERVAL: ${NUKARA_PROACTIVE_INTERVAL:-5m}
     depends_on:
@@ -109,12 +79,9 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-      nanobot:
-        condition: service_started
       gateway:
         condition: service_healthy
     restart: unless-stopped
 
 volumes:
   pgdata:
-  nanobot-data:

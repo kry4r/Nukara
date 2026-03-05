@@ -16,13 +16,33 @@ import (
 	"time"
 
 	"nukara/backend/internal/agent"
+	"nukara/backend/internal/agentx"
+	"nukara/backend/internal/agentx/llm"
+	agentprovider "nukara/backend/internal/agentx/provider"
+	"nukara/backend/internal/agentx/subtasks"
 	"nukara/backend/internal/apns"
 	"nukara/backend/internal/store"
 )
 
+type wsChatRuntime interface {
+	StreamTurn(ctx context.Context, req agentx.TurnRequest) (<-chan agentx.StreamDelta, <-chan agentx.FinalTurn, error)
+}
+
+type routeStore interface {
+	ListProviders() ([]store.Provider, error)
+	GetUserProviderSetting(userID string) (providerID, model string, ok bool)
+	GetBotProviderOverride(userID, botID string) (providerID, model string, ok bool)
+	GetSystemSetting(key string) (value string, ok bool)
+}
+
 type Server struct {
 	store    store.DataStore
 	agent    *agent.Agent
+	runtime  wsChatRuntime
+	wsQueue  *wsConversationQueue
+	subtasks interface {
+		Run(ctx context.Context, in subtasks.Input) (subtasks.Result, error)
+	}
 	apns     *apns.Client
 	wsHub    *wsHub
 	tokenKey []byte
@@ -33,7 +53,7 @@ func NewServer(st store.DataStore, agentClient *agent.Agent, apnsClient *apns.Cl
 	if tokenSecret == "" {
 		tokenSecret = "nukara-dev-secret"
 	}
-	return &Server{
+	s := &Server{
 		store:    st,
 		agent:    agentClient,
 		apns:     apnsClient,
@@ -41,6 +61,57 @@ func NewServer(st store.DataStore, agentClient *agent.Agent, apnsClient *apns.Cl
 		tokenKey: []byte(tokenSecret),
 		tokenTTL: 30 * 24 * time.Hour,
 	}
+	if agentClient != nil {
+		deps := agentx.RuntimeDeps{
+			ProviderClient: llm.NewLegacyAgentClient(agentClient),
+		}
+		if rs, ok := st.(routeStore); ok {
+			deps.RouteResolver = agentprovider.NewRouter(rs)
+		}
+		s.runtime = agentx.NewRuntime(deps)
+	}
+	s.subtasks = subtasks.NewRunner(subtasks.RunnerDeps{
+		Store: st,
+		MemoryExtractor: func(ctx context.Context, in subtasks.Input) (string, error) {
+			if s.agent == nil {
+				return `{"items":[]}`, nil
+			}
+			prompt := buildMemoryExtractPrompt(in.UserText, in.BotText)
+			raw, err := s.agent.Chat(ctx, agent.NanobotConvID(in.UserID, in.BotID, in.ConversationID), "subtask", prompt, nil)
+			if err != nil {
+				return "", err
+			}
+			return raw, nil
+		},
+		CompactUpdater: func(ctx context.Context, in subtasks.Input) (string, error) {
+			if s.agent == nil {
+				return `{"summary":"","facts":[]}`, nil
+			}
+			prompt := buildCompactPrompt(in.UserText, in.BotText)
+			raw, err := s.agent.Chat(ctx, agent.NanobotConvID(in.UserID, in.BotID, in.ConversationID), "subtask", prompt, nil)
+			if err != nil {
+				return "", err
+			}
+			return raw, nil
+		},
+		PersonaIterator: func(ctx context.Context, in subtasks.Input) (string, error) {
+			if s.agent == nil {
+				return `{"self_cognition_adds":[]}`, nil
+			}
+			prompt := buildPersonaIteratePrompt(in.UserText, in.BotText)
+			raw, err := s.agent.Chat(ctx, agent.NanobotConvID(in.UserID, in.BotID, in.ConversationID), "subtask", prompt, nil)
+			if err != nil {
+				return "", err
+			}
+			return raw, nil
+		},
+	})
+	s.wsQueue = newWSConversationQueue(s)
+	return s
+}
+
+func (s *Server) SetChatRuntime(runtime wsChatRuntime) {
+	s.runtime = runtime
 }
 
 func (s *Server) Handler() http.Handler {
@@ -223,6 +294,9 @@ func (s *Server) handleBots(w http.ResponseWriter, r *http.Request) {
 			Name          string   `json:"name"`
 			Description   string   `json:"description"`
 			Summary       string   `json:"summary"`
+			Relationship  string   `json:"relationship"`
+			Role          string   `json:"role"`
+			SelfCognition []string `json:"self_cognition"`
 			SpeakingStyle string   `json:"speaking_style"`
 			Background    string   `json:"background"`
 			Traits        []string `json:"traits"`
@@ -241,6 +315,14 @@ func (s *Server) handleBots(w http.ResponseWriter, r *http.Request) {
 		if strings.TrimSpace(req.Summary) != "" {
 			summary = req.Summary
 		}
+		relationship := strings.TrimSpace(req.Relationship)
+		if relationship == "" {
+			relationship = strings.TrimSpace(summary)
+		}
+		role := strings.TrimSpace(req.Role)
+		if role == "" {
+			role = strings.TrimSpace(req.Background)
+		}
 		if req.Gender == "" {
 			req.Gender = "unknown"
 		}
@@ -248,6 +330,9 @@ func (s *Server) handleBots(w http.ResponseWriter, r *http.Request) {
 		created := s.store.CreateBot(userID, store.Bot{
 			Name:                strings.TrimSpace(req.Name),
 			Summary:             strings.TrimSpace(summary),
+			Relationship:        relationship,
+			Role:                role,
+			SelfCognition:       req.SelfCognition,
 			SpeakingStyle:       strings.TrimSpace(req.SpeakingStyle),
 			Background:          strings.TrimSpace(req.Background),
 			Traits:              req.Traits,
@@ -323,6 +408,9 @@ func (s *Server) handleBotByID(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			Name          string   `json:"name"`
 			Description   string   `json:"description"`
+			Relationship  string   `json:"relationship"`
+			Role          string   `json:"role"`
+			SelfCognition []string `json:"self_cognition"`
 			SpeakingStyle string   `json:"speaking_style"`
 			Background    string   `json:"background"`
 			Traits        []string `json:"traits"`
@@ -336,6 +424,9 @@ func (s *Server) handleBotByID(w http.ResponseWriter, r *http.Request) {
 		updated, found := s.store.UpdateBot(userID, botID, store.Bot{
 			Name:          req.Name,
 			Summary:       summary,
+			Relationship:  strings.TrimSpace(req.Relationship),
+			Role:          strings.TrimSpace(req.Role),
+			SelfCognition: req.SelfCognition,
 			SpeakingStyle: req.SpeakingStyle,
 			Background:    req.Background,
 			Traits:        req.Traits,
@@ -693,12 +784,12 @@ func (s *Server) handleGatewayTestChat(w http.ResponseWriter, r *http.Request) {
 
 	convID := agent.NanobotConvID(userID, bot.ID, conv.ID)
 	sysCtx := agent.BuildSystemContext(bot, nil)
-	raw, chatErr := s.agent.Chat(context.Background(), convID, "default", req.Message, sysCtx)
+	reply, emotion, _, _, chatErr := s.runRuntimeChatText(context.Background(), userID, bot.ID, convID, req.Message, sysCtx)
 	if chatErr != nil {
-		log.Printf("[server] agent.Chat failed: %v", chatErr)
-		raw = fmt.Sprintf("%s：我记住了你说的。要不要继续聊聊？", bot.Name)
+		log.Printf("[server] runtime chat failed: %v", chatErr)
+		reply = fmt.Sprintf("%s：我记住了你说的。要不要继续聊聊？", bot.Name)
+		emotion = "gentle"
 	}
-	reply, emotion := agent.ExtractEmotion(raw)
 	_, _ = s.store.SaveMessage(userID, store.Message{
 		ConversationID: conv.ID,
 		SenderType:     "bot",
@@ -715,7 +806,7 @@ func (s *Server) handleGatewayTestChat(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Debug {
 		resp["debug"] = map[string]any{
-			"model_used":          "nanobot",
+			"model_used":          "agentx-runtime",
 			"total_input_tokens":  len(req.Message),
 			"total_output_tokens": len(reply),
 		}
@@ -758,12 +849,12 @@ func (s *Server) handleGatewayTestChatStream(w http.ResponseWriter, r *http.Requ
 
 	convID := agent.NanobotConvID(userID, bot.ID, conv.ID)
 	sysCtx := agent.BuildSystemContext(bot, nil)
-	raw, chatErr := s.agent.Chat(context.Background(), convID, "default", req.Message, sysCtx)
+	reply, emotion, _, _, chatErr := s.runRuntimeChatText(context.Background(), userID, bot.ID, convID, req.Message, sysCtx)
 	if chatErr != nil {
-		log.Printf("[server] agent.Chat (stream) failed: %v", chatErr)
-		raw = fmt.Sprintf("%s：我记住了你说的。要不要继续聊聊？", bot.Name)
+		log.Printf("[server] runtime chat(stream) failed: %v", chatErr)
+		reply = fmt.Sprintf("%s：我记住了你说的。要不要继续聊聊？", bot.Name)
+		emotion = "gentle"
 	}
-	reply, emotion := agent.ExtractEmotion(raw)
 	_, _ = s.store.SaveMessage(userID, store.Message{
 		ConversationID: conv.ID,
 		SenderType:     "bot",
@@ -841,9 +932,9 @@ func (s *Server) handleGatewayTestProactive(w http.ResponseWriter, r *http.Reque
 
 	convID := agent.NanobotConvID(userID, bot.ID, conv.ID)
 	sysCtx := agent.BuildSystemContext(bot, nil)
-	message, proactiveErr := s.agent.Proactive(context.Background(), convID, "proactive", req.TriggerType, sysCtx)
+	message, _, _, _, proactiveErr := s.runRuntimeProactive(context.Background(), userID, bot.ID, convID, req.TriggerType, sysCtx)
 	if proactiveErr != nil {
-		log.Printf("[server] agent.Proactive failed: %v", proactiveErr)
+		log.Printf("[server] runtime proactive failed: %v", proactiveErr)
 		message = fmt.Sprintf("%s：刚想到你了，最近怎么样？", bot.Name)
 	}
 	storedMessage, _ := s.store.SaveMessage(userID, store.Message{

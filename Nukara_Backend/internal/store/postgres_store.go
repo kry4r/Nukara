@@ -125,6 +125,11 @@ CREATE TABLE IF NOT EXISTS bots (
     avatar_url TEXT,
     avatar_base64 TEXT,
     summary TEXT NOT NULL,
+    relationship TEXT NOT NULL DEFAULT '',
+    role TEXT NOT NULL DEFAULT '',
+    self_cognition JSONB NOT NULL DEFAULT '[]'::jsonb,
+    persona_prompt TEXT NOT NULL DEFAULT '',
+    persona_version INT NOT NULL DEFAULT 1,
     speaking_style TEXT NOT NULL,
     background TEXT NOT NULL,
     traits JSONB NOT NULL DEFAULT '[]'::jsonb,
@@ -218,6 +223,27 @@ DO $$ BEGIN
 EXCEPTION WHEN duplicate_column THEN NULL;
 END $$;
 
+DO $$ BEGIN
+    ALTER TABLE bots ADD COLUMN relationship TEXT NOT NULL DEFAULT '';
+EXCEPTION WHEN duplicate_column THEN NULL;
+END $$;
+DO $$ BEGIN
+    ALTER TABLE bots ADD COLUMN role TEXT NOT NULL DEFAULT '';
+EXCEPTION WHEN duplicate_column THEN NULL;
+END $$;
+DO $$ BEGIN
+    ALTER TABLE bots ADD COLUMN self_cognition JSONB NOT NULL DEFAULT '[]'::jsonb;
+EXCEPTION WHEN duplicate_column THEN NULL;
+END $$;
+DO $$ BEGIN
+    ALTER TABLE bots ADD COLUMN persona_prompt TEXT NOT NULL DEFAULT '';
+EXCEPTION WHEN duplicate_column THEN NULL;
+END $$;
+DO $$ BEGIN
+    ALTER TABLE bots ADD COLUMN persona_version INT NOT NULL DEFAULT 1;
+EXCEPTION WHEN duplicate_column THEN NULL;
+END $$;
+
 CREATE TABLE IF NOT EXISTS user_statuses (
     user_id UUID PRIMARY KEY,
     emoji VARCHAR(16) NOT NULL DEFAULT '',
@@ -238,6 +264,103 @@ CREATE TABLE IF NOT EXISTS bot_directives (
     updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_bot_directives_user_bot ON bot_directives(user_id, bot_id, status);
+
+CREATE TABLE IF NOT EXISTS providers (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    api_key TEXT NOT NULL DEFAULT '',
+    base_url TEXT NOT NULL DEFAULT '',
+    models JSONB NOT NULL DEFAULT '[]'::jsonb,
+    is_active BOOLEAN NOT NULL DEFAULT FALSE,
+    priority INT NOT NULL DEFAULT 100,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS user_provider_settings (
+    user_id UUID PRIMARY KEY,
+    provider_id TEXT NOT NULL REFERENCES providers(id),
+    model TEXT,
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS bot_provider_overrides (
+    user_id UUID NOT NULL,
+    bot_id UUID NOT NULL,
+    provider_id TEXT NOT NULL REFERENCES providers(id),
+    model TEXT,
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (user_id, bot_id)
+);
+
+CREATE TABLE IF NOT EXISTS system_settings (
+    key TEXT PRIMARY KEY,
+    value JSONB NOT NULL DEFAULT '{}'::jsonb,
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS agent_turns (
+    id UUID PRIMARY KEY,
+    user_id UUID NOT NULL,
+    bot_id UUID NOT NULL,
+    conversation_id UUID NOT NULL,
+    user_message_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
+    aggregated_user_text TEXT NOT NULL DEFAULT '',
+    bot_reply_text TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS conversation_compacts (
+    conversation_id UUID PRIMARY KEY,
+    compact_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+    until_turn_id UUID,
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS memory_items (
+    id UUID PRIMARY KEY,
+    user_id UUID NOT NULL,
+    bot_id UUID NOT NULL,
+    kind VARCHAR(40) NOT NULL DEFAULT 'fact',
+    owner VARCHAR(20) NOT NULL DEFAULT 'user',
+    content TEXT NOT NULL,
+    importance INT NOT NULL DEFAULT 0,
+    occurred_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    status VARCHAR(20) NOT NULL DEFAULT 'active',
+    topics JSONB NOT NULL DEFAULT '[]'::jsonb,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_memory_items_user_bot ON memory_items(user_id, bot_id, status, occurred_at DESC);
+
+CREATE TABLE IF NOT EXISTS agent_traces (
+    id UUID PRIMARY KEY,
+    user_id UUID NOT NULL,
+    bot_id UUID NOT NULL,
+    conversation_id UUID,
+    trace_type VARCHAR(40) NOT NULL,
+    payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+INSERT INTO providers(id, name, api_key, base_url, models, is_active, priority)
+VALUES (
+    'minimax_m2_5',
+    'MiniMax M2.5',
+    'sk-sp-EVlIgxw4GopFgkn6qlniBjL2n77hoLBK',
+    'https://aigw-gzgy2.cucloud.cn:8443/v1',
+    '["MiniMax-M2.5"]'::jsonb,
+    TRUE,
+    1
+) ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO system_settings(key, value, updated_at)
+VALUES
+    ('default_chat_provider_id', '{"value":"minimax_m2_5"}'::jsonb, NOW()),
+    ('default_chat_model', '{"value":"MiniMax-M2.5"}'::jsonb, NOW()),
+    ('embedding_provider_id', '{"value":"minimax_m2_5"}'::jsonb, NOW()),
+    ('embedding_model', '{"value":"MiniMax-M2.5"}'::jsonb, NOW())
+ON CONFLICT (key) DO NOTHING;
 `
 	_, err := db.ExecContext(ctx, schema)
 	return err
@@ -565,6 +688,15 @@ func (p *PostgresStore) CreateBot(userID string, bot Bot) Bot {
 	if bot.Gender == "" {
 		bot.Gender = "unknown"
 	}
+	if strings.TrimSpace(bot.Relationship) == "" {
+		bot.Relationship = strings.TrimSpace(bot.Summary)
+	}
+	if strings.TrimSpace(bot.Role) == "" {
+		bot.Role = strings.TrimSpace(bot.Background)
+	}
+	if bot.PersonaVersion <= 0 {
+		bot.PersonaVersion = 1
+	}
 
 	now := time.Now().UTC()
 	bot.ID = NewID()
@@ -582,11 +714,12 @@ func (p *PostgresStore) CreateBot(userID string, bot Bot) Bot {
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	selfCognitionRaw, _ := json.Marshal(bot.SelfCognition)
 	_, err = tx.ExecContext(ctx,
-		`INSERT INTO bots(id, user_id, name, avatar_url, avatar_base64, summary, speaking_style, background, traits, gender, chat_background_style, created_at, updated_at)
-		 VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$12)`,
-		bot.ID, userID, bot.Name, nullIfEmpty(bot.Avatar), nullIfEmpty(bot.AvatarBase64), bot.Summary,
-		bot.SpeakingStyle, bot.Background, traitsRaw, bot.Gender, bot.ChatBackgroundStyle, now,
+		`INSERT INTO bots(id, user_id, name, avatar_url, avatar_base64, summary, relationship, role, self_cognition, persona_prompt, persona_version, speaking_style, background, traits, gender, chat_background_style, created_at, updated_at)
+		 VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$17)`,
+		bot.ID, userID, bot.Name, nullIfEmpty(bot.Avatar), nullIfEmpty(bot.AvatarBase64), bot.Summary, bot.Relationship, bot.Role,
+		selfCognitionRaw, bot.PersonaPrompt, bot.PersonaVersion, bot.SpeakingStyle, bot.Background, traitsRaw, bot.Gender, bot.ChatBackgroundStyle, now,
 	)
 	if err != nil {
 		log.Printf("insert bot failed: %v", err)
@@ -622,7 +755,7 @@ func (p *PostgresStore) ListBots(userID string) []Bot {
 	defer cancel()
 
 	rows, err := p.db.QueryContext(ctx,
-		`SELECT id, user_id, name, avatar_url, avatar_base64, summary, speaking_style, background, traits, gender, chat_background_style, created_at, updated_at
+		`SELECT id, user_id, name, avatar_url, avatar_base64, summary, relationship, role, self_cognition, persona_prompt, persona_version, speaking_style, background, traits, gender, chat_background_style, created_at, updated_at
 		 FROM bots
 		 WHERE user_id=$1
 		 ORDER BY created_at DESC`, userID,
@@ -651,7 +784,7 @@ func (p *PostgresStore) GetBot(userID, botID string) (Bot, bool) {
 	defer cancel()
 
 	row := p.db.QueryRowContext(ctx,
-		`SELECT id, user_id, name, avatar_url, avatar_base64, summary, speaking_style, background, traits, gender, chat_background_style, created_at, updated_at
+		`SELECT id, user_id, name, avatar_url, avatar_base64, summary, relationship, role, self_cognition, persona_prompt, persona_version, speaking_style, background, traits, gender, chat_background_style, created_at, updated_at
 		 FROM bots
 		 WHERE user_id=$1 AND id=$2`, userID, botID,
 	)
@@ -692,12 +825,20 @@ func (p *PostgresStore) UpdateBot(userID, botID string, patch Bot) (Bot, bool) {
 	}
 	if patch.Summary != "" {
 		bot.Summary = strings.TrimSpace(patch.Summary)
+		bot.Relationship = strings.TrimSpace(patch.Summary)
+	}
+	if patch.Relationship != "" {
+		bot.Relationship = strings.TrimSpace(patch.Relationship)
 	}
 	if patch.SpeakingStyle != "" {
 		bot.SpeakingStyle = strings.TrimSpace(patch.SpeakingStyle)
 	}
 	if patch.Background != "" {
 		bot.Background = strings.TrimSpace(patch.Background)
+		bot.Role = strings.TrimSpace(patch.Background)
+	}
+	if patch.Role != "" {
+		bot.Role = strings.TrimSpace(patch.Role)
 	}
 	if patch.Gender != "" {
 		bot.Gender = patch.Gender
@@ -708,13 +849,16 @@ func (p *PostgresStore) UpdateBot(userID, botID string, patch Bot) (Bot, bool) {
 	bot.UpdatedAt = time.Now().UTC()
 
 	traitsRaw, _ := json.Marshal(bot.Traits)
+	selfCognitionRaw, _ := json.Marshal(bot.SelfCognition)
 	ctx, cancel := p.withTimeout()
 	defer cancel()
 	_, err := p.db.ExecContext(ctx,
 		`UPDATE bots
-		 SET name=$1, summary=$2, speaking_style=$3, background=$4, traits=$5, gender=$6, updated_at=$7
-		 WHERE user_id=$8 AND id=$9`,
-		bot.Name, bot.Summary, bot.SpeakingStyle, bot.Background, traitsRaw, bot.Gender, bot.UpdatedAt, userID, botID,
+		 SET name=$1, summary=$2, relationship=$3, role=$4, self_cognition=$5, persona_prompt=$6, persona_version=$7,
+		     speaking_style=$8, background=$9, traits=$10, gender=$11, updated_at=$12
+		 WHERE user_id=$13 AND id=$14`,
+		bot.Name, bot.Summary, bot.Relationship, bot.Role, selfCognitionRaw, bot.PersonaPrompt, bot.PersonaVersion,
+		bot.SpeakingStyle, bot.Background, traitsRaw, bot.Gender, bot.UpdatedAt, userID, botID,
 	)
 	if err != nil {
 		log.Printf("update bot failed: %v", err)
@@ -731,6 +875,7 @@ func (p *PostgresStore) AppendBotPersona(userID, botID string, speakingAdds, bac
 
 	bot.SpeakingStyle = strings.Join(dedup(append(splitSegments(bot.SpeakingStyle), speakingAdds...)), "|")
 	bot.Background = strings.Join(dedup(append(splitSegments(bot.Background), backgroundAdds...)), "|")
+	bot.Role = bot.Background
 	bot.Traits = dedup(append(bot.Traits, traitAdds...))
 	if gender != nil && strings.TrimSpace(*gender) != "" {
 		bot.Gender = strings.TrimSpace(*gender)
@@ -742,13 +887,37 @@ func (p *PostgresStore) AppendBotPersona(userID, botID string, speakingAdds, bac
 	defer cancel()
 	_, err := p.db.ExecContext(ctx,
 		`UPDATE bots
-		 SET speaking_style=$1, background=$2, traits=$3, gender=$4, updated_at=$5
-		 WHERE user_id=$6 AND id=$7`,
-		bot.SpeakingStyle, bot.Background, traitsRaw, bot.Gender, bot.UpdatedAt, userID, botID,
+		 SET speaking_style=$1, background=$2, role=$3, traits=$4, gender=$5, updated_at=$6
+		 WHERE user_id=$7 AND id=$8`,
+		bot.SpeakingStyle, bot.Background, bot.Role, traitsRaw, bot.Gender, bot.UpdatedAt, userID, botID,
 	)
 	if err != nil {
 		log.Printf("append bot persona update failed: %v", err)
 		return p.Store.AppendBotPersona(userID, botID, speakingAdds, backgroundAdds, traitAdds, gender)
+	}
+	return bot, true
+}
+
+func (p *PostgresStore) ApplyBotPersonaPatch(userID, botID string, input PersonaPatchInput) (Bot, bool) {
+	bot, found := p.Store.ApplyBotPersonaPatch(userID, botID, input)
+	if !found {
+		return Bot{}, false
+	}
+
+	selfCognitionRaw, _ := json.Marshal(bot.SelfCognition)
+	traitsRaw, _ := json.Marshal(bot.Traits)
+	ctx, cancel := p.withTimeout()
+	defer cancel()
+	_, err := p.db.ExecContext(ctx, `
+		UPDATE bots
+		SET summary=$1, relationship=$2, role=$3, self_cognition=$4, persona_prompt=$5, persona_version=$6,
+		    speaking_style=$7, background=$8, traits=$9, gender=$10, updated_at=$11
+		WHERE user_id=$12 AND id=$13
+	`, bot.Summary, bot.Relationship, bot.Role, selfCognitionRaw, bot.PersonaPrompt, bot.PersonaVersion,
+		bot.SpeakingStyle, bot.Background, traitsRaw, bot.Gender, bot.UpdatedAt, userID, botID)
+	if err != nil {
+		log.Printf("apply bot persona patch failed: %v", err)
+		return p.Store.ApplyBotPersonaPatch(userID, botID, input)
 	}
 	return bot, true
 }
@@ -1166,7 +1335,7 @@ func (p *PostgresStore) bumpProactiveMetric() {
 func scanBotRow(rows *sql.Rows) (Bot, bool) {
 	var bot Bot
 	var avatarURL, avatarBase64 sql.NullString
-	var traitsRaw []byte
+	var traitsRaw, selfCognitionRaw []byte
 	if err := rows.Scan(
 		&bot.ID,
 		&bot.UserID,
@@ -1174,6 +1343,11 @@ func scanBotRow(rows *sql.Rows) (Bot, bool) {
 		&avatarURL,
 		&avatarBase64,
 		&bot.Summary,
+		&bot.Relationship,
+		&bot.Role,
+		&selfCognitionRaw,
+		&bot.PersonaPrompt,
+		&bot.PersonaVersion,
 		&bot.SpeakingStyle,
 		&bot.Background,
 		&traitsRaw,
@@ -1187,13 +1361,14 @@ func scanBotRow(rows *sql.Rows) (Bot, bool) {
 	bot.Avatar = avatarURL.String
 	bot.AvatarBase64 = avatarBase64.String
 	_ = json.Unmarshal(traitsRaw, &bot.Traits)
+	_ = json.Unmarshal(selfCognitionRaw, &bot.SelfCognition)
 	return bot, true
 }
 
 func scanBotSingleRow(row *sql.Row) (Bot, bool) {
 	var bot Bot
 	var avatarURL, avatarBase64 sql.NullString
-	var traitsRaw []byte
+	var traitsRaw, selfCognitionRaw []byte
 	if err := row.Scan(
 		&bot.ID,
 		&bot.UserID,
@@ -1201,6 +1376,11 @@ func scanBotSingleRow(row *sql.Row) (Bot, bool) {
 		&avatarURL,
 		&avatarBase64,
 		&bot.Summary,
+		&bot.Relationship,
+		&bot.Role,
+		&selfCognitionRaw,
+		&bot.PersonaPrompt,
+		&bot.PersonaVersion,
 		&bot.SpeakingStyle,
 		&bot.Background,
 		&traitsRaw,
@@ -1214,6 +1394,7 @@ func scanBotSingleRow(row *sql.Row) (Bot, bool) {
 	bot.Avatar = avatarURL.String
 	bot.AvatarBase64 = avatarBase64.String
 	_ = json.Unmarshal(traitsRaw, &bot.Traits)
+	_ = json.Unmarshal(selfCognitionRaw, &bot.SelfCognition)
 	return bot, true
 }
 

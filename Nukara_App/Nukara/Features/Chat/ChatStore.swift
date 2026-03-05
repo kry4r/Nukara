@@ -44,6 +44,7 @@ final class ChatStore: ObservableObject {
 
     private var eventsTask: Task<Void, Never>?
     private var isConnecting = false
+    private var streamDraftByReplyID: [String: String] = [:]
 
     init(
         conversation: Conversation,
@@ -258,6 +259,49 @@ final class ChatStore: ObservableObject {
             )
             postConversationUpdate(lastMessage: state.messages[index], unreadCount: 0)
 
+        case .streamStart(let conversationID, let replyID):
+            guard conversationID == conversation.id else { return }
+            state.isRemoteTyping = true
+            let draftID = "stream-\(replyID)"
+            streamDraftByReplyID[replyID] = draftID
+            if !state.messages.contains(where: { $0.id == draftID }) {
+                let draft = ChatMessage(
+                    id: draftID,
+                    conversationID: conversationID,
+                    sender: .bot,
+                    text: "",
+                    imageData: nil,
+                    location: nil,
+                    timestamp: Date(),
+                    status: .sending,
+                    isProactive: false,
+                    emotionTag: nil
+                )
+                state.messages.append(draft)
+            }
+
+        case .streamChunk(let conversationID, let replyID, let delta):
+            guard conversationID == conversation.id else { return }
+            guard let draftID = streamDraftByReplyID[replyID] else { return }
+            guard let index = state.messages.firstIndex(where: { $0.id == draftID }) else { return }
+            let old = state.messages[index]
+            state.messages[index] = ChatMessage(
+                id: old.id,
+                conversationID: old.conversationID,
+                sender: old.sender,
+                text: old.text + delta,
+                imageData: old.imageData,
+                location: old.location,
+                timestamp: old.timestamp,
+                status: .sending,
+                isProactive: old.isProactive,
+                emotionTag: old.emotionTag
+            )
+
+        case .streamEnd(let conversationID, _):
+            guard conversationID == conversation.id else { return }
+            state.isRemoteTyping = false
+
         case .multiReplyStart(let conversationID, _, _):
             guard conversationID == conversation.id else { return }
             state.isRemoteTyping = true
@@ -273,6 +317,12 @@ final class ChatStore: ObservableObject {
         case .message(let message):
             guard message.conversationID == conversation.id else { return }
             state.isRemoteTyping = false
+            if let replyID = message.replyGroupID, let draftID = streamDraftByReplyID[replyID] {
+                if let index = state.messages.firstIndex(where: { $0.id == draftID }) {
+                    state.messages.remove(at: index)
+                }
+                streamDraftByReplyID.removeValue(forKey: replyID)
+            }
             if let index = state.messages.firstIndex(where: { $0.id == message.id }) {
                 state.messages[index] = message
             } else {
@@ -287,6 +337,12 @@ final class ChatStore: ObservableObject {
             guard conversationID == conversation.id else { return }
             state.botStatus = status
             postConversationStatusUpdate(status)
+
+        case .botPersonaUpdated(let botID, let summary, _):
+            guard botID == conversation.botID else { return }
+            if !summary.isEmpty {
+                state.errorMessage = summary
+            }
 
         case .proactiveMessage(let message):
             guard message.conversationID == conversation.id else { return }

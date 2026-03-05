@@ -28,11 +28,15 @@ if (conv) {
 // Wire WS events to chat store handlers
 ws.on('ack', chat.handleAck)
 ws.on('typing', chat.handleTyping)
+ws.on('stream_start', chat.handleStreamStart)
+ws.on('stream_chunk', chat.handleStreamChunk)
+ws.on('stream_end', chat.handleStreamEnd)
 ws.on('multi_reply_start', chat.handleMultiReplyStart)
 ws.on('message', chat.handleMessage)
 ws.on('multi_reply_end', chat.handleMultiReplyEnd)
 ws.on('bot_status_update', chat.handleBotStatusUpdate)
 ws.on('proactive_message', chat.handleProactiveMessage)
+ws.on('bot_persona_updated', chat.handleBotPersonaUpdated)
 
 chat.setWsSend(ws.send)
 
@@ -102,6 +106,9 @@ function goBack() {
 
     <main ref="listEl" class="message-list" aria-label="聊天消息列表">
       <div v-if="chat.isLoading" class="center-hint">加载中...</div>
+      <div v-if="chat.personaUpdate.summary" class="persona-banner">
+        {{ chat.personaUpdate.summary }}
+      </div>
       <MessageBubble v-for="msg in chat.messages" :key="msg.id" :msg="msg" />
       <div v-if="chat.isRemoteTyping" class="typing-row">
         <TypingIndicator />
@@ -198,5 +205,14 @@ function goBack() {
 
 .typing-row {
   padding: var(--spacing-xs) var(--spacing-lg);
+}
+
+.persona-banner {
+  margin: 0 var(--spacing-lg) var(--spacing-sm);
+  padding: 8px 12px;
+  border-radius: 12px;
+  font-size: 12px;
+  color: #3d5131;
+  background: rgba(143, 170, 116, 0.18);
 }
 </style>
