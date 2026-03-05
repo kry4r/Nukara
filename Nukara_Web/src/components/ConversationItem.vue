@@ -1,5 +1,6 @@
 <script setup>
 import { computed } from 'vue'
+import { formatClockTime } from '../utils/time'
 
 const props = defineProps({
   conv: { type: Object, required: true },
@@ -22,7 +23,7 @@ const avatarText = computed(() => {
       <div class="conv-top">
         <span class="conv-name">{{ conv.bot_name }}</span>
         <span class="conv-time">
-          {{ conv.last_message_at ? new Date(conv.last_message_at).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) : '' }}
+          {{ formatClockTime(conv.last_message_at) }}
         </span>
       </div>
       <div class="conv-bottom">

@@ -1,4 +1,0 @@
-[submodule "Nukara_Backend/nanobot"]
-	path = Nukara_Backend/nanobot
-	url = https://github.com/kry4r/nanobot.git
-	branch = multi-thread

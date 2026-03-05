@@ -8,7 +8,6 @@ detect_changes() {
   # 如果是首次部署或强制全量部署
   if [ -z "$last_commit" ] || [ "$FORCE_FULL_DEPLOY" = true ]; then
     REBUILD_BACKEND=true
-    REBUILD_NANOBOT=true
     REBUILD_WEB=true
     RELOAD_CONFIG=true
     log "Full deployment mode"
@@ -19,7 +18,6 @@ detect_changes() {
   if [ "$last_commit" = "$current_commit" ]; then
     log "No changes detected (commit: $current_commit)"
     REBUILD_BACKEND=false
-    REBUILD_NANOBOT=false
     REBUILD_WEB=false
     RELOAD_CONFIG=false
     return
@@ -31,17 +29,12 @@ detect_changes() {
   local changed_files=$(git diff --name-only "$last_commit" "$current_commit")
 
   REBUILD_BACKEND=false
-  REBUILD_NANOBOT=false
   REBUILD_WEB=false
   RELOAD_CONFIG=false
 
   # 分析变更文件
   while IFS= read -r file; do
     case "$file" in
-      Nukara_Backend/nanobot|Nukara_Backend/nanobot/*|nanobot/*)
-        REBUILD_NANOBOT=true
-        log "  Nanobot changed: $file"
-        ;;
       Nukara_Backend/*)
         REBUILD_BACKEND=true
         log "  Backend changed: $file"
@@ -65,7 +58,6 @@ detect_changes() {
   echo ""
   log "Change detection results:"
   log "  REBUILD_BACKEND: $REBUILD_BACKEND"
-  log "  REBUILD_NANOBOT: $REBUILD_NANOBOT"
   log "  REBUILD_WEB: $REBUILD_WEB"
   log "  RELOAD_CONFIG: $RELOAD_CONFIG"
   echo ""
@@ -84,9 +76,6 @@ dry_run_changes() {
   if [ "$REBUILD_BACKEND" = true ]; then
     echo -e "  ${YELLOW}●${NC} Backend services will be rebuilt"
   fi
-  if [ "$REBUILD_NANOBOT" = true ]; then
-    echo -e "  ${YELLOW}●${NC} Nanobot will be rebuilt"
-  fi
   if [ "$REBUILD_WEB" = true ]; then
     echo -e "  ${YELLOW}●${NC} Web frontend will be rebuilt"
   fi
@@ -94,7 +83,7 @@ dry_run_changes() {
     echo -e "  ${YELLOW}●${NC} Configuration will be reloaded"
   fi
 
-  if [ "$REBUILD_BACKEND" = false ] && [ "$REBUILD_NANOBOT" = false ] && \
+  if [ "$REBUILD_BACKEND" = false ] && \
      [ "$REBUILD_WEB" = false ] && [ "$RELOAD_CONFIG" = false ]; then
     echo -e "  ${GREEN}●${NC} No changes detected - nothing to deploy"
   fi

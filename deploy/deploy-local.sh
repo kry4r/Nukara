@@ -3,8 +3,8 @@ set -euo pipefail
 
 # ============================================================
 # Nukara — Local Native Deploy (No Docker)
-# Installs: Postgres + Redis + Nginx + Go + Node + Python
-# Builds:   Gateway + Proactive + Nanobot + Frontend
+# Installs: Postgres + Redis + Nginx + Go + Node
+# Builds:   Gateway + Proactive + Admin + Frontend
 # Manages:  systemd services
 # Supports: Ubuntu/Debian, CentOS/RHEL/Fedora
 # ============================================================
@@ -334,58 +334,6 @@ EOF
   log "Config saved to $ENV_FILE"
 }
 
-# --- Seed nanobot runtime config from deploy inputs ---
-seed_nanobot_config() {
-  local config_path="$1"
-
-  python3 - "$config_path" "$LLM_API_KEY" "$LLM_API_BASE" "$LLM_MODEL" <<'PY'
-import json
-import sys
-from pathlib import Path
-
-config_path = Path(sys.argv[1])
-api_key = sys.argv[2]
-api_base = sys.argv[3]
-model = sys.argv[4]
-
-data = {}
-if config_path.exists():
-    raw = config_path.read_text(encoding="utf-8").strip()
-    if raw:
-        loaded = json.loads(raw)
-        if isinstance(loaded, dict):
-            data = loaded
-
-agents = data.get("agents")
-if not isinstance(agents, dict):
-    agents = {}
-data["agents"] = agents
-
-defaults = agents.get("defaults")
-if not isinstance(defaults, dict):
-    defaults = {}
-agents["defaults"] = defaults
-
-providers = data.get("providers")
-if not isinstance(providers, dict):
-    providers = {}
-data["providers"] = providers
-
-custom = providers.get("custom")
-if not isinstance(custom, dict):
-    custom = {}
-providers["custom"] = custom
-
-custom["api_key"] = api_key
-custom["api_base"] = api_base
-if model.strip():
-    defaults["model"] = model.strip()
-
-config_path.parent.mkdir(parents=True, exist_ok=True)
-config_path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-PY
-}
-
 # --- Setup PostgreSQL database ---
 setup_postgres() {
   log "Setting up PostgreSQL database..."
@@ -461,53 +409,6 @@ prepare_sources() {
     return 0
   }
 
-  is_valid_nanobot_source() {
-    local dir="$1"
-    local loop_py="$dir/nanobot/agent/loop.py"
-    local context_py="$dir/nanobot/agent/context.py"
-    local provider_py="$dir/nanobot/providers/litellm_provider.py"
-    local commands_py="$dir/nanobot/cli/commands.py"
-    [ -f "$dir/pyproject.toml" ] || [ -f "$dir/setup.py" ] || return 1
-    [ -f "$loop_py" ] || return 1
-    [ -f "$context_py" ] || return 1
-    [ -f "$provider_py" ] || return 1
-    [ -f "$commands_py" ] || return 1
-    python3 -m py_compile "$loop_py" >/dev/null 2>&1 || return 1
-    python3 -m py_compile "$context_py" >/dev/null 2>&1 || return 1
-    python3 -m py_compile "$provider_py" >/dev/null 2>&1 || return 1
-    python3 -m py_compile "$commands_py" >/dev/null 2>&1 || return 1
-
-    # Guard against runtime NameError in loop.py
-    if grep -q 'if TYPE_CHECKING:' "$loop_py"; then
-      grep -Eq '^[[:space:]]*from[[:space:]]+typing[[:space:]]+import[[:space:]].*\bTYPE_CHECKING\b' "$loop_py" || return 1
-    fi
-    if grep -q 'weakref\.' "$loop_py"; then
-      grep -Eq '^[[:space:]]*import[[:space:]]+weakref([[:space:]]|$)' "$loop_py" || return 1
-    fi
-    if grep -q 're\.sub\(' "$loop_py"; then
-      grep -Eq '^[[:space:]]*import[[:space:]]+re([[:space:]]|$)' "$loop_py" || return 1
-    fi
-
-    # Guard against runtime NameError in litellm_provider.py
-    if grep -q 'string\.ascii_letters' "$provider_py"; then
-      grep -Eq '^[[:space:]]*import[[:space:]]+string([[:space:]]|$)' "$provider_py" || return 1
-    fi
-    if grep -q 'secrets\.choice' "$provider_py"; then
-      grep -Eq '^[[:space:]]*import[[:space:]]+secrets([[:space:]]|$)' "$provider_py" || return 1
-    fi
-
-    # Guard against runtime NameError in commands.py
-    if grep -q 'SessionManager(' "$commands_py"; then
-      grep -Eq '^[[:space:]]*from[[:space:]]+nanobot\.session\.manager[[:space:]]+import[[:space:]]+SessionManager([[:space:]]|$)' "$commands_py" || return 1
-    fi
-    if grep -q '\bhb_cfg\b' "$commands_py"; then
-      grep -Eq '^[[:space:]]*hb_cfg[[:space:]]*=[[:space:]]*config\.gateway\.heartbeat([[:space:]]|$)' "$commands_py" || return 1
-    fi
-    if grep -Eq 'heartbeat\.(start|stop)\(' "$commands_py"; then
-      grep -Eq '^[[:space:]]*heartbeat[[:space:]]*=[[:space:]]*HeartbeatService\(' "$commands_py" || return 1
-    fi
-  }
-
   ensure_repo_snapshot() {
     if [ -n "$snapshot_repo" ] && [ -d "$snapshot_repo" ]; then
       return 0
@@ -532,57 +433,6 @@ prepare_sources() {
   # Backend
   if ! sync_from_workspace "Nukara_Backend" "$workspace_root/Nukara_Backend" "$INSTALL_DIR/Nukara_Backend"; then
     refresh_component_from_snapshot "Nukara_Backend" "Nukara_Backend" "$INSTALL_DIR/Nukara_Backend"
-  fi
-
-  # Nanobot
-  local nanobot_ready=false
-  if sync_from_workspace "nanobot" "$workspace_root/nanobot" "$INSTALL_DIR/nanobot"; then
-    if is_valid_nanobot_source "$INSTALL_DIR/nanobot"; then
-      nanobot_ready=true
-    else
-      warn "Workspace nanobot source invalid (structure or syntax), will fallback."
-    fi
-  fi
-
-  if [ "$nanobot_ready" = false ]; then
-    if sync_from_workspace "nanobot (embedded)" "$workspace_root/Nukara_Backend/nanobot" "$INSTALL_DIR/nanobot"; then
-      if is_valid_nanobot_source "$INSTALL_DIR/nanobot"; then
-        nanobot_ready=true
-      else
-        warn "Embedded nanobot source invalid (submodule missing or syntax broken), will fallback."
-      fi
-    fi
-  fi
-
-  if [ "$nanobot_ready" = false ]; then
-    local branch_primary="${NANOBOT_BRANCH:-main}"
-    local branch_fallback="main"
-    if [ -d "$INSTALL_DIR/nanobot/.git" ]; then
-      log "Updating nanobot to origin/${branch_primary}..."
-      if git -C "$INSTALL_DIR/nanobot" fetch --depth 1 origin "$branch_primary" && \
-         git -C "$INSTALL_DIR/nanobot" checkout -B "$branch_primary" "origin/$branch_primary" && \
-         git -C "$INSTALL_DIR/nanobot" reset --hard "origin/$branch_primary" && \
-         is_valid_nanobot_source "$INSTALL_DIR/nanobot"; then
-        nanobot_ready=true
-      else
-        warn "Nanobot branch ${branch_primary} invalid; falling back to ${branch_fallback}."
-      fi
-    else
-      [ -d "$INSTALL_DIR/nanobot" ] && rm -rf "$INSTALL_DIR/nanobot"
-      log "Cloning nanobot (${branch_primary})..."
-      if git clone --depth 1 -b "$branch_primary" https://github.com/kry4r/nanobot.git "$INSTALL_DIR/nanobot" && \
-         is_valid_nanobot_source "$INSTALL_DIR/nanobot"; then
-        nanobot_ready=true
-      else
-        warn "Cloned nanobot ${branch_primary} is invalid; falling back to ${branch_fallback}."
-      fi
-    fi
-    if [ "$nanobot_ready" = false ]; then
-      [ -d "$INSTALL_DIR/nanobot" ] && rm -rf "$INSTALL_DIR/nanobot"
-      log "Cloning nanobot (${branch_fallback})..."
-      git clone --depth 1 -b "$branch_fallback" https://github.com/kry4r/nanobot.git "$INSTALL_DIR/nanobot"
-      is_valid_nanobot_source "$INSTALL_DIR/nanobot" || err "Nanobot source validation failed on fallback branch ${branch_fallback}"
-    fi
   fi
 
   # Web frontend
@@ -621,33 +471,6 @@ build_services() {
     log "Skipping backend build (no changes)"
   fi
 
-  # Build nanobot (Python) - only if changed
-  if [ "$REBUILD_NANOBOT" = true ]; then
-    cd "$INSTALL_DIR/nanobot"
-    if [ ! -f "$INSTALL_DIR/nanobot/pyproject.toml" ] && [ ! -f "$INSTALL_DIR/nanobot/setup.py" ]; then
-      err "Nanobot source invalid at $INSTALL_DIR/nanobot (missing pyproject.toml/setup.py). Re-run deploy after fixing source sync."
-    fi
-    log "Installing nanobot Python deps..."
-    export UV_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/
-    uv venv "$INSTALL_DIR/nanobot/.venv"
-    uv pip install --python "$INSTALL_DIR/nanobot/.venv/bin/python" .
-    "$INSTALL_DIR/nanobot/.venv/bin/python" -m py_compile "$INSTALL_DIR/nanobot/nanobot/agent/loop.py"
-    "$INSTALL_DIR/nanobot/.venv/bin/python" -m py_compile "$INSTALL_DIR/nanobot/nanobot/agent/context.py"
-    "$INSTALL_DIR/nanobot/.venv/bin/python" -m py_compile "$INSTALL_DIR/nanobot/nanobot/providers/litellm_provider.py"
-    "$INSTALL_DIR/nanobot/.venv/bin/python" -m py_compile "$INSTALL_DIR/nanobot/nanobot/cli/commands.py"
-
-    # Copy and seed nanobot config
-    mkdir -p "$INSTALL_DIR/nanobot-data"
-    if [ -f "$INSTALL_DIR/Nukara_Backend/configs/nanobot/config.json" ]; then
-      cp "$INSTALL_DIR/Nukara_Backend/configs/nanobot/config.json" "$INSTALL_DIR/nanobot-data/config.json"
-    else
-      echo '{}' > "$INSTALL_DIR/nanobot-data/config.json"
-    fi
-    seed_nanobot_config "$INSTALL_DIR/nanobot-data/config.json"
-  else
-    log "Skipping nanobot build (no changes)"
-  fi
-
   # Build frontend - only if changed
   if [ "$REBUILD_WEB" = true ]; then
     cd "$INSTALL_DIR/Nukara_Web"
@@ -676,7 +499,7 @@ create_services() {
   cat > /etc/systemd/system/nukara-gateway.service <<EOF
 [Unit]
 Description=Nukara Gateway
-After=postgresql.service redis.service nukara-nanobot.service
+After=postgresql.service redis.service
 Wants=postgresql.service redis.service
 
 [Service]
@@ -687,8 +510,6 @@ RestartSec=5
 Environment=NUKARA_JWT_SECRET=${JWT_SECRET}
 Environment=NUKARA_POSTGRES_DSN=${PG_DSN}
 Environment=NUKARA_REDIS_ADDR=127.0.0.1:6379
-Environment=NUKARA_NANOBOT_HTTP_URL=http://127.0.0.1:8081
-Environment=NUKARA_NANOBOT_WS_URL=ws://127.0.0.1:8081/ws/chat
 Environment=NUKARA_PROACTIVE_INTERVAL=${PROACTIVE_INTERVAL}
 Environment=NUKARA_INACTIVITY_THRESHOLD=${INACTIVITY_THRESHOLD}
 Environment=NUKARA_PROACTIVE_COOLDOWN=${PROACTIVE_COOLDOWN}
@@ -712,8 +533,6 @@ RestartSec=5
 Environment=NUKARA_JWT_SECRET=${JWT_SECRET}
 Environment=NUKARA_POSTGRES_DSN=${PG_DSN}
 Environment=NUKARA_REDIS_ADDR=127.0.0.1:6379
-Environment=NUKARA_NANOBOT_HTTP_URL=http://127.0.0.1:8081
-Environment=NUKARA_NANOBOT_WS_URL=ws://127.0.0.1:8081/ws/chat
 Environment=NUKARA_PROACTIVE_INTERVAL=${PROACTIVE_INTERVAL}
 
 [Install]
@@ -742,32 +561,6 @@ WantedBy=multi-user.target
 EOF
 
   log "Gateway + Proactive + Admin services created"
-}
-
-# --- Create nanobot systemd service ---
-create_nanobot_service() {
-  cat > /etc/systemd/system/nukara-nanobot.service <<EOF
-[Unit]
-Description=Nukara Nanobot AI Agent
-After=network.target
-
-[Service]
-Type=simple
-WorkingDirectory=$INSTALL_DIR/nanobot
-ExecStart=$INSTALL_DIR/nanobot/.venv/bin/nanobot gateway
-Restart=on-failure
-RestartSec=5
-Environment=HOME=/root
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-  # Symlink config
-  mkdir -p /root/.nanobot
-  ln -sf "$INSTALL_DIR/nanobot-data/config.json" /root/.nanobot/config.json
-
-  log "Nanobot service created"
 }
 
 # --- Configure Nginx ---
@@ -842,7 +635,7 @@ start_services() {
   echo -e "${BOLD}=========================================${NC}"
   echo -e "${BOLD}  Service Status${NC}"
   echo -e "${BOLD}=========================================${NC}"
-  for svc in postgresql redis nginx nukara-nanobot nukara-gateway nukara-proactive nukara-admin; do
+  for svc in postgresql redis nginx nukara-gateway nukara-proactive nukara-admin; do
     if systemctl is-active --quiet "$svc" 2>/dev/null; then
       echo -e "  ${GREEN}●${NC} $svc"
     else
@@ -893,7 +686,7 @@ main() {
 
     # No-change is no longer an early-exit condition:
     # clean deployment is enforced every run.
-    if [ "$REBUILD_BACKEND" = false ] && [ "$REBUILD_NANOBOT" = false ] && \
+    if [ "$REBUILD_BACKEND" = false ] && \
        [ "$REBUILD_WEB" = false ] && [ "$RELOAD_CONFIG" = false ]; then
       log "No source changes detected, but clean deploy is enforced; continuing."
     fi
@@ -901,7 +694,6 @@ main() {
     # Full deployment mode
     log "Running in full deployment mode"
     REBUILD_BACKEND=true
-    REBUILD_NANOBOT=true
     REBUILD_WEB=true
     RELOAD_CONFIG=true
   fi
@@ -909,7 +701,6 @@ main() {
   # Always clear /opt residue and perform full rebuild.
   cleanup_install_residue
   REBUILD_BACKEND=true
-  REBUILD_NANOBOT=true
   REBUILD_WEB=true
   RELOAD_CONFIG=true
   log "Forced full rebuild after residue cleanup"
@@ -917,13 +708,11 @@ main() {
   install_deps
   install_go
   install_node
-  install_python
   collect_config
   setup_postgres
   prepare_sources
   build_services
   create_services
-  create_nanobot_service
   configure_nginx
   start_services
   bootstrap_default_provider
@@ -937,7 +726,6 @@ main() {
   info "Manage services:"
   info "  systemctl status nukara-gateway"
   info "  systemctl status nukara-admin"
-  info "  systemctl status nukara-nanobot"
   info "  journalctl -u nukara-gateway -f    # follow logs"
   info "  sudo bash $0                       # re-deploy / update"
   echo ""

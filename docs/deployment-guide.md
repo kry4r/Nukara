@@ -15,8 +15,8 @@ sudo bash deploy/deploy-local.sh --force-clean
 
 核心端口：
 
+- `80`：用户前端（Nukara_Web）
 - `8080`：Gateway API
-- `18081`：聊天前端（Nukara_Web）
 - `9527`：管理端前端（Nukara_Admin_Web）
 - `19527`：管理 API（nukara-admin，供 9527 反向代理）
 
@@ -51,7 +51,6 @@ sudo bash deploy/deploy-local.sh --force-clean
 脚本会自动检测以下目录的变更：
 
 - `Nukara_Backend/**` → 重建 Go 服务（gateway, proactive）
-- `nanobot/**` → 重建 nanobot 服务
 - `Nukara_Web/**` → 重建前端并重载 nginx
 - `Nukara_Admin_Web/**` → 重建管理前端并重载 nginx
 - `configs/**` → 重载配置
@@ -75,8 +74,8 @@ sudo bash deploy/deploy-local.sh --force-clean
 
 `--force-clean` 会在部署前执行：
 
-- 停止 systemd 服务：`nukara-gateway`、`nukara-proactive`、`nukara-nanobot`、`nukara-admin`
-- 清理端口：`80`、`8080`、`18081`、`9527`、`19527`
+- 停止 systemd 服务：`nukara-gateway`、`nukara-proactive`、`nukara-admin`
+- 清理端口：`80`、`8080`、`9527`、`19527`
 
 风险提示：
 
@@ -98,13 +97,11 @@ sudo bash deploy/deploy-local.sh --force-clean
 ```bash
 # 查看服务日志
 journalctl -u nukara-gateway -n 50
-journalctl -u nukara-nanobot -n 50
 journalctl -u nukara-admin -n 50
 
 # 手动测试健康检查
-curl http://localhost:8080/health
-curl http://localhost:8081/health
-curl http://localhost:9527/health
+curl http://localhost:8080/api/v1/gateway/health
+curl http://localhost:19527/health
 ```
 
 **问题：变更检测不准确**

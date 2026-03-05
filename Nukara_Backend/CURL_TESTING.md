@@ -7,7 +7,7 @@
 ```bash
 cd Nukara_Backend
 go build -o build/gateway ./cmd/gateway
-NUKARA_NANOBOT_HTTP_URL=http://localhost:9091 ./build/gateway
+./build/gateway
 ```
 
 服务默认监听 `http://localhost:8080`。

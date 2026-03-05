@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { useApi } from '../composables/useApi'
+import { resolveMessageTimestamp } from '../utils/time'
 import { useConversationsStore } from './conversations'
 
 export const useChatStore = defineStore('chat', () => {
@@ -36,8 +37,10 @@ export const useChatStore = defineStore('chat', () => {
   function sanitizeIncomingMessage(raw) {
     const content = raw?.content || {}
     const text = sanitizeDisplayText(content.text || '')
+    const createdAt = resolveMessageTimestamp(raw, Date.now())
     return {
       ...raw,
+      created_at: createdAt,
       content: {
         ...content,
         text,
@@ -100,7 +103,7 @@ export const useChatStore = defineStore('chat', () => {
     const convStore = useConversationsStore()
     convStore.updateConversation(conversationId.value, {
       last_message: text,
-      last_message_at: new Date().toISOString(),
+      last_message_at: draft.created_at,
     })
   }
 
@@ -211,7 +214,7 @@ export const useChatStore = defineStore('chat', () => {
       is_proactive: normalized.is_proactive,
       reply_group_id: normalized.reply_group_id,
       sequence: normalized.sequence,
-      created_at: normalized.created_at || new Date(normalized.timestamp * 1000).toISOString(),
+      created_at: normalized.created_at,
     })
 
     // Track reply group progress
@@ -226,7 +229,7 @@ export const useChatStore = defineStore('chat', () => {
         normalized.conversation_id || conversationId.value,
         {
           last_message: normalized.content?.text || '',
-          last_message_at: new Date().toISOString(),
+          last_message_at: normalized.created_at,
         }
       )
     }
@@ -259,7 +262,7 @@ export const useChatStore = defineStore('chat', () => {
     const convStore = useConversationsStore()
     convStore.updateConversation(data.conversation_id, {
       last_message: data.content?.text || '',
-      last_message_at: new Date().toISOString(),
+      last_message_at: resolveMessageTimestamp(data, Date.now()),
       is_proactive_message: true,
     })
   }
