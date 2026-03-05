@@ -10,11 +10,8 @@ if [[ -f "$ROOT_DIR/.env" ]]; then
   set +a
 fi
 
-export NANOBOT_SRC_DIR="${NANOBOT_SRC_DIR:-/Users/nidhogg/Desktop/nanobot}"
-
 echo "deploying all services..."
 docker compose -f "$COMPOSE_FILE" up -d --build
 
 echo "gateway deployment complete"
 echo "health:   http://localhost:8080/api/v1/gateway/health"
-echo "nanobot:  http://localhost:9091/health"

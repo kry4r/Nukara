@@ -32,6 +32,11 @@ type Bot struct {
 	Avatar              string    `json:"avatar,omitempty"`
 	AvatarBase64        string    `json:"avatar_base64,omitempty"`
 	Summary             string    `json:"summary"`
+	Relationship        string    `json:"relationship,omitempty"`
+	Role                string    `json:"role,omitempty"`
+	SelfCognition       []string  `json:"self_cognition,omitempty"`
+	PersonaPrompt       string    `json:"persona_prompt,omitempty"`
+	PersonaVersion      int       `json:"persona_version,omitempty"`
 	SpeakingStyle       string    `json:"speaking_style"`
 	Background          string    `json:"background"`
 	Traits              []string  `json:"traits"`
@@ -173,32 +178,44 @@ type Store struct {
 	proactiveLogs     []ProactiveLog
 	directivesByBot   map[string][]Directive
 
-	emotionBuffers map[string][]string       // key: userID:botID
-	emotionCtxs    map[string]EmotionContext // key: userID:botID
-	presenceByUser map[string]presenceState
+	emotionBuffers       map[string][]string       // key: userID:botID
+	emotionCtxs          map[string]EmotionContext // key: userID:botID
+	presenceByUser       map[string]presenceState
+	userProviderSettings map[string]providerSetting
+	botProviderOverrides map[string]providerSetting
+	systemSettings       map[string]string
+	agentTurnsByID       map[string]AgentTurn
+	compactsByConv       map[string]ConversationCompact
+	memoryItemsByID      map[string]MemoryItem
 
 	metrics Metrics
 }
 
 func NewStore() *Store {
 	s := &Store{
-		usersByPhone:        map[string]User{},
-		usersByID:           map[string]User{},
-		smsCodes:            map[string]SMSCode{},
-		botsByID:            map[string]Bot{},
-		botsByUser:          map[string][]string{},
-		botStatesByKey:      map[string]BotState{},
-		conversationsByID:   map[string]Conversation{},
-		conversationsByUser: map[string][]string{},
-		messagesByConv:      map[string][]Message{},
-		deviceTokenByUser:   map[string]DeviceToken{},
-		notifByUser:         map[string]NotificationSettings{},
-		userStatusByUser:    map[string]UserStatus{},
-		proactiveLogs:       []ProactiveLog{},
-		directivesByBot:     map[string][]Directive{},
-		emotionBuffers:      map[string][]string{},
-		emotionCtxs:         map[string]EmotionContext{},
-		presenceByUser:      map[string]presenceState{},
+		usersByPhone:         map[string]User{},
+		usersByID:            map[string]User{},
+		smsCodes:             map[string]SMSCode{},
+		botsByID:             map[string]Bot{},
+		botsByUser:           map[string][]string{},
+		botStatesByKey:       map[string]BotState{},
+		conversationsByID:    map[string]Conversation{},
+		conversationsByUser:  map[string][]string{},
+		messagesByConv:       map[string][]Message{},
+		deviceTokenByUser:    map[string]DeviceToken{},
+		notifByUser:          map[string]NotificationSettings{},
+		userStatusByUser:     map[string]UserStatus{},
+		proactiveLogs:        []ProactiveLog{},
+		directivesByBot:      map[string][]Directive{},
+		emotionBuffers:       map[string][]string{},
+		emotionCtxs:          map[string]EmotionContext{},
+		presenceByUser:       map[string]presenceState{},
+		userProviderSettings: map[string]providerSetting{},
+		botProviderOverrides: map[string]providerSetting{},
+		systemSettings:       map[string]string{},
+		agentTurnsByID:       map[string]AgentTurn{},
+		compactsByConv:       map[string]ConversationCompact{},
+		memoryItemsByID:      map[string]MemoryItem{},
 	}
 
 	// seed dev user so the preset phone 13800138000 works for login
@@ -216,6 +233,10 @@ func NewStore() *Store {
 		Frequency:        "normal",
 		UpdatedAt:        time.Now().UTC(),
 	}
+	s.systemSettings["default_chat_provider_id"] = "minimax_m2_5"
+	s.systemSettings["default_chat_model"] = "MiniMax-M2.5"
+	s.systemSettings["embedding_provider_id"] = "minimax_m2_5"
+	s.systemSettings["embedding_model"] = "MiniMax-M2.5"
 
 	return s
 }
@@ -408,6 +429,15 @@ func (s *Store) CreateBot(userID string, bot Bot) Bot {
 	if bot.ChatBackgroundStyle == "" {
 		bot.ChatBackgroundStyle = "lightPaper"
 	}
+	if bot.PersonaVersion <= 0 {
+		bot.PersonaVersion = 1
+	}
+	if strings.TrimSpace(bot.Relationship) == "" {
+		bot.Relationship = strings.TrimSpace(bot.Summary)
+	}
+	if strings.TrimSpace(bot.Role) == "" {
+		bot.Role = strings.TrimSpace(bot.Background)
+	}
 	s.botsByID[bot.ID] = bot
 	s.botsByUser[userID] = append(s.botsByUser[userID], bot.ID)
 
@@ -472,12 +502,20 @@ func (s *Store) UpdateBot(userID, botID string, patch Bot) (Bot, bool) {
 	}
 	if patch.Summary != "" {
 		bot.Summary = strings.TrimSpace(patch.Summary)
+		bot.Relationship = strings.TrimSpace(patch.Summary)
+	}
+	if patch.Relationship != "" {
+		bot.Relationship = strings.TrimSpace(patch.Relationship)
 	}
 	if patch.SpeakingStyle != "" {
 		bot.SpeakingStyle = strings.TrimSpace(patch.SpeakingStyle)
 	}
 	if patch.Background != "" {
 		bot.Background = strings.TrimSpace(patch.Background)
+		bot.Role = strings.TrimSpace(patch.Background)
+	}
+	if patch.Role != "" {
+		bot.Role = strings.TrimSpace(patch.Role)
 	}
 	if patch.Gender != "" {
 		bot.Gender = patch.Gender
@@ -502,6 +540,7 @@ func (s *Store) AppendBotPersona(userID, botID string, speakingAdds, backgroundA
 
 	bot.SpeakingStyle = strings.Join(dedup(append(splitSegments(bot.SpeakingStyle), speakingAdds...)), "|")
 	bot.Background = strings.Join(dedup(append(splitSegments(bot.Background), backgroundAdds...)), "|")
+	bot.Role = bot.Background
 	bot.Traits = dedup(append(bot.Traits, traitAdds...))
 	if gender != nil && *gender != "" {
 		bot.Gender = *gender
@@ -509,6 +548,56 @@ func (s *Store) AppendBotPersona(userID, botID string, speakingAdds, backgroundA
 	bot.UpdatedAt = time.Now().UTC()
 	s.botsByID[botID] = bot
 
+	return bot, true
+}
+
+type PersonaPatchInput struct {
+	Relationship      string
+	Role              string
+	SelfCognitionAdds []string
+	SpeakingStyleAdds []string
+	TraitAdds         []string
+	Gender            *string
+	PersonaPrompt     string
+}
+
+func (s *Store) ApplyBotPersonaPatch(userID, botID string, input PersonaPatchInput) (Bot, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	bot, ok := s.botsByID[botID]
+	if !ok || bot.UserID != userID {
+		return Bot{}, false
+	}
+	if strings.TrimSpace(input.Relationship) != "" {
+		bot.Relationship = strings.TrimSpace(input.Relationship)
+		bot.Summary = bot.Relationship
+	}
+	if strings.TrimSpace(input.Role) != "" {
+		bot.Role = strings.TrimSpace(input.Role)
+		bot.Background = bot.Role
+	}
+	if len(input.SelfCognitionAdds) > 0 {
+		bot.SelfCognition = dedup(append(bot.SelfCognition, input.SelfCognitionAdds...))
+	}
+	if len(input.SpeakingStyleAdds) > 0 {
+		bot.SpeakingStyle = strings.Join(dedup(append(splitSegments(bot.SpeakingStyle), input.SpeakingStyleAdds...)), "|")
+	}
+	if len(input.TraitAdds) > 0 {
+		bot.Traits = dedup(append(bot.Traits, input.TraitAdds...))
+	}
+	if input.Gender != nil && strings.TrimSpace(*input.Gender) != "" {
+		bot.Gender = strings.TrimSpace(*input.Gender)
+	}
+	if strings.TrimSpace(input.PersonaPrompt) != "" {
+		bot.PersonaPrompt = strings.TrimSpace(input.PersonaPrompt)
+	}
+	bot.PersonaVersion++
+	if bot.PersonaVersion <= 0 {
+		bot.PersonaVersion = 1
+	}
+	bot.UpdatedAt = time.Now().UTC()
+	s.botsByID[botID] = bot
 	return bot, true
 }
 

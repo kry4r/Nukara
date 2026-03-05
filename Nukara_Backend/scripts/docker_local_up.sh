@@ -48,13 +48,11 @@ if [[ -f "$ROOT_DIR/.env" ]]; then
   RUN_ARGS+=(--env-file "$ROOT_DIR/.env")
 fi
 
-# If compose network exists, join it and override nanobot URLs to use service names
+# If compose network exists, join it and reuse compose infra DSN/redis
 COMPOSE_NETWORK="configs_default"
 if docker network inspect "$COMPOSE_NETWORK" >/dev/null 2>&1; then
   RUN_ARGS+=(
     --network "$COMPOSE_NETWORK"
-    -e "NUKARA_NANOBOT_HTTP_URL=http://nanobot:8081"
-    -e "NUKARA_NANOBOT_WS_URL=ws://nanobot:8081/ws/chat"
     -e "NUKARA_POSTGRES_DSN=postgres://nukara:nukara@postgres:5432/nukara?sslmode=disable"
     -e "NUKARA_REDIS_ADDR=redis:6379"
   )

@@ -5,26 +5,17 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	_ "github.com/lib/pq"
 )
 
 type Server struct {
-	db                *sql.DB
-	router            *http.ServeMux
-	configMu          sync.Mutex
-	nanobotHTTPURL    string
-	nanobotToken      string
-	nanobotConfigPath string
-	nanobotStatePath  string
-	nanobotContainer  string
-	nanobotRestartCmd string
-	chatTestTimeout   time.Duration
+	db              *sql.DB
+	router          *http.ServeMux
+	chatTestTimeout time.Duration
 }
 
 func NewServer() *Server {
@@ -38,16 +29,10 @@ func NewServer() *Server {
 	}
 
 	s := &Server{
-		db:                db,
-		router:            http.NewServeMux(),
-		nanobotHTTPURL:    envOrDefault("NUKARA_NANOBOT_HTTP_URL", "http://127.0.0.1:8081"),
-		nanobotToken:      os.Getenv("NUKARA_NANOBOT_TOKEN"),
-		nanobotConfigPath: envOrDefault("NUKARA_NANOBOT_CONFIG_PATH", "/root/.nanobot/config.json"),
-		nanobotContainer:  envOrDefault("NUKARA_NANOBOT_CONTAINER", "configs-nanobot-1"),
-		nanobotRestartCmd: strings.TrimSpace(os.Getenv("NUKARA_NANOBOT_RESTART_COMMAND")),
-		chatTestTimeout:   envSecondsOrDefault("NUKARA_PROVIDER_CHAT_TIMEOUT_SECONDS", 90),
+		db:              db,
+		router:          http.NewServeMux(),
+		chatTestTimeout: envSecondsOrDefault("NUKARA_PROVIDER_CHAT_TIMEOUT_SECONDS", 90),
 	}
-	s.nanobotStatePath = envOrDefault("NUKARA_NANOBOT_STATE_PATH", defaultNanobotStatePath(s.nanobotConfigPath))
 
 	s.setupRoutes()
 	return s
@@ -57,7 +42,9 @@ func (s *Server) setupRoutes() {
 	// Provider 管理
 	s.router.HandleFunc("/api/admin/providers", s.authMiddleware(s.handleProviders))
 	s.router.HandleFunc("/api/admin/providers/", s.authMiddleware(s.handleProviderByID))
-	s.router.HandleFunc("/api/admin/runtime/restart-nanobot", s.authMiddleware(s.handleRestartNanobot))
+	s.router.HandleFunc("/api/admin/runtime/restart-agent-runtime", s.authMiddleware(s.handleRestartRuntime))
+	s.router.HandleFunc("/api/admin/users/provider-settings", s.authMiddleware(s.handleUserProviderSettings))
+	s.router.HandleFunc("/api/admin/users/provider-settings/", s.authMiddleware(s.handleUserProviderSettingByUser))
 
 	// 主动消息配置
 	s.router.HandleFunc("/api/admin/proactive/config", s.authMiddleware(s.handleProactiveConfig))
@@ -95,14 +82,6 @@ func envSecondsOrDefault(key string, fallback int) time.Duration {
 		return time.Duration(fallback) * time.Second
 	}
 	return time.Duration(seconds) * time.Second
-}
-
-func defaultNanobotStatePath(configPath string) string {
-	ext := filepath.Ext(configPath)
-	if ext == "" {
-		return configPath + ".admin-state.json"
-	}
-	return strings.TrimSuffix(configPath, ext) + ".admin-state.json"
 }
 
 // Placeholder handlers for proactive endpoints (will be implemented in Phase 3)

@@ -1,14 +1,15 @@
 package admin
 
 import (
-	"bytes"
+	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
-	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"time"
+
+	"nukara/backend/internal/agentx/llm"
 )
 
 func (s *Server) chatTestProvider(w http.ResponseWriter, r *http.Request, id string) {
@@ -30,12 +31,12 @@ func (s *Server) chatTestProvider(w http.ResponseWriter, r *http.Request, id str
 	reply, err := s.runProviderChatTest(id, req.Message, req.Model)
 	latency := time.Since(start).Milliseconds()
 
+	w.Header().Set("Content-Type", "application/json")
 	if err != nil {
-		if errors.Is(err, errProviderNotFound) {
+		if errors.Is(err, sql.ErrNoRows) {
 			http.Error(w, "Provider not found", http.StatusNotFound)
 			return
 		}
-		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"status":        "error",
@@ -45,7 +46,6 @@ func (s *Server) chatTestProvider(w http.ResponseWriter, r *http.Request, id str
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"status":      "ok",
@@ -56,114 +56,70 @@ func (s *Server) chatTestProvider(w http.ResponseWriter, r *http.Request, id str
 }
 
 func (s *Server) runProviderChatTest(id, message, model string) (string, error) {
-	s.configMu.Lock()
-	cfg, err := s.loadNanobotConfig()
-	if err != nil {
-		s.configMu.Unlock()
-		return "", err
+	if s.db == nil {
+		return "", errors.New("database is not configured")
 	}
-	state, err := s.loadProviderState()
-	if err != nil {
-		s.configMu.Unlock()
-		return "", err
-	}
-	if _, exists := cfg.Providers[id]; !exists {
-		s.configMu.Unlock()
-		return "", fmt.Errorf("%w: %s", errProviderNotFound, id)
-	}
-	if strings.TrimSpace(model) == "" {
-		model = strings.TrimSpace(state.ProviderModels[id])
-	}
-	if err := applyProviderToConfig(&cfg, id, model); err != nil {
-		s.configMu.Unlock()
-		return "", err
-	}
-	if strings.TrimSpace(model) != "" {
-		state.ProviderModels[id] = strings.TrimSpace(model)
-	}
-	state.ActiveProviderID = id
-	if err := s.saveProviderConfigAndState(cfg, state); err != nil {
-		s.configMu.Unlock()
-		return "", err
-	}
-	s.configMu.Unlock()
-
-	return s.chatWithNanobot(message)
-}
-
-func (s *Server) chatWithNanobot(message string) (string, error) {
-	payload := map[string]any{
-		"conversation_id": fmt.Sprintf("admin-provider-test-%d", time.Now().UnixNano()),
-		"robot_id":        "default",
-		"content": map[string]any{
-			"type": "text",
-			"text": message,
-		},
-		"system_context": map[string]any{
-			"bot_name": "ProviderTestBot",
-		},
-	}
-	body, err := json.Marshal(payload)
+	provider, err := s.getProviderByID(id)
 	if err != nil {
 		return "", err
+	}
+	if strings.TrimSpace(provider.BaseURL) == "" {
+		return "", errors.New("provider base_url is empty")
 	}
 
-	req, err := http.NewRequest(http.MethodPost, strings.TrimRight(s.nanobotHTTPURL, "/")+"/chat", bytes.NewReader(body))
-	if err != nil {
-		return "", err
+	selectedModel := strings.TrimSpace(model)
+	if selectedModel == "" {
+		selectedModel = firstModel(provider.Models)
 	}
-	req.Header.Set("Content-Type", "application/json")
-	if s.nanobotToken != "" {
-		req.Header.Set("Authorization", "Bearer "+s.nanobotToken)
+	if selectedModel == "" {
+		defaultModel, _ := s.readSystemSettingValue("default_chat_model")
+		selectedModel = strings.TrimSpace(defaultModel)
 	}
 
 	timeout := s.chatTestTimeout
 	if timeout <= 0 {
-		timeout = 45 * time.Second
+		timeout = 90 * time.Second
 	}
-	client := &http.Client{Timeout: timeout}
-	resp, err := client.Do(req)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	client := llm.NewOpenAICompatClient(provider.BaseURL, provider.APIKey, selectedModel, &http.Client{Timeout: timeout})
+	deltaCh, errCh, err := client.StreamChat(ctx, llm.ChatRequest{
+		ConversationID: "admin-provider-chat-test",
+		RobotID:        "admin-provider-chat-test",
+		Prompt:         strings.TrimSpace(message),
+		Model:          selectedModel,
+		SystemContext:  map[string]any{"source": "admin-provider-chat-test"},
+	})
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
 
-	raw, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", err
-	}
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("nanobot returned %d: %s", resp.StatusCode, string(raw))
+	var reply strings.Builder
+	for deltaCh != nil || errCh != nil {
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case delta, ok := <-deltaCh:
+			if !ok {
+				deltaCh = nil
+				continue
+			}
+			reply.WriteString(delta)
+		case streamErr, ok := <-errCh:
+			if !ok {
+				errCh = nil
+				continue
+			}
+			if streamErr != nil {
+				return "", streamErr
+			}
+		}
 	}
 
-	var payloadMap map[string]any
-	if err := json.Unmarshal(raw, &payloadMap); err != nil {
-		return "", fmt.Errorf("invalid nanobot response: %w", err)
+	text := strings.TrimSpace(reply.String())
+	if text == "" {
+		return "", errors.New("provider returned empty response")
 	}
-
-	reply := extractNanobotReply(payloadMap)
-	if reply == "" {
-		reply = string(raw)
-	}
-	return reply, nil
-}
-
-func extractNanobotReply(payload map[string]any) string {
-	if text, ok := payload["text"].(string); ok && strings.TrimSpace(text) != "" {
-		return text
-	}
-	if reply, ok := payload["reply"].(string); ok && strings.TrimSpace(reply) != "" {
-		return reply
-	}
-	if message, ok := payload["message"].(string); ok && strings.TrimSpace(message) != "" {
-		return message
-	}
-	content, ok := payload["content"].(map[string]any)
-	if !ok {
-		return ""
-	}
-	if text, ok := content["text"].(string); ok {
-		return text
-	}
-	return ""
+	return text, nil
 }

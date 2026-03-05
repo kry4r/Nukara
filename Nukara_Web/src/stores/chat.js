@@ -14,6 +14,8 @@ export const useChatStore = defineStore('chat', () => {
   const isRemoteTyping = ref(false)
   const isLoading = ref(false)
   const activeReplyGroups = ref({})
+  const streamDraftByReply = ref({})
+  const personaUpdate = ref({ summary: '', timestamp: 0 })
 
   let wsSend = null
 
@@ -126,6 +128,50 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
+  function handleStreamStart(data) {
+    if (data.conversation_id !== conversationId.value) return
+    const replyId = data.reply_id
+    if (!replyId) return
+    isRemoteTyping.value = true
+    const draftId = `stream-${replyId}`
+    streamDraftByReply.value[replyId] = draftId
+    if (!messages.value.some(m => m.id === draftId)) {
+      messages.value.push({
+        id: draftId,
+        conversation_id: data.conversation_id,
+        sender_type: 'bot',
+        content: { type: 'text', text: '' },
+        created_at: new Date().toISOString(),
+        is_streaming: true,
+      })
+    }
+  }
+
+  function handleStreamChunk(data) {
+    if (data.conversation_id !== conversationId.value) return
+    const replyId = data.reply_id
+    const draftId = streamDraftByReply.value[replyId]
+    if (!draftId) return
+    const draft = messages.value.find(m => m.id === draftId)
+    if (!draft) return
+    const delta = sanitizeDisplayText(data.delta || '')
+    if (!delta) return
+    draft.content = draft.content || { type: 'text', text: '' }
+    draft.content.text = (draft.content.text || '') + delta
+  }
+
+  function handleStreamEnd(data) {
+    if (data.conversation_id !== conversationId.value) return
+    isRemoteTyping.value = false
+    const replyId = data.reply_id
+    const draftId = streamDraftByReply.value[replyId]
+    if (!draftId) return
+    const draft = messages.value.find(m => m.id === draftId)
+    if (draft) {
+      draft.is_streaming = false
+    }
+  }
+
   function handleMultiReplyStart(data) {
     if (data.conversation_id === conversationId.value) {
       isRemoteTyping.value = true
@@ -137,6 +183,16 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   function handleMessage(data) {
+    const replyId = data.reply_id
+    const draftId = replyId ? streamDraftByReply.value[replyId] : ''
+    if (draftId) {
+      const idx = messages.value.findIndex(m => m.id === draftId)
+      if (idx >= 0) {
+        messages.value.splice(idx, 1)
+      }
+      delete streamDraftByReply.value[replyId]
+    }
+
     // Deduplicate
     const msgId = data.msg_id || data.id
     if (messages.value.some(m => m.id === msgId)) return
@@ -208,6 +264,13 @@ export const useChatStore = defineStore('chat', () => {
     })
   }
 
+  function handleBotPersonaUpdated(data) {
+    personaUpdate.value = {
+      summary: data.summary || '人设有更新',
+      timestamp: data.timestamp || Math.floor(Date.now() / 1000),
+    }
+  }
+
   function clear() {
     conversationId.value = ''
     messages.value = []
@@ -215,16 +278,19 @@ export const useChatStore = defineStore('chat', () => {
     botStatus.value = { emoji: '', text: '' }
     isRemoteTyping.value = false
     activeReplyGroups.value = {}
+    streamDraftByReply.value = {}
+    personaUpdate.value = { summary: '', timestamp: 0 }
   }
 
   return {
     conversationId, botName, botStatus,
     messages, inputText, isRemoteTyping,
-    isLoading, activeReplyGroups,
+    isLoading, activeReplyGroups, personaUpdate,
     setWsSend, loadMessages, sendMessage, sendTyping, clear,
     handleAck, handleTyping,
+    handleStreamStart, handleStreamChunk, handleStreamEnd,
     handleMultiReplyStart, handleMessage,
     handleMultiReplyEnd, handleBotStatusUpdate,
-    handleProactiveMessage,
+    handleProactiveMessage, handleBotPersonaUpdated,
   }
 })

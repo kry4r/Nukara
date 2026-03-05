@@ -29,6 +29,7 @@ type DataStore interface {
 	GetBotState(userID, botID string) (BotState, bool)
 	UpdateBot(userID, botID string, patch Bot) (Bot, bool)
 	AppendBotPersona(userID, botID string, speakingAdds, backgroundAdds, traitAdds []string, gender *string) (Bot, bool)
+	ApplyBotPersonaPatch(userID, botID string, input PersonaPatchInput) (Bot, bool)
 
 	ListConversations(userID string) []Conversation
 	FindConversationByBot(userID, botID string) (Conversation, bool)
@@ -49,6 +50,17 @@ type DataStore interface {
 	SaveDirective(d Directive) Directive
 	ListDirectives(userID, botID, status string) []Directive
 	RevokeDirective(userID, botID, directiveID string) bool
+	SetUserProviderSetting(userID, providerID, model string) error
+	GetUserProviderSetting(userID string) (providerID, model string, ok bool)
+	SetBotProviderOverride(userID, botID, providerID, model string) error
+	GetBotProviderOverride(userID, botID string) (providerID, model string, ok bool)
+	SetSystemSetting(key, value string) error
+	GetSystemSetting(key string) (value string, ok bool)
+	CreateTurn(turn AgentTurn) (AgentTurn, error)
+	UpsertCompact(conversationID, compactJSON, untilTurnID string) error
+	GetConversationCompact(conversationID string) (ConversationCompact, bool)
+	UpsertMemoryItem(item MemoryItem) (MemoryItem, error)
+	GetMemoryItem(memoryID string) (MemoryItem, bool)
 
 	// Emotion tracking
 	AppendEmotionBuffer(userID, botID, text string) int // returns buffer length

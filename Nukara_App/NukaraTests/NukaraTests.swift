@@ -178,7 +178,7 @@ struct NukaraTests {
             return false
         })
         #expect(captured.contains { event in
-            if case .multiReplyEnd(_, _) = event { return true }
+            if case .streamEnd(_, _) = event { return true }
             return false
         })
     }

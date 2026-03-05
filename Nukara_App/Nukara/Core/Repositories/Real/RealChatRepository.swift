@@ -170,10 +170,11 @@ final class RealChatRepository: ChatRepositoryProtocol {
         )
 
         let botMessage = response.botMessage.toDomain()
-        let replyGroupID = UUID().uuidString
-        continuation.yield(.multiReplyStart(conversationID: botMessage.conversationID, replyGroupID: replyGroupID, count: 0))
+        let replyID = UUID().uuidString
+        continuation.yield(.streamStart(conversationID: botMessage.conversationID, replyID: replyID))
+        continuation.yield(.streamChunk(conversationID: botMessage.conversationID, replyID: replyID, delta: botMessage.text))
+        continuation.yield(.streamEnd(conversationID: botMessage.conversationID, replyID: replyID))
         continuation.yield(.message(botMessage))
-        continuation.yield(.multiReplyEnd(conversationID: botMessage.conversationID, replyGroupID: replyGroupID))
 
         if let status = response.botStatusUpdate {
             continuation.yield(
@@ -198,6 +199,25 @@ final class RealChatRepository: ChatRepositoryProtocol {
             let serverID = object["server_msg_id"] as? String ?? UUID().uuidString
             let timestamp = Date(timeIntervalSince1970: object["timestamp"] as? TimeInterval ?? Date().timeIntervalSince1970)
             return .ack(clientMessageID: clientID, serverMessageID: serverID, timestamp: timestamp)
+
+        case "stream_start":
+            return .streamStart(
+                conversationID: object["conversation_id"] as? String ?? "",
+                replyID: object["reply_id"] as? String ?? ""
+            )
+
+        case "stream_chunk":
+            return .streamChunk(
+                conversationID: object["conversation_id"] as? String ?? "",
+                replyID: object["reply_id"] as? String ?? "",
+                delta: object["delta"] as? String ?? ""
+            )
+
+        case "stream_end":
+            return .streamEnd(
+                conversationID: object["conversation_id"] as? String ?? "",
+                replyID: object["reply_id"] as? String ?? ""
+            )
 
         case "multi_reply_start":
             return .multiReplyStart(
@@ -267,7 +287,7 @@ final class RealChatRepository: ChatRepositoryProtocol {
                 isProactive: object["is_proactive"] as? Bool ?? false,
                 emotionTag: object["emotion_tag"] as? String
             )
-            message.replyGroupID = object["reply_group_id"] as? String
+            message.replyGroupID = (object["reply_id"] as? String) ?? (object["reply_group_id"] as? String)
             message.sequence = object["sequence"] as? Int
             return .message(message)
 
@@ -277,6 +297,12 @@ final class RealChatRepository: ChatRepositoryProtocol {
             let emoji = (object["emoji"] as? String) ?? (status?["emoji"] as? String) ?? BotStatus.default.emoji
             let text = (object["text"] as? String) ?? (status?["text"] as? String) ?? BotStatus.default.text
             return .botStatusUpdate(conversationID: conversationID, status: BotStatus(emoji: emoji, text: text))
+
+        case "bot_persona_updated":
+            let botID = object["bot_id"] as? String ?? ""
+            let summary = object["summary"] as? String ?? ""
+            let timestampValue = object["timestamp"] as? TimeInterval ?? Date().timeIntervalSince1970
+            return .botPersonaUpdated(botID: botID, summary: summary, timestamp: Date(timeIntervalSince1970: timestampValue))
 
         case "error":
             let message = object["message"] as? String ?? "unknown error"

@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"math/rand"
 	"os"
@@ -321,14 +322,12 @@ func (s *Server) sendProactiveMessage(userID string, bot store.Bot, conv store.C
 		sysCtx["last_user_message"] = lastText
 	}
 
-	message, err := s.agent.Proactive(context.Background(), convID, "proactive", triggerType, sysCtx)
+	message, emotion, _, _, err := s.runRuntimeProactive(context.Background(), userID, bot.ID, convID, triggerType, sysCtx)
 	if err != nil {
-		log.Printf("[scheduler] agent.Proactive failed: %v", err)
+		log.Printf("[scheduler] runtime proactive failed: %v", err)
+		message = fmt.Sprintf("%s：刚想到你了，最近怎么样？", bot.Name)
+		emotion = "gentle"
 	}
-	// Apply the same sanitization pipeline as regular chat messages.
-	message = agent.SanitizeLLMReply(message)
-	message, _, _ = agent.ExtractStatus(message, "")
-	message, emotion := agent.ExtractEmotion(message)
 	if strings.TrimSpace(message) == "" {
 		log.Printf("[scheduler] empty proactive message for user=%s bot=%s trigger=%s", userID, bot.ID, triggerType)
 		return

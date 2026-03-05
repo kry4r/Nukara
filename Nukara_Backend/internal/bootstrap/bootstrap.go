@@ -9,6 +9,9 @@ import (
 	"time"
 
 	"nukara/backend/internal/agent"
+	"nukara/backend/internal/agentx"
+	"nukara/backend/internal/agentx/llm"
+	agentprovider "nukara/backend/internal/agentx/provider"
 	"nukara/backend/internal/api"
 	"nukara/backend/internal/apns"
 	"nukara/backend/internal/store"
@@ -35,20 +38,32 @@ func NewHandler(role string) (string, http.Handler) {
 	nanobotHTTP := envOr("NUKARA_NANOBOT_HTTP_URL", "http://localhost:9090")
 	nanobotWS := envOr("NUKARA_NANOBOT_WS_URL", "ws://localhost:9090/ws/chat")
 	nanobotToken := envOr("NUKARA_NANOBOT_TOKEN", "")
-	agentClient := agent.NewAgent(agent.Config{
-		NanobotHTTPURL: nanobotHTTP,
-		NanobotWSURL:   nanobotWS,
-		NanobotToken:   nanobotToken,
-	})
-	if err := agentClient.Connect(); err != nil {
-		log.Printf("⚠️  [bootstrap] nanobot WS 连接失败: %v", err)
+	legacyNanobotEnabled := strings.EqualFold(strings.TrimSpace(envOr("NUKARA_LEGACY_NANOBOT_ENABLED", "false")), "true")
+
+	var agentClient *agent.Agent
+	if legacyNanobotEnabled {
+		agentClient = agent.NewAgent(agent.Config{
+			NanobotHTTPURL: nanobotHTTP,
+			NanobotWSURL:   nanobotWS,
+			NanobotToken:   nanobotToken,
+		})
+		if err := agentClient.Connect(); err != nil {
+			log.Printf("⚠️  [bootstrap] nanobot WS 连接失败: %v", err)
+		}
+	} else {
+		log.Printf("[bootstrap] agentx runtime enabled (legacy nanobot bridge disabled)")
 	}
 	apnsClient := apns.NewClient(envOr("NUKARA_APNS_TOPIC", "com.nukara.app"))
 	tokenSecret := envOr("NUKARA_JWT_SECRET", "nukara-dev-secret")
 
-	log.Printf("[bootstrap] 服务配置: nanobot_http=%s nanobot_ws=%s", nanobotHTTP, nanobotWS)
+	if legacyNanobotEnabled {
+		log.Printf("[bootstrap] legacy bridge config: nanobot_http=%s nanobot_ws=%s", nanobotHTTP, nanobotWS)
+	}
 
 	server := api.NewServer(sharedStore, agentClient, apnsClient, tokenSecret, redisAddr)
+	if runtime := buildChatRuntime(sharedStore, agentClient); runtime != nil {
+		server.SetChatRuntime(runtime)
+	}
 	handler := server.HandlerFor(role)
 
 	if shouldStartScheduler(role) {
@@ -76,6 +91,37 @@ func NewHandler(role string) (string, http.Handler) {
 
 	addr := fmt.Sprintf(":%s", envOr(strings.ToUpper("nukara_"+role+"_port"), defaultPort))
 	return addr, handler
+}
+
+type routeStore interface {
+	ListProviders() ([]store.Provider, error)
+	GetUserProviderSetting(userID string) (providerID, model string, ok bool)
+	GetBotProviderOverride(userID, botID string) (providerID, model string, ok bool)
+	GetSystemSetting(key string) (value string, ok bool)
+}
+
+func buildChatRuntime(st store.DataStore, legacy *agent.Agent) *agentx.Runtime {
+	baseURL := strings.TrimSpace(envOr("NUKARA_CHAT_BASE_URL", envOr("NUKARA_ASTRON_BASE_URL", "")))
+	apiKey := strings.TrimSpace(envOr("NUKARA_CHAT_API_KEY", envOr("NUKARA_ASTRON_API_KEY", "")))
+	model := strings.TrimSpace(envOr("NUKARA_CHAT_MODEL", envOr("NUKARA_ASTRON_CHAT_MODEL", "")))
+
+	deps := agentx.RuntimeDeps{}
+	if rs, ok := st.(routeStore); ok {
+		deps.RouteResolver = agentprovider.NewRouter(rs)
+	}
+
+	if baseURL != "" {
+		deps.ProviderClient = llm.NewOpenAICompatClient(baseURL, apiKey, model, nil)
+		log.Printf("[bootstrap] chat runtime provider configured: base=%s model=%s", baseURL, model)
+	} else if legacy != nil {
+		deps.ProviderClient = llm.NewLegacyAgentClient(legacy)
+		log.Printf("[bootstrap] chat runtime provider configured: legacy bridge")
+	}
+
+	if deps.ProviderClient == nil && deps.RouteResolver == nil {
+		return nil
+	}
+	return agentx.NewRuntime(deps)
 }
 
 func envOr(key, fallback string) string {

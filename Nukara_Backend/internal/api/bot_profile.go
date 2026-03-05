@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"nukara/backend/internal/agent"
+	agentpersona "nukara/backend/internal/agentx/persona"
 	"nukara/backend/internal/store"
 )
 
@@ -17,6 +18,9 @@ const (
 )
 
 type iterateAdds struct {
+	Relationship      string   `json:"relationship"`
+	Role              string   `json:"role"`
+	SelfCognitionAdds []string `json:"self_cognition_adds"`
 	SpeakingStyleAdds []string `json:"speaking_style_adds"`
 	BackgroundAdds    []string `json:"background_adds"`
 	TraitAdds         []string `json:"trait_adds"`
@@ -85,7 +89,7 @@ func (s *Server) handleBotImpression(w http.ResponseWriter, r *http.Request, use
 3) 包含对方沟通风格/兴趣或情绪倾向中的1-2点。`
 
 	convID := agent.NanobotConvID(userID, bot.ID, conv.ID)
-	raw, err := s.agent.Chat(context.Background(), convID, "default", prompt, sysCtx)
+	raw, _, _, _, err := s.runRuntimeChatText(context.Background(), userID, bot.ID, convID, prompt, sysCtx)
 	if err != nil {
 		respondJSON(w, http.StatusBadGateway, map[string]any{"error": "impression generation failed"})
 		return
@@ -143,7 +147,7 @@ func (s *Server) handleBotIterate(w http.ResponseWriter, r *http.Request, userID
 	prompt := buildIteratePrompt(messages)
 
 	convID := agent.NanobotConvID(userID, bot.ID, conv.ID)
-	raw, err := s.agent.Chat(context.Background(), convID, "default", prompt, sysCtx)
+	raw, _, _, _, err := s.runRuntimeChatText(context.Background(), userID, bot.ID, convID, prompt, sysCtx)
 	if err != nil {
 		respondJSON(w, http.StatusBadGateway, map[string]any{"error": "iterate generation failed"})
 		return
@@ -151,18 +155,52 @@ func (s *Server) handleBotIterate(w http.ResponseWriter, r *http.Request, userID
 
 	adds := parseIterateAdds(raw)
 
+	relationship := firstNonEmpty(adds.Relationship, bot.Relationship)
+	role := firstNonEmpty(adds.Role, strings.Join(adds.BackgroundAdds, "|"), bot.Role, bot.Background)
+	speaking := strings.Join(appendUnique(splitPipe(bot.SpeakingStyle), adds.SpeakingStyleAdds, 10), "|")
+	traits := appendUnique(bot.Traits, adds.TraitAdds, 10)
+	selfCognition := appendUnique(bot.SelfCognition, adds.SelfCognitionAdds, 10)
+	compiled := agentpersona.CompilePrompt(store.Bot{
+		Name:          bot.Name,
+		Relationship:  relationship,
+		Role:          role,
+		SelfCognition: selfCognition,
+		SpeakingStyle: speaking,
+		Traits:        traits,
+		Gender:        firstNonEmpty(adds.Gender, bot.Gender),
+	}, 420)
+
 	var genderPtr *string
 	if adds.Gender != "" {
 		gender := adds.Gender
 		genderPtr = &gender
 	}
-	updated, found := s.store.AppendBotPersona(userID, botID, adds.SpeakingStyleAdds, adds.BackgroundAdds, adds.TraitAdds, genderPtr)
+	updated, found := s.store.ApplyBotPersonaPatch(userID, botID, store.PersonaPatchInput{
+		Relationship:      relationship,
+		Role:              role,
+		SelfCognitionAdds: adds.SelfCognitionAdds,
+		SpeakingStyleAdds: adds.SpeakingStyleAdds,
+		TraitAdds:         adds.TraitAdds,
+		Gender:            genderPtr,
+		PersonaPrompt:     compiled,
+	})
 	if !found {
 		respondJSON(w, http.StatusNotFound, map[string]any{"error": "bot not found"})
 		return
 	}
 
+	s.wsHub.publishToUser(userID, map[string]any{
+		"type":      "bot_persona_updated",
+		"bot_id":    botID,
+		"patch":     adds,
+		"summary":   "人设已更新",
+		"timestamp": updated.UpdatedAt.Unix(),
+	})
+
 	respondJSON(w, http.StatusOK, map[string]any{
+		"relationship":        adds.Relationship,
+		"role":                adds.Role,
+		"self_cognition_adds": adds.SelfCognitionAdds,
 		"speaking_style_adds": adds.SpeakingStyleAdds,
 		"background_adds":     adds.BackgroundAdds,
 		"trait_adds":          adds.TraitAdds,
@@ -176,7 +214,7 @@ func buildIteratePrompt(messages []store.Message) string {
 	sb.WriteString(`[system:bot_iterate]
 你要基于最近对话提出“角色自我迭代建议”。
 仅输出JSON，不要解释，不要代码块。JSON格式如下：
-{"speaking_style_adds":[],"background_adds":[],"trait_adds":[],"gender":""}
+{"relationship":"","role":"","self_cognition_adds":[],"speaking_style_adds":[],"background_adds":[],"trait_adds":[],"gender":""}
 约束：
 - 每个数组最多5项，每项20字以内
 - 内容必须是可直接追加到人设的短语
@@ -234,11 +272,65 @@ func parseIterateAdds(raw string) iterateAdds {
 	if err := json.Unmarshal([]byte(cleaned), &adds); err != nil {
 		return iterateAdds{}
 	}
+	adds.Relationship = strings.TrimSpace(adds.Relationship)
+	adds.Role = strings.TrimSpace(adds.Role)
+	adds.SelfCognitionAdds = normalizeAdds(adds.SelfCognitionAdds, 5, 40)
 	adds.SpeakingStyleAdds = normalizeAdds(adds.SpeakingStyleAdds, 5, 20)
 	adds.BackgroundAdds = normalizeAdds(adds.BackgroundAdds, 5, 20)
 	adds.TraitAdds = normalizeAdds(adds.TraitAdds, 5, 20)
 	adds.Gender = normalizeGender(adds.Gender)
 	return adds
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func splitPipe(v string) []string {
+	if strings.TrimSpace(v) == "" {
+		return nil
+	}
+	parts := strings.Split(v, "|")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
+}
+
+func appendUnique(base, adds []string, max int) []string {
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(base)+len(adds))
+	push := func(values []string) {
+		for _, value := range values {
+			value = strings.TrimSpace(value)
+			if value == "" {
+				continue
+			}
+			if _, ok := seen[value]; ok {
+				continue
+			}
+			seen[value] = struct{}{}
+			out = append(out, value)
+			if max > 0 && len(out) >= max {
+				return
+			}
+		}
+	}
+	push(base)
+	if max <= 0 || len(out) < max {
+		push(adds)
+	}
+	return out
 }
 
 func normalizeAdds(values []string, maxCount, maxLen int) []string {

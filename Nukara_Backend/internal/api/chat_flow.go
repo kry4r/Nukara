@@ -83,16 +83,13 @@ func (s *Server) processChatMessage(userID string, req chatMessageRequest) (chat
 	}
 	directives := s.store.ListDirectives(userID, bot.ID, "active")
 	sysCtx := agent.BuildSystemContext(bot, directives, userStatusStr)
-	raw, err := s.agent.Chat(context.Background(), convID, "default", prompt, sysCtx)
+	reply, emotion, statusEmoji, statusText, err := s.runRuntimeChatText(context.Background(), userID, bot.ID, convID, prompt, sysCtx)
 	if err != nil {
-		log.Printf("[chat_flow] agent.Chat failed: %v", err)
-		raw = fmt.Sprintf("%s：我记住了你说的。要不要继续聊聊？", bot.Name)
-	}
-	raw = agent.SanitizeLLMReply(raw)
-	reply, statusEmoji, statusText := agent.ExtractStatus(raw, "")
-	reply, emotion := agent.ExtractEmotion(reply)
-	if statusEmoji == "" || statusEmoji == "☕️" {
+		log.Printf("[chat_flow] runtime chat failed: %v", err)
+		reply = fmt.Sprintf("%s：我记住了你说的。要不要继续聊聊？", bot.Name)
+		emotion = "gentle"
 		statusEmoji = agent.EmotionDefaultEmoji(emotion)
+		statusText = "聊天中"
 	}
 	botMessage, ok := s.store.SaveMessage(userID, store.Message{
 		ConversationID: conv.ID,
@@ -120,36 +117,38 @@ func (s *Server) processChatMessage(userID string, req chatMessageRequest) (chat
 		for _, d := range existing {
 			existingContents = append(existingContents, d.Content)
 		}
-		directives := s.agent.ExtractMemory(context.Background(), nbConvID, "default", userPrompt, botReply, existingContents, sysCtx)
-		for _, e := range directives {
-			if ok, _ := agent.ValidateDirective(e.Content); !ok {
-				continue
-			}
-			switch e.Action {
-			case "ADD", "UPDATE":
-				if len(existing) < 20 {
-					s.store.SaveDirective(store.Directive{
-						UserID: uID, BotID: b.ID,
-						Content: e.Content, Category: e.Category,
-						Source: "conversation", Status: "active",
-						OriginalMessage: userPrompt,
-					})
+		if s.agent != nil {
+			directives := s.agent.ExtractMemory(context.Background(), nbConvID, "default", userPrompt, botReply, existingContents, sysCtx)
+			for _, e := range directives {
+				if ok, _ := agent.ValidateDirective(e.Content); !ok {
+					continue
 				}
-			case "REVOKE":
-				for _, d := range existing {
-					if d.Content == e.Content {
-						s.store.RevokeDirective(uID, b.ID, d.ID)
+				switch e.Action {
+				case "ADD", "UPDATE":
+					if len(existing) < 20 {
+						s.store.SaveDirective(store.Directive{
+							UserID: uID, BotID: b.ID,
+							Content: e.Content, Category: e.Category,
+							Source: "conversation", Status: "active",
+							OriginalMessage: userPrompt,
+						})
+					}
+				case "REVOKE":
+					for _, d := range existing {
+						if d.Content == e.Content {
+							s.store.RevokeDirective(uID, b.ID, d.ID)
+						}
 					}
 				}
 			}
-		}
 
-		turnCount := s.store.IncrementTurnCount(uID, b.ID)
-		if turnCount%3 == 0 {
-			s.agent.UpdateImpression(context.Background(), nbConvID, "default", sysCtx)
-		}
-		if turnCount%20 == 0 {
-			s.agent.ConsolidateMemory(context.Background(), nbConvID, "default", sysCtx)
+			turnCount := s.store.IncrementTurnCount(uID, b.ID)
+			if turnCount%3 == 0 {
+				s.agent.UpdateImpression(context.Background(), nbConvID, "default", sysCtx)
+			}
+			if turnCount%20 == 0 {
+				s.agent.ConsolidateMemory(context.Background(), nbConvID, "default", sysCtx)
+			}
 		}
 	}(userID, bot, conv, prompt, reply)
 
@@ -229,16 +228,22 @@ func selectBotStatus(emotion, conversationID string) botStatusValue {
 func (s *Server) generateStarterMessage(userID string, bot store.Bot, convID string) string {
 	nbConvID := agent.NanobotConvID(userID, bot.ID, convID)
 	sysCtx := agent.BuildSystemContext(bot, nil)
-	reply, err := s.agent.GenerateStarter(context.Background(), nbConvID, "default", sysCtx)
+	reply, _, _, _, err := s.runRuntimeChatText(
+		context.Background(),
+		userID,
+		bot.ID,
+		nbConvID,
+		"现在直接向用户说一句简短的开场问候。直接输出你要说的话，不要使用工具，不要解释，只输出对话内容。",
+		sysCtx,
+	)
 	if err != nil {
-		log.Printf("[chat_flow] GenerateStarter failed: %v", err)
+		log.Printf("[chat_flow] GenerateStarter failed(runtime): %v", err)
 		return fmt.Sprintf("你好呀～我是%s，很高兴认识你。", bot.Name)
 	}
-	text, _ := agent.ExtractEmotion(reply)
-	if strings.TrimSpace(text) == "" {
+	if strings.TrimSpace(reply) == "" {
 		return fmt.Sprintf("你好呀～我是%s，很高兴认识你。", bot.Name)
 	}
-	return text
+	return reply
 }
 
 func wsMessageEvent(msg store.Message) map[string]any {
