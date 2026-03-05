@@ -2,8 +2,8 @@
 
 cleanup_pre_deploy() {
   local dry_run=${1:-false}
-  local services=(nukara-gateway nukara-proactive nukara-nanobot nukara-admin)
-  local ports=(80 8080 18081 9527 19527)
+  local services=(nukara-gateway nukara-proactive nukara-admin)
+  local ports=(80 8080 9527 19527)
 
   log "Stopping old services..."
   for service in "${services[@]}"; do

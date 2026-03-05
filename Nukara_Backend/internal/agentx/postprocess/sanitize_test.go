@@ -16,6 +16,17 @@ func TestSanitize_RemovesThinkAndTags(t *testing.T) {
 	}
 }
 
+func TestSanitize_RemovesInternalMemoryTags(t *testing.T) {
+	in := "你好\n[memory:find_memory_cache]\n[system:debug]\n[internal:trace]\n继续聊"
+	got := SanitizeVisible(in)
+	if strings.Contains(got, "[memory:") || strings.Contains(got, "[system:") || strings.Contains(got, "[internal:") {
+		t.Fatalf("internal tags leaked: %s", got)
+	}
+	if !strings.Contains(got, "你好") || !strings.Contains(got, "继续聊") {
+		t.Fatalf("visible text missing: %s", got)
+	}
+}
+
 func TestStreamSanitizer_DoesNotLeakPartialHiddenTags(t *testing.T) {
 	s := NewStreamSanitizer()
 	out1 := s.Push("你好<th")
@@ -31,6 +42,21 @@ func TestStreamSanitizer_DoesNotLeakPartialHiddenTags(t *testing.T) {
 		t.Fatalf("status tag leaked: %q", combined)
 	}
 	if !strings.Contains(combined, "你好") || !strings.Contains(combined, "世界") {
+		t.Fatalf("visible text missing: %q", combined)
+	}
+}
+
+func TestStreamSanitizer_DoesNotLeakMemoryTags(t *testing.T) {
+	s := NewStreamSanitizer()
+	out1 := s.Push("我先帮你找找 [memo")
+	out2 := s.Push("ry:find_memory_cache]")
+	out3 := s.Push(" 已处理 [internal:trace]")
+
+	combined := out1 + out2 + out3
+	if strings.Contains(combined, "[memory:") || strings.Contains(combined, "[internal:") {
+		t.Fatalf("internal stream tags leaked: %q", combined)
+	}
+	if !strings.Contains(combined, "我先帮你找找") || !strings.Contains(combined, "已处理") {
 		t.Fatalf("visible text missing: %q", combined)
 	}
 }

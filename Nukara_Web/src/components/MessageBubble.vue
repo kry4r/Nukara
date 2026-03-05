@@ -1,13 +1,9 @@
 <script setup>
+import { formatClockTime } from '../utils/time'
+
 defineProps({
   msg: { type: Object, required: true },
 })
-
-function formatTime(ts) {
-  if (!ts) return ''
-  const d = new Date(ts)
-  return d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
-}
 </script>
 
 <template>
@@ -15,7 +11,7 @@ function formatTime(ts) {
     <div :class="['bubble', msg.sender_type === 'user' ? 'user' : 'bot']">
       <span v-if="msg.is_proactive" class="proactive-tag">主动消息</span>
       <p class="bubble-text">{{ msg.content?.text || '' }}</p>
-      <span class="bubble-time">{{ formatTime(msg.created_at) }}</span>
+      <span class="bubble-time">{{ formatClockTime(msg.created_at) }}</span>
     </div>
   </div>
 </template>

@@ -13,7 +13,6 @@ init_deploy_state() {
   "services": {
     "gateway": {"binary_hash": "", "last_restart": ""},
     "proactive": {"binary_hash": "", "last_restart": ""},
-    "nanobot": {"binary_hash": "", "last_restart": ""},
     "web": {"binary_hash": "", "last_restart": ""}
   }
 }

@@ -7,10 +7,18 @@ import (
 
 var (
 	thinkBlockRe = regexp.MustCompile(`(?is)<think>.*?</think>`)
-	hiddenTagRe  = regexp.MustCompile(`\[(status|emotion):[^\]]*\]`)
+	hiddenTagRe  = regexp.MustCompile(`\[(status|emotion|system|memory|internal|debug):[^\]]*\]`)
 )
 
-var startMarkers = []string{"<think>", "[status:", "[emotion:"}
+var startMarkers = []string{
+	"<think>",
+	"[status:",
+	"[emotion:",
+	"[system:",
+	"[memory:",
+	"[internal:",
+	"[debug:",
+}
 
 type StreamSanitizer struct {
 	inThink bool
@@ -68,7 +76,7 @@ func (s *StreamSanitizer) Push(delta string) string {
 		case "<think>":
 			i += len(marker)
 			s.inThink = true
-		case "[status:", "[emotion:":
+		case "[status:", "[emotion:", "[system:", "[memory:", "[internal:", "[debug:":
 			end := strings.IndexByte(input[i+len(marker):], ']')
 			if end < 0 {
 				s.carry = input[i:]

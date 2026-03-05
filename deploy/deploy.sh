@@ -3,7 +3,7 @@ set -euo pipefail
 
 # ============================================================
 # Nukara — One-Click Full Stack Deploy
-# Deploys: Postgres + Redis + Nanobot + Gateway + Proactive + Web
+# Deploys: Postgres + Redis + Gateway + Proactive + Web
 # Supports: Ubuntu/Debian, CentOS/RHEL/Fedora, Arch, Alpine
 # ============================================================
 
@@ -232,114 +232,14 @@ APNS_TOPIC=com.nukara.app
 PROACTIVE_INTERVAL=$PROACTIVE_INTERVAL
 INACTIVITY_THRESHOLD=$INACTIVITY_THRESHOLD
 PROACTIVE_COOLDOWN=$PROACTIVE_COOLDOWN
-NANOBOT_TOKEN=
 EOF
 
   log "Config saved to $ENV_FILE"
 }
 
-# --- Seed nanobot runtime config from deploy inputs ---
-seed_nanobot_config() {
-  local config_path="$1"
-
-  python3 - "$config_path" "$LLM_API_KEY" "$LLM_API_BASE" "$LLM_MODEL" <<'PY'
-import json
-import sys
-from pathlib import Path
-
-config_path = Path(sys.argv[1])
-api_key = sys.argv[2]
-api_base = sys.argv[3]
-model = sys.argv[4]
-
-data = {}
-if config_path.exists():
-    raw = config_path.read_text(encoding="utf-8").strip()
-    if raw:
-        loaded = json.loads(raw)
-        if isinstance(loaded, dict):
-            data = loaded
-
-agents = data.get("agents")
-if not isinstance(agents, dict):
-    agents = {}
-data["agents"] = agents
-
-defaults = agents.get("defaults")
-if not isinstance(defaults, dict):
-    defaults = {}
-agents["defaults"] = defaults
-
-providers = data.get("providers")
-if not isinstance(providers, dict):
-    providers = {}
-data["providers"] = providers
-
-custom = providers.get("custom")
-if not isinstance(custom, dict):
-    custom = {}
-providers["custom"] = custom
-
-custom["api_key"] = api_key
-custom["api_base"] = api_base
-if model.strip():
-    defaults["model"] = model.strip()
-
-config_path.parent.mkdir(parents=True, exist_ok=True)
-config_path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-PY
-}
-
 # --- Prepare source code ---
 prepare_sources() {
   cd "$DEPLOY_DIR"
-
-  is_valid_nanobot_source() {
-    local dir="$1"
-    local loop_py="$dir/nanobot/agent/loop.py"
-    local context_py="$dir/nanobot/agent/context.py"
-    local provider_py="$dir/nanobot/providers/litellm_provider.py"
-    local commands_py="$dir/nanobot/cli/commands.py"
-    [ -f "$dir/pyproject.toml" ] || [ -f "$dir/setup.py" ] || return 1
-    [ -f "$loop_py" ] || return 1
-    [ -f "$context_py" ] || return 1
-    [ -f "$provider_py" ] || return 1
-    [ -f "$commands_py" ] || return 1
-    python3 -m py_compile "$loop_py" >/dev/null 2>&1 || return 1
-    python3 -m py_compile "$context_py" >/dev/null 2>&1 || return 1
-    python3 -m py_compile "$provider_py" >/dev/null 2>&1 || return 1
-    python3 -m py_compile "$commands_py" >/dev/null 2>&1 || return 1
-
-    # Guard against runtime NameError in loop.py
-    if grep -q 'if TYPE_CHECKING:' "$loop_py"; then
-      grep -Eq '^[[:space:]]*from[[:space:]]+typing[[:space:]]+import[[:space:]].*\bTYPE_CHECKING\b' "$loop_py" || return 1
-    fi
-    if grep -q 'weakref\.' "$loop_py"; then
-      grep -Eq '^[[:space:]]*import[[:space:]]+weakref([[:space:]]|$)' "$loop_py" || return 1
-    fi
-    if grep -q 're\.sub\(' "$loop_py"; then
-      grep -Eq '^[[:space:]]*import[[:space:]]+re([[:space:]]|$)' "$loop_py" || return 1
-    fi
-
-    # Guard against runtime NameError in litellm_provider.py
-    if grep -q 'string\.ascii_letters' "$provider_py"; then
-      grep -Eq '^[[:space:]]*import[[:space:]]+string([[:space:]]|$)' "$provider_py" || return 1
-    fi
-    if grep -q 'secrets\.choice' "$provider_py"; then
-      grep -Eq '^[[:space:]]*import[[:space:]]+secrets([[:space:]]|$)' "$provider_py" || return 1
-    fi
-
-    # Guard against runtime NameError in commands.py
-    if grep -q 'SessionManager(' "$commands_py"; then
-      grep -Eq '^[[:space:]]*from[[:space:]]+nanobot\.session\.manager[[:space:]]+import[[:space:]]+SessionManager([[:space:]]|$)' "$commands_py" || return 1
-    fi
-    if grep -q '\bhb_cfg\b' "$commands_py"; then
-      grep -Eq '^[[:space:]]*hb_cfg[[:space:]]*=[[:space:]]*config\.gateway\.heartbeat([[:space:]]|$)' "$commands_py" || return 1
-    fi
-    if grep -Eq 'heartbeat\.(start|stop)\(' "$commands_py"; then
-      grep -Eq '^[[:space:]]*heartbeat[[:space:]]*=[[:space:]]*HeartbeatService\(' "$commands_py" || return 1
-    fi
-  }
 
   # Backend
   if [ -d "./Nukara_Backend" ]; then
@@ -354,57 +254,6 @@ prepare_sources() {
     rm -rf _tmp_nukara
   fi
 
-  # Nanobot
-  local nanobot_ready=false
-  local branch_primary="${NANOBOT_BRANCH:-main}"
-  local branch_fallback="main"
-  if [ -d "./nanobot" ]; then
-    if is_valid_nanobot_source "./nanobot"; then
-      log "nanobot found locally"
-      nanobot_ready=true
-    else
-      warn "Local ./nanobot source invalid (structure or syntax), will fallback."
-    fi
-  fi
-
-  if [ "$nanobot_ready" = false ] && [ -d "./Nukara_Backend/nanobot" ]; then
-    log "Using embedded nanobot from Nukara_Backend..."
-    mkdir -p ./nanobot
-    if command -v rsync >/dev/null 2>&1; then
-      rsync -a --delete \
-        --exclude '.git' \
-        --exclude '.venv' \
-        --exclude '__pycache__' \
-        ./Nukara_Backend/nanobot/ ./nanobot/
-    else
-      rm -rf ./nanobot
-      mkdir -p ./nanobot
-      cp -a ./Nukara_Backend/nanobot/. ./nanobot/
-      rm -rf ./nanobot/.git ./nanobot/.venv ./nanobot/__pycache__
-    fi
-
-    if is_valid_nanobot_source "./nanobot"; then
-      nanobot_ready=true
-    else
-      warn "Embedded nanobot source invalid (submodule missing or syntax broken), will fallback."
-      rm -rf ./nanobot
-    fi
-  fi
-
-  if [ "$nanobot_ready" = false ]; then
-    log "Cloning nanobot (${branch_primary})..."
-    rm -rf ./nanobot
-    if git clone --depth 1 -b "$branch_primary" https://github.com/kry4r/nanobot.git ./nanobot && \
-       is_valid_nanobot_source "./nanobot"; then
-      nanobot_ready=true
-    else
-      warn "Cloned nanobot ${branch_primary} is invalid; falling back to ${branch_fallback}."
-      rm -rf ./nanobot
-      git clone --depth 1 -b "$branch_fallback" https://github.com/kry4r/nanobot.git ./nanobot
-      is_valid_nanobot_source "./nanobot" || err "Nanobot source validation failed on fallback branch ${branch_fallback}"
-    fi
-  fi
-
   # Web frontend
   if [ -d "./Nukara_Web" ]; then
     log "Nukara_Web found locally"
@@ -417,16 +266,6 @@ prepare_sources() {
     mv _tmp_nukara2/Nukara_Web ./Nukara_Web
     rm -rf _tmp_nukara2
   fi
-
-  # Copy nanobot config
-  if [ -f "./Nukara_Backend/configs/nanobot/config.json" ]; then
-    cp ./Nukara_Backend/configs/nanobot/config.json ./nanobot-config.json
-    log "Copied nanobot config"
-  else
-    warn "nanobot config not found, using default"
-    echo '{}' > ./nanobot-config.json
-  fi
-  seed_nanobot_config "./nanobot-config.json"
 }
 
 # --- Generate nginx config from template ---
