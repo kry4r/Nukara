@@ -7,6 +7,51 @@ sanitize_provider_id() {
   printf '%s\n' "$raw"
 }
 
+admin_api_request() {
+  local username="$1"
+  local password="$2"
+  local method="$3"
+  local url="$4"
+  local body="${5:-}"
+  local tmp
+  tmp=$(mktemp)
+  local -a args=(--noproxy '*' -sS -o "$tmp" -w '%{http_code}' -u "${username}:${password}" -X "$method" "$url")
+  if [ -n "$body" ]; then
+    args+=(-H 'Content-Type: application/json' -d "$body")
+  fi
+
+  if ! ADMIN_HTTP_STATUS=$(curl "${args[@]}"); then
+    ADMIN_HTTP_STATUS="000"
+    ADMIN_HTTP_BODY="$(cat "$tmp" 2>/dev/null || true)"
+    rm -f "$tmp"
+    return 1
+  fi
+  ADMIN_HTTP_BODY="$(cat "$tmp")"
+  rm -f "$tmp"
+  return 0
+}
+
+wait_for_admin_provider_api() {
+  local username="$1"
+  local password="$2"
+  local base_url="$3"
+  local timeout="${4:-45}"
+  local elapsed=0
+  local url="${base_url}/api/admin/providers"
+
+  log "Waiting for admin provider API readiness: $url"
+  while [ "$elapsed" -lt "$timeout" ]; do
+    if admin_api_request "$username" "$password" GET "$url" && [ "$ADMIN_HTTP_STATUS" = "200" ]; then
+      log "  ✓ Admin provider API ready"
+      return 0
+    fi
+    sleep 1
+    elapsed=$((elapsed + 1))
+  done
+
+  err "Admin provider API readiness failed: status=${ADMIN_HTTP_STATUS:-000} body=${ADMIN_HTTP_BODY:-}"
+}
+
 bootstrap_default_provider() {
   local admin_port="${ADMIN_API_PORT:-19527}"
   local admin_base_url="http://127.0.0.1:${admin_port}"
@@ -34,7 +79,7 @@ bootstrap_default_provider() {
     return 0
   fi
 
-  wait_for_health "$admin_base_url/health" 30
+  wait_for_admin_provider_api "$admin_username" "$admin_password" "$admin_base_url" 45
 
   local payload
   payload=$(jq -nc \
@@ -55,10 +100,12 @@ bootstrap_default_provider() {
     }')
 
   log "Bootstrapping default provider..."
+  admin_api_request "$admin_username" "$admin_password" GET "$admin_base_url/api/admin/providers" || \
+    err "Failed to query providers: ${ADMIN_HTTP_BODY:-curl error}"
+  [ "$ADMIN_HTTP_STATUS" = "200" ] || err "Failed to query providers: status=$ADMIN_HTTP_STATUS body=$ADMIN_HTTP_BODY"
+
   local providers_resp existing_id method endpoint response_body
-  providers_resp=$(curl --noproxy '*' -fsS \
-    -u "${admin_username}:${admin_password}" \
-    "$admin_base_url/api/admin/providers")
+  providers_resp="$ADMIN_HTTP_BODY"
   existing_id=$(printf '%s' "$providers_resp" | jq -r --arg id "$provider_id" 'map(select(.id == $id)) | .[0].id // empty')
 
   if [ -n "$existing_id" ]; then
@@ -71,24 +118,30 @@ bootstrap_default_provider() {
     log "Default provider missing; creating: $provider_id"
   fi
 
-  response_body=$(curl --noproxy '*' -fsS \
-    -u "${admin_username}:${admin_password}" \
-    -H "Content-Type: application/json" \
-    -X "$method" "$endpoint" \
-    -d "$payload")
+  admin_api_request "$admin_username" "$admin_password" "$method" "$endpoint" "$payload" || \
+    err "Provider bootstrap request failed: ${ADMIN_HTTP_BODY:-curl error}"
+  case "$ADMIN_HTTP_STATUS" in
+    200|201)
+      response_body="$ADMIN_HTTP_BODY"
+      ;;
+    *)
+      err "Provider bootstrap failed: status=$ADMIN_HTTP_STATUS body=$ADMIN_HTTP_BODY"
+      ;;
+  esac
 
   if [ -z "$existing_id" ]; then
     existing_id=$(printf '%s' "$response_body" | jq -r '.id // empty')
   fi
   if [ -z "$existing_id" ]; then
-    err "Failed to resolve provider id from bootstrap response"
+    err "Failed to resolve provider id from bootstrap response: $response_body"
   fi
 
-  curl --noproxy '*' -fsS \
-    -u "${admin_username}:${admin_password}" \
-    -H "Content-Type: application/json" \
-    -X POST "$admin_base_url/api/admin/providers/${existing_id}/switch" \
-    -d "{}" >/dev/null
+  admin_api_request "$admin_username" "$admin_password" POST "$admin_base_url/api/admin/providers/${existing_id}/switch" '{}' || \
+    err "Provider switch request failed: ${ADMIN_HTTP_BODY:-curl error}"
+  case "$ADMIN_HTTP_STATUS" in
+    200|204) ;;
+    *) err "Provider switch failed: status=$ADMIN_HTTP_STATUS body=$ADMIN_HTTP_BODY" ;;
+  esac
 
   log "Default provider bootstrapped and switched active: $existing_id (mode=$provider_api_mode)"
 }

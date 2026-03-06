@@ -71,7 +71,7 @@ sudo bash deploy/deploy-local.sh --force-clean
 - `NUKARA_ADMIN_USERNAME`
 - `NUKARA_ADMIN_PASSWORD`
 - 默认 Provider 的 `name/base_url/api_key/models/priority/api_mode`
-- 可选记忆基础设施：`NUKARA_QDRANT_URL / NUKARA_QDRANT_API_KEY / NUKARA_QDRANT_COLLECTION / NUKARA_NEO4J_URL / NUKARA_NEO4J_USER / NUKARA_NEO4J_PASSWORD / NUKARA_EMBEDDING_MODEL`
+- 本地记忆基础设施：`NUKARA_MEMORY_INFRA_ENABLED / NUKARA_QDRANT_VERSION / NUKARA_QDRANT_HTTP_PORT / NUKARA_QDRANT_GRPC_PORT / NUKARA_QDRANT_COLLECTION / NUKARA_QDRANT_VECTOR_SIZE / NUKARA_NEO4J_HTTP_PORT / NUKARA_NEO4J_BOLT_PORT / NUKARA_NEO4J_ADAPTER_PORT / NUKARA_NEO4J_DATABASE / NUKARA_NEO4J_USER / NUKARA_NEO4J_PASSWORD / NUKARA_EMBEDDING_MODEL`
 
 部署完成后会自动执行：
 
@@ -80,6 +80,16 @@ sudo bash deploy/deploy-local.sh --force-clean
 3. `POST /api/admin/providers/{id}/switch` 切换为激活 Provider
 
 如果默认 Provider 参数不完整，会跳过初始化并打印告警。
+
+另外，provider bootstrap 不再只等待 `/health`；现在会等待带认证的 `/api/admin/providers` 真正可用，并在失败时打印完整响应体。这样在出现 `curl (22)` / `500` 时，可以直接看到数据库或 provider 表初始化的真实报错。
+
+默认情况下，`deploy/deploy-local.sh` 会在服务器上原生安装并拉起以下记忆基础设施：
+
+- `qdrant`：官方 release 二进制 + `systemd`
+- `neo4j`：官方 apt/yum 仓库安装 + `systemd`
+- `nukara-neo4j-adapter`：仓内 Go 服务，负责把主链现有的 HTTP topic graph 协议桥接到 Neo4j Bolt
+
+注意：`NUKARA_NEO4J_URL` 指向的是 `nukara-neo4j-adapter`，不是 Neo4j 原生 `7474/7687` 端口。
 
 ## 部署前置依赖
 
@@ -133,6 +143,15 @@ sudo bash deploy/deploy-local.sh --force-clean
 
 ### 故障排查
 
+**问题：bootstrap default provider 后出现 `curl (22)` / HTTP 500**
+
+通常不是 admin 进程没起来，而是 admin 的 `/health` 已返回 `200`，但数据库/provider 表还没有 ready。现在脚本会等待 `/api/admin/providers` 真正可用，并保留失败响应体；优先查看：
+
+```bash
+journalctl -u nukara-admin -n 100
+journalctl -u postgresql -n 100
+```
+
 **问题：健康检查失败**
 
 ```bash
@@ -143,6 +162,8 @@ journalctl -u nukara-admin -n 50
 # 手动测试健康检查
 curl http://localhost:8080/api/v1/gateway/health
 curl http://localhost:19527/health
+curl http://127.0.0.1:6333/readyz
+curl http://127.0.0.1:17687/health
 ```
 
 **问题：变更检测不准确**
