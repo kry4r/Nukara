@@ -7,6 +7,7 @@ type Route struct {
 	Model      string
 	BaseURL    string
 	APIKey     string
+	APIMode    string
 }
 
 type ResolverStore interface {

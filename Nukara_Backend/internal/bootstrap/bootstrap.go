@@ -10,6 +10,7 @@ import (
 
 	"nukara/backend/internal/agentx"
 	"nukara/backend/internal/agentx/llm"
+	agentxmemory "nukara/backend/internal/agentx/memory"
 	agentprovider "nukara/backend/internal/agentx/provider"
 	"nukara/backend/internal/api"
 	"nukara/backend/internal/apns"
@@ -41,6 +42,9 @@ func NewHandler(role string) (string, http.Handler) {
 	server := api.NewServer(sharedStore, nil, apnsClient, tokenSecret, redisAddr)
 	if runtime := buildChatRuntime(sharedStore); runtime != nil {
 		server.SetChatRuntime(runtime)
+	}
+	if memoryTool, memoryRecall := buildMemoryServices(sharedStore); memoryTool != nil || memoryRecall != nil {
+		server.SetMemoryServices(memoryTool, memoryRecall)
 	}
 	handler := server.HandlerFor(role)
 
@@ -82,6 +86,7 @@ func buildChatRuntime(st store.DataStore) *agentx.Runtime {
 	baseURL := strings.TrimSpace(envOr("NUKARA_CHAT_BASE_URL", envOr("NUKARA_ASTRON_BASE_URL", "")))
 	apiKey := strings.TrimSpace(envOr("NUKARA_CHAT_API_KEY", envOr("NUKARA_ASTRON_API_KEY", "")))
 	model := strings.TrimSpace(envOr("NUKARA_CHAT_MODEL", envOr("NUKARA_ASTRON_CHAT_MODEL", "")))
+	apiMode := strings.TrimSpace(envOr("NUKARA_CHAT_API_MODE", "chat_completions"))
 
 	deps := agentx.RuntimeDeps{}
 	if rs, ok := st.(routeStore); ok {
@@ -89,14 +94,72 @@ func buildChatRuntime(st store.DataStore) *agentx.Runtime {
 	}
 
 	if baseURL != "" {
-		deps.ProviderClient = llm.NewOpenAICompatClient(baseURL, apiKey, model, nil)
-		log.Printf("[bootstrap] chat runtime provider configured: base=%s model=%s", baseURL, model)
+		deps.ProviderClient = llm.NewOpenAICompatClient(baseURL, apiKey, model, apiMode, nil)
+		log.Printf("[bootstrap] chat runtime provider configured: base=%s model=%s mode=%s", baseURL, model, apiMode)
 	}
 
 	if deps.ProviderClient == nil && deps.RouteResolver == nil {
 		return nil
 	}
 	return agentx.NewRuntime(deps)
+}
+
+func buildMemoryServices(st store.DataStore) (*agentxmemory.Store, *agentxmemory.RecallBuilder) {
+	routeStore, ok := st.(routeStore)
+	if !ok {
+		return nil, nil
+	}
+	router := agentprovider.NewRouter(routeStore)
+
+	qdrantURL := strings.TrimSpace(envOr("NUKARA_QDRANT_URL", ""))
+	qdrantAPIKey := strings.TrimSpace(envOr("NUKARA_QDRANT_API_KEY", ""))
+	qdrantCollection := strings.TrimSpace(envOr("NUKARA_QDRANT_COLLECTION", "agent_memory_v1"))
+	neo4jURL := strings.TrimSpace(envOr("NUKARA_NEO4J_URL", ""))
+	neo4jUser := strings.TrimSpace(envOr("NUKARA_NEO4J_USER", ""))
+	neo4jPass := strings.TrimSpace(envOr("NUKARA_NEO4J_PASSWORD", ""))
+
+	embeddingModelOverride := strings.TrimSpace(envOr("NUKARA_EMBEDDING_MODEL", ""))
+	var embedder *llm.OpenAICompatEmbedder
+	if route, err := router.ResolveEmbeddingRoute(); err == nil && strings.TrimSpace(route.BaseURL) != "" {
+		if embeddingModelOverride != "" {
+			route.Model = embeddingModelOverride
+		}
+		if strings.TrimSpace(route.Model) != "" {
+			embedder = llm.NewOpenAICompatEmbedder(route.BaseURL, route.APIKey, route.Model, nil)
+			log.Printf("[bootstrap] memory embedding route configured: provider=%s model=%s", route.ProviderID, route.Model)
+		}
+	} else if err != nil {
+		log.Printf("[bootstrap] memory embedding route unavailable: %v", err)
+	}
+
+	var qdrant *agentxmemory.QdrantClient
+	if qdrantURL != "" {
+		qdrant = agentxmemory.NewQdrantClient(qdrantURL, qdrantAPIKey, qdrantCollection, nil)
+		log.Printf("[bootstrap] qdrant enabled: url=%s collection=%s", qdrantURL, qdrantCollection)
+	}
+
+	var neo4j *agentxmemory.Neo4jClient
+	if neo4jURL != "" {
+		neo4j = agentxmemory.NewNeo4jClient(neo4jURL, neo4jUser, neo4jPass, nil)
+		log.Printf("[bootstrap] neo4j enabled: url=%s", neo4jURL)
+	}
+
+	if qdrant == nil && neo4j == nil {
+		return nil, nil
+	}
+
+	memoryTool := agentxmemory.NewStore(
+		st,
+		agentxmemory.WithEmbedder(embedder),
+		agentxmemory.WithVectorIndex(qdrant),
+		agentxmemory.WithTopicGraph(neo4j),
+	)
+	recall := agentxmemory.NewRecallBuilder(agentxmemory.RecallDeps{
+		Embedder:    embedder,
+		VectorIndex: qdrant,
+		TopicGraph:  neo4j,
+	})
+	return memoryTool, recall
 }
 
 func envOr(key, fallback string) string {

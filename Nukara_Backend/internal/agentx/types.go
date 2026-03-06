@@ -1,5 +1,7 @@
 package agentx
 
+import "nukara/backend/internal/agentx/llm"
+
 type TurnRequest struct {
 	UserID         string
 	BotID          string
@@ -7,6 +9,8 @@ type TurnRequest struct {
 	AggregatedText string
 	UserMessageIDs []string
 	SystemContext  map[string]any
+	SystemPrompt   string
+	History        []llm.ChatMessage
 }
 
 type StreamDelta struct {

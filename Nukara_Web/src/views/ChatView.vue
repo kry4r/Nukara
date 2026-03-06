@@ -36,6 +36,8 @@ ws.on('message', chat.handleMessage)
 ws.on('multi_reply_end', chat.handleMultiReplyEnd)
 ws.on('bot_status_update', chat.handleBotStatusUpdate)
 ws.on('proactive_message', chat.handleProactiveMessage)
+ws.on('error', chat.handleError)
+ws.on('connection_error', chat.handleError)
 ws.on('bot_persona_updated', chat.handleBotPersonaUpdated)
 
 chat.setWsSend(ws.send)
@@ -109,6 +111,9 @@ function goBack() {
       <div v-if="chat.personaUpdate.summary" class="persona-banner">
         {{ chat.personaUpdate.summary }}
       </div>
+      <div v-if="chat.errorBanner" class="error-banner">
+        {{ chat.errorBanner }}
+      </div>
       <MessageBubble v-for="msg in chat.messages" :key="msg.id" :msg="msg" />
       <div v-if="chat.isRemoteTyping" class="typing-row">
         <TypingIndicator />
@@ -122,13 +127,16 @@ function goBack() {
 <style scoped>
 .chat-page {
   flex: 1;
+  min-height: 0;
+  height: 100%;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
   background: radial-gradient(circle at 20% -20%, #ffffff 0%, #f6f8f0 45%, #eef3e5 100%);
-  min-height: 100%;
 }
 
 .chat-header {
+  flex-shrink: 0;
   display: flex;
   align-items: center;
   gap: var(--spacing-md);
@@ -192,7 +200,9 @@ function goBack() {
 
 .message-list {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
+  overscroll-behavior: contain;
   padding: var(--spacing-lg) 0;
 }
 
@@ -214,5 +224,15 @@ function goBack() {
   font-size: 12px;
   color: #3d5131;
   background: rgba(143, 170, 116, 0.18);
+}
+
+.error-banner {
+  margin: 0 var(--spacing-lg) var(--spacing-sm);
+  padding: 10px 12px;
+  border-radius: 12px;
+  font-size: 13px;
+  color: #8a2b2b;
+  background: rgba(255, 107, 107, 0.14);
+  border: 1px solid rgba(255, 107, 107, 0.22);
 }
 </style>

@@ -15,7 +15,8 @@ const showNav = () => !route.path.startsWith('/auth') && !route.path.startsWith(
 
 <style scoped>
 #app-root {
-  height: 100vh;
+  flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   width: min(100%, 520px);

@@ -7,11 +7,18 @@ import (
 	"unicode/utf8"
 )
 
+type ChatMessage struct {
+	Role    string
+	Content string
+}
+
 type ChatRequest struct {
 	ConversationID string
 	RobotID        string
 	Prompt         string
 	SystemContext  map[string]any
+	SystemPrompt   string
+	History        []ChatMessage
 	Model          string
 }
 

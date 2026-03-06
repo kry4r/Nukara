@@ -12,12 +12,23 @@ type testStore struct {
 	compacts      []store.ConversationCompact
 	personaCalls  []personaApplyInput
 	updatedBot    store.Bot
+	turnCount     int
 }
 
 func (s *testStore) UpsertMemoryItem(item store.MemoryItem) (store.MemoryItem, error) {
 	item.ID = "mem-" + item.Content
 	s.memoryItems = append(s.memoryItems, item)
 	return item, nil
+}
+
+func (s *testStore) ListMemoryItems(userID, botID string, limit int) []store.MemoryItem {
+	items := make([]store.MemoryItem, 0, len(s.memoryItems))
+	for _, item := range s.memoryItems {
+		if item.UserID == userID && item.BotID == botID {
+			items = append(items, item)
+		}
+	}
+	return items
 }
 
 func (s *testStore) UpsertCompact(conversationID, compactJSON, untilTurnID string) error {
@@ -42,6 +53,11 @@ func (s *testStore) ApplyBotPersonaPatch(userID, botID string, input personaAppl
 	return s.updatedBot, true
 }
 
+func (s *testStore) IncrementTurnCount(userID, botID string) int {
+	s.turnCount++
+	return s.turnCount
+}
+
 func TestRunnerAppliesValidatedPatchAndPersistsOutputs(t *testing.T) {
 	st := &testStore{
 		updatedBot: store.Bot{
@@ -50,6 +66,7 @@ func TestRunnerAppliesValidatedPatchAndPersistsOutputs(t *testing.T) {
 			Name:         "bot",
 			Relationship: "朋友",
 		},
+		turnCount: 2,
 	}
 	runner := NewRunner(RunnerDeps{
 		Store: st,
@@ -93,7 +110,7 @@ func TestRunnerAppliesValidatedPatchAndPersistsOutputs(t *testing.T) {
 }
 
 func TestRunnerRejectsInvalidPersonaPatch(t *testing.T) {
-	st := &testStore{updatedBot: store.Bot{ID: "bot-1", UserID: "user-1"}}
+	st := &testStore{updatedBot: store.Bot{ID: "bot-1", UserID: "user-1"}, turnCount: 2}
 	runner := NewRunner(RunnerDeps{
 		Store: st,
 		PersonaIterator: func(context.Context, Input) (string, error) {
@@ -115,6 +132,37 @@ func TestRunnerRejectsInvalidPersonaPatch(t *testing.T) {
 	}
 	if len(st.personaCalls) != 0 {
 		t.Fatalf("invalid patch should not be applied")
+	}
+}
+
+func TestRunnerOnlyIteratesPersonaEveryThreeTurns(t *testing.T) {
+	st := &testStore{updatedBot: store.Bot{ID: "bot-1", UserID: "user-1", Name: "bot"}}
+	runner := NewRunner(RunnerDeps{
+		Store: st,
+		PersonaIterator: func(context.Context, Input) (string, error) {
+			return `{"self_cognition_adds":["我会慢慢更懂用户"]}`, nil
+		},
+	})
+
+	for i := 0; i < 2; i++ {
+		result, err := runner.Run(context.Background(), Input{UserID: "user-1", BotID: "bot-1", ConversationID: "conv-1", TurnID: "turn-a"})
+		if err != nil {
+			t.Fatalf("Run failed: %v", err)
+		}
+		if result.PersonaUpdated {
+			t.Fatalf("persona should not update on turn %d", i+1)
+		}
+	}
+
+	result, err := runner.Run(context.Background(), Input{UserID: "user-1", BotID: "bot-1", ConversationID: "conv-1", TurnID: "turn-3"})
+	if err != nil {
+		t.Fatalf("Run failed: %v", err)
+	}
+	if !result.PersonaUpdated {
+		t.Fatalf("persona should update on third turn")
+	}
+	if len(st.personaCalls) != 1 {
+		t.Fatalf("persona calls = %d, want 1", len(st.personaCalls))
 	}
 }
 

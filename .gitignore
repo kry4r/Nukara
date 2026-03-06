@@ -39,6 +39,16 @@ Nukara_App/DerivedData/
 *.xcuserdata/
 xcuserdata/
 
+# Frontend generated files
+Nukara_Web/node_modules
+Nukara_Web/node_modules/
+Nukara_Web/dist/
+Nukara_Web/test-results/
+Nukara_Admin_Web/node_modules
+Nukara_Admin_Web/node_modules/
+Nukara_Admin_Web/dist/
+
 # Misc
 *.log
 tmp/
+.worktrees/

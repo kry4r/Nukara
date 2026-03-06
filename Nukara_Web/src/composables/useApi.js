@@ -16,6 +16,16 @@ export function useApi() {
       headers,
     })
 
+    const rawText = await res.text()
+    let payload = null
+    if (rawText) {
+      try {
+        payload = JSON.parse(rawText)
+      } catch {
+        payload = rawText
+      }
+    }
+
     if (res.status === 401) {
       localStorage.removeItem('nukara_token')
       localStorage.removeItem('nukara_user')
@@ -23,7 +33,14 @@ export function useApi() {
       throw new Error('Unauthorized')
     }
 
-    return res.json()
+    if (!res.ok) {
+      const message = typeof payload === 'string'
+        ? payload
+        : payload?.message || payload?.error || `Request failed: ${res.status}`
+      throw new Error(message)
+    }
+
+    return payload
   }
 
   const get = (path) => request(path)

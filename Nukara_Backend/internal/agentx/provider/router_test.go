@@ -6,125 +6,68 @@ import (
 	"nukara/backend/internal/store"
 )
 
-type routerTestStore struct {
-	providers     []store.Provider
-	userSettings  map[string]routeSetting
-	botOverrides  map[string]routeSetting
-	systemSetting map[string]string
-}
-
-type routeSetting struct {
+type setting struct {
 	providerID string
 	model      string
 }
 
-func (s *routerTestStore) ListProviders() ([]store.Provider, error) {
+type resolverStoreStub struct {
+	providers      []store.Provider
+	systemSettings map[string]string
+	userSettings   map[string]setting
+	botSettings    map[string]setting
+}
+
+func (s resolverStoreStub) ListProviders() ([]store.Provider, error) {
 	return append([]store.Provider(nil), s.providers...), nil
 }
 
-func (s *routerTestStore) GetUserProviderSetting(userID string) (string, string, bool) {
-	setting, ok := s.userSettings[userID]
+func (s resolverStoreStub) GetUserProviderSetting(userID string) (providerID, model string, ok bool) {
+	v, ok := s.userSettings[userID]
 	if !ok {
 		return "", "", false
 	}
-	return setting.providerID, setting.model, true
+	return v.providerID, v.model, true
 }
 
-func (s *routerTestStore) GetBotProviderOverride(userID, botID string) (string, string, bool) {
-	setting, ok := s.botOverrides[userID+":"+botID]
+func (s resolverStoreStub) GetBotProviderOverride(userID, botID string) (providerID, model string, ok bool) {
+	v, ok := s.botSettings[userID+":"+botID]
 	if !ok {
 		return "", "", false
 	}
-	return setting.providerID, setting.model, true
+	return v.providerID, v.model, true
 }
 
-func (s *routerTestStore) GetSystemSetting(key string) (string, bool) {
-	value, ok := s.systemSetting[key]
+func (s resolverStoreStub) GetSystemSetting(key string) (value string, ok bool) {
+	value, ok = s.systemSettings[key]
 	return value, ok
 }
 
-func TestResolveChatRoutePriority(t *testing.T) {
-	st := &routerTestStore{
+func TestResolveEmbeddingRouteUsesEmbeddingSettings(t *testing.T) {
+	router := NewRouter(resolverStoreStub{
 		providers: []store.Provider{
-			{ID: "minimax_m2_5", Name: "MiniMax", BaseURL: "https://aigw-gzgy2.cucloud.cn:8443/v1", APIKey: "sk-minimax", Models: []string{"MiniMax-M2.5"}, IsActive: true, Priority: 1},
-			{ID: "fallback", Name: "Fallback", BaseURL: "https://fallback.local/v1", APIKey: "sk-fallback", Models: []string{"fallback-model"}, IsActive: true, Priority: 2},
+			{ID: "chat_default", BaseURL: "https://chat.local/v1", APIKey: "chat-key", Models: []string{"chat-model"}, IsActive: true, Priority: 1},
+			{ID: "embed_provider", BaseURL: "https://embed.local/v1", APIKey: "embed-key", Models: []string{"embed-model-fallback"}, IsActive: false, Priority: 2},
 		},
-		userSettings: map[string]routeSetting{
-			"user-1": {providerID: "fallback", model: "fallback-user-model"},
+		systemSettings: map[string]string{
+			"default_chat_provider_id": "chat_default",
+			"default_chat_model":       "chat-model",
+			"embedding_provider_id":    "embed_provider",
+			"embedding_model":          "text-embedding-3-small",
 		},
-		botOverrides: map[string]routeSetting{
-			"user-1:bot-1": {providerID: "minimax_m2_5", model: "MiniMax-M2.5-override"},
-		},
-		systemSetting: map[string]string{
-			"default_chat_provider_id": "minimax_m2_5",
-			"default_chat_model":       "MiniMax-M2.5",
-		},
-	}
+	})
 
-	router := NewRouter(st)
-	route, err := router.ResolveChatRoute("user-1", "bot-1")
+	route, err := router.ResolveEmbeddingRoute()
 	if err != nil {
-		t.Fatalf("resolve chat route failed: %v", err)
+		t.Fatalf("ResolveEmbeddingRoute failed: %v", err)
 	}
-	if route.ProviderID != "minimax_m2_5" {
-		t.Fatalf("provider = %s, want minimax_m2_5", route.ProviderID)
+	if route.ProviderID != "embed_provider" {
+		t.Fatalf("provider id = %s", route.ProviderID)
 	}
-	if route.Model != "MiniMax-M2.5-override" {
-		t.Fatalf("model = %s, want MiniMax-M2.5-override", route.Model)
+	if route.Model != "text-embedding-3-small" {
+		t.Fatalf("model = %s", route.Model)
 	}
-}
-
-func TestResolveChatRouteFallsBackToSystemDefault(t *testing.T) {
-	st := &routerTestStore{
-		providers: []store.Provider{
-			{ID: "minimax_m2_5", Name: "MiniMax", BaseURL: "https://aigw-gzgy2.cucloud.cn:8443/v1", APIKey: "sk-minimax", Models: []string{"MiniMax-M2.5"}, IsActive: true, Priority: 1},
-			{ID: "fallback", Name: "Fallback", BaseURL: "https://fallback.local/v1", APIKey: "sk-fallback", Models: []string{"fallback-model"}, IsActive: true, Priority: 2},
-		},
-		userSettings: map[string]routeSetting{
-			"user-1": {providerID: "missing-provider", model: "bad-model"},
-		},
-		botOverrides: map[string]routeSetting{
-			"user-1:bot-1": {providerID: "missing-provider", model: "bad-override-model"},
-		},
-		systemSetting: map[string]string{
-			"default_chat_provider_id": "minimax_m2_5",
-			"default_chat_model":       "MiniMax-M2.5",
-		},
-	}
-
-	router := NewRouter(st)
-	route, err := router.ResolveChatRoute("user-1", "bot-1")
-	if err != nil {
-		t.Fatalf("resolve chat route failed: %v", err)
-	}
-	if route.ProviderID != "minimax_m2_5" {
-		t.Fatalf("provider = %s, want minimax_m2_5", route.ProviderID)
-	}
-	if route.Model != "MiniMax-M2.5" {
-		t.Fatalf("model = %s, want MiniMax-M2.5", route.Model)
-	}
-}
-
-func TestResolveChatRouteFallsBackToPriorityProvider(t *testing.T) {
-	st := &routerTestStore{
-		providers: []store.Provider{
-			{ID: "minimax_m2_5", Name: "MiniMax", BaseURL: "https://aigw-gzgy2.cucloud.cn:8443/v1", APIKey: "sk-minimax", Models: []string{"MiniMax-M2.5"}, IsActive: true, Priority: 1},
-			{ID: "fallback", Name: "Fallback", BaseURL: "https://fallback.local/v1", APIKey: "sk-fallback", Models: []string{"fallback-model"}, IsActive: true, Priority: 2},
-		},
-		userSettings:  map[string]routeSetting{},
-		botOverrides:  map[string]routeSetting{},
-		systemSetting: map[string]string{},
-	}
-
-	router := NewRouter(st)
-	route, err := router.ResolveChatRoute("user-1", "bot-1")
-	if err != nil {
-		t.Fatalf("resolve chat route failed: %v", err)
-	}
-	if route.ProviderID != "minimax_m2_5" {
-		t.Fatalf("provider = %s, want minimax_m2_5", route.ProviderID)
-	}
-	if route.Model != "MiniMax-M2.5" {
-		t.Fatalf("model = %s, want MiniMax-M2.5", route.Model)
+	if route.BaseURL != "https://embed.local/v1" {
+		t.Fatalf("base url = %s", route.BaseURL)
 	}
 }

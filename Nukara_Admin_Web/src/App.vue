@@ -5,9 +5,12 @@ import {
   createProvider,
   deleteProvider,
   getAdminCredentials,
+  chatTestProvider,
   listProviders,
   listUserProviderSettings,
+  switchProvider,
   testProvider,
+  updateProvider,
   updateUserProviderSetting,
 } from './api/admin.js'
 
@@ -41,9 +44,15 @@ function normalizeProviders(list) {
 
 const drafts = reactive({})
 const savingByUser = reactive({})
+const savingByProvider = reactive({})
+const testingByProvider = reactive({})
+const providerTestDrafts = reactive({})
+const providerTestReplies = reactive({})
 const newProvider = reactive({
   name: '',
   base_url: '',
+  api_key: '',
+  api_mode: 'chat_completions',
   models: '',
 })
 
@@ -103,6 +112,32 @@ function modelOptionsForProvider(providerId) {
 
 function providerUsersCount(providerId) {
   return providerUsageMap.value[providerId] || 0
+}
+
+function providerModeLabel(mode) {
+  switch (mode) {
+    case 'responses':
+      return 'Responses'
+    case 'auto':
+      return 'Auto'
+    default:
+      return 'Chat Completions'
+  }
+}
+
+function defaultProviderTestMessage(provider) {
+  const model = Array.isArray(provider?.models) ? provider.models.find(Boolean) || '' : ''
+  return `你好，请简短回复“${provider?.name || model || 'provider'} 已连接”。`
+}
+
+function ensureProviderTestDraft(provider) {
+  if (!provider?.id) {
+    return ''
+  }
+  if (!providerTestDrafts[provider.id]) {
+    providerTestDrafts[provider.id] = defaultProviderTestMessage(provider)
+  }
+  return providerTestDrafts[provider.id]
 }
 
 function ensureDraft(user) {
@@ -167,21 +202,23 @@ async function refreshAll() {
       throw new Error('请先在浏览器 localStorage 中设置 nukara_admin_username / nukara_admin_password')
     }
 
-    const settingPayload = await listUserProviderSettings({
-      q: searchQuery.value,
-      limit: 100,
-      offset: 0,
-    })
+    const [settingPayload, providerPayload] = await Promise.all([
+      listUserProviderSettings({
+        q: searchQuery.value,
+        limit: 100,
+        offset: 0,
+      }),
+      listProviders().catch(() => []),
+    ])
 
+    const fullProviders = Array.isArray(providerPayload) ? providerPayload : []
     const options = Array.isArray(settingPayload.providers) ? settingPayload.providers : []
-    if (options.length > 0) {
+    if (fullProviders.length > 0) {
+      providers.value = normalizeProviders(fullProviders)
+    } else if (options.length > 0) {
       providers.value = normalizeProviders(options)
     } else {
-      try {
-        providers.value = normalizeProviders(await listProviders())
-      } catch {
-        providers.value = []
-      }
+      providers.value = []
     }
     rows.value = Array.isArray(settingPayload.items) ? settingPayload.items : []
     totalUsers.value = Number(settingPayload.total || rows.value.length)
@@ -282,6 +319,31 @@ function rollbackAll() {
   statusMessage.value = '未提交更改已撤销。'
 }
 
+async function changeProviderMode(provider, apiMode) {
+  if (!provider?.id || savingByProvider[provider.id]) {
+    return
+  }
+  savingByProvider[provider.id] = true
+  errorMessage.value = ''
+  try {
+    await updateProvider(provider.id, {
+      name: provider.name,
+      api_key: provider.api_key || '',
+      base_url: provider.base_url,
+      api_mode: apiMode,
+      models: Array.isArray(provider.models) ? provider.models.join(', ') : '',
+      priority: provider.priority,
+      is_active: provider.is_active,
+    })
+    statusMessage.value = `${provider.name} 已切换到 ${providerModeLabel(apiMode)}。`
+    await refreshAll()
+  } catch (error) {
+    errorMessage.value = error.message
+  } finally {
+    savingByProvider[provider.id] = false
+  }
+}
+
 async function quickTestProvider(provider) {
   if (!provider?.id || creatingProvider.value) {
     return
@@ -293,11 +355,53 @@ async function quickTestProvider(provider) {
     if (result.status !== 'ok') {
       throw new Error(result.error_message || 'Provider 连通测试失败。')
     }
-    statusMessage.value = `${provider.name} 连通测试成功（${result.latency_ms ?? '-'} ms）。`
+    statusMessage.value = `${provider.name} 连通测试成功（${providerModeLabel(provider.api_mode)} / ${result.latency_ms ?? '-'} ms）。`
   } catch (error) {
     errorMessage.value = error.message
   } finally {
     creatingProvider.value = false
+  }
+}
+
+async function activateProvider(provider) {
+  if (!provider?.id || savingByProvider[provider.id]) {
+    return
+  }
+  savingByProvider[provider.id] = true
+  errorMessage.value = ''
+  try {
+    const activeModel = Array.isArray(provider.models) ? provider.models.find(Boolean) || '' : ''
+    await switchProvider(provider.id, activeModel)
+    statusMessage.value = `${provider.name} 已切换为默认 Provider。`
+    await refreshAll()
+  } catch (error) {
+    errorMessage.value = error.message
+  } finally {
+    savingByProvider[provider.id] = false
+  }
+}
+
+async function runProviderMessageTest(provider) {
+  if (!provider?.id || testingByProvider[provider.id]) {
+    return
+  }
+  testingByProvider[provider.id] = true
+  errorMessage.value = ''
+  providerTestReplies[provider.id] = ''
+  try {
+    const message = (providerTestDrafts[provider.id] || defaultProviderTestMessage(provider)).trim()
+    providerTestDrafts[provider.id] = message
+    const model = Array.isArray(provider.models) ? provider.models.find(Boolean) || '' : ''
+    const result = await chatTestProvider(provider.id, message, model)
+    if (result.status !== 'ok') {
+      throw new Error(result.error_message || 'Provider 消息测试失败。')
+    }
+    providerTestReplies[provider.id] = result.reply || ''
+    statusMessage.value = `${provider.name} 消息测试成功（${providerModeLabel(provider.api_mode)} / ${result.latency_ms ?? '-'} ms）。`
+  } catch (error) {
+    errorMessage.value = error.message
+  } finally {
+    testingByProvider[provider.id] = false
   }
 }
 
@@ -319,10 +423,11 @@ async function testAndCreateProvider() {
     created = await createProvider({
       name: newProvider.name.trim(),
       base_url: newProvider.base_url.trim(),
+      api_key: newProvider.api_key,
+      api_mode: newProvider.api_mode,
       models: newProvider.models,
       priority: providers.value.length + 1,
       is_active: false,
-      api_key: '',
     })
 
     const testResult = await testProvider(created.id)
@@ -333,6 +438,8 @@ async function testAndCreateProvider() {
     createStatus.value = `连通测试成功（${testResult.latency_ms ?? '-'} ms）`
     newProvider.name = ''
     newProvider.base_url = ''
+    newProvider.api_key = ''
+    newProvider.api_mode = 'chat_completions'
     newProvider.models = ''
     showCreateProvider.value = false
     await refreshAll()
@@ -400,16 +507,55 @@ onMounted(() => {
               <p class="provider-model">
                 {{ Array.isArray(provider.models) && provider.models.length > 0 ? provider.models[0] : '未配置 model' }}
               </p>
+              <p class="provider-count">{{ providerModeLabel(provider.api_mode) }}</p>
               <p class="provider-count">{{ providerUsersCount(provider.id) }} 位用户</p>
               <div class="provider-item-actions">
+                <select
+                  :value="provider.api_mode || 'chat_completions'"
+                  :disabled="creatingProvider || savingByProvider[provider.id]"
+                  @click.stop
+                  @change="changeProviderMode(provider, $event.target.value)"
+                >
+                  <option value="chat_completions">Chat Completions</option>
+                  <option value="responses">Responses</option>
+                  <option value="auto">Auto</option>
+                </select>
+                <button
+                  type="button"
+                  class="mini"
+                  :disabled="creatingProvider || savingByProvider[provider.id] || provider.is_active"
+                  @click.stop="activateProvider(provider)"
+                >
+                  {{ provider.is_active ? 'Active' : '设为默认' }}
+                </button>
                 <button
                   type="button"
                   class="ghost mini"
-                  :disabled="creatingProvider"
+                  :disabled="creatingProvider || savingByProvider[provider.id]"
                   @click.stop="quickTestProvider(provider)"
                 >
                   连通测试
                 </button>
+              </div>
+              <div v-if="selectedSourceId === provider.id" class="provider-test-box" @click.stop>
+                <input
+                  :value="ensureProviderTestDraft(provider)"
+                  placeholder="输入一条测试消息，验证端点是否可用"
+                  @input="providerTestDrafts[provider.id] = $event.target.value"
+                />
+                <div class="provider-test-actions">
+                  <button
+                    type="button"
+                    class="ghost mini"
+                    :disabled="testingByProvider[provider.id]"
+                    @click.stop="runProviderMessageTest(provider)"
+                  >
+                    {{ testingByProvider[provider.id] ? '测试中...' : '消息测试' }}
+                  </button>
+                </div>
+                <p v-if="providerTestReplies[provider.id]" class="provider-test-reply">
+                  {{ providerTestReplies[provider.id] }}
+                </p>
               </div>
             </article>
           </div>
@@ -434,6 +580,18 @@ onMounted(() => {
             <label class="mini-form-field">
               <span>Base URL</span>
               <input v-model.trim="newProvider.base_url" placeholder="https://api.example.com/v1" />
+            </label>
+            <label class="mini-form-field">
+              <span>API Key</span>
+              <input v-model.trim="newProvider.api_key" type="password" placeholder="sk-..." />
+            </label>
+            <label class="mini-form-field">
+              <span>API Mode</span>
+              <select v-model="newProvider.api_mode">
+                <option value="chat_completions">Chat Completions</option>
+                <option value="responses">Responses</option>
+                <option value="auto">Auto</option>
+              </select>
             </label>
             <label class="mini-form-field">
               <span>Models（逗号分隔）</span>

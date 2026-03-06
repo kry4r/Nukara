@@ -35,7 +35,7 @@ func TestWSChatUsesAgentXRuntimePipeline(t *testing.T) {
 	}
 
 	runtime := agentx.NewRuntime(agentx.RuntimeDeps{
-		ProviderClient: llm.NewOpenAICompatClient(provider.URL, "test-key", "test-model", provider.Client()),
+		ProviderClient: llm.NewOpenAICompatClient(provider.URL, "test-key", "test-model", "chat_completions", provider.Client()),
 	})
 	apiServer := NewServer(st, nil, apns.NewClient("com.nukara.app"), "test-secret", "")
 	apiServer.SetChatRuntime(runtime)

@@ -7,6 +7,7 @@ export function normalizeProviderPayload(input) {
     name: input.name?.trim() || '',
     api_key: input.api_key || '',
     base_url: input.base_url?.trim() || '',
+    api_mode: input.api_mode || 'chat_completions',
     models: String(input.models || '')
       .split(',')
       .map((s) => s.trim())
@@ -107,9 +108,10 @@ export function testProvider(id) {
   })
 }
 
-export function switchProvider(id) {
+export function switchProvider(id, model = '') {
   return request(`/providers/${id}/switch`, {
     method: 'POST',
+    body: model ? { model } : {},
   })
 }
 

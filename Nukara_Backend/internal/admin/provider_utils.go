@@ -31,6 +31,20 @@ func sanitizeProviderID(raw string) string {
 	return strings.Trim(builder.String(), "_")
 }
 
+func normalizeProviderAPIMode(raw string) string {
+	value := strings.TrimSpace(strings.ToLower(raw))
+	switch value {
+	case "", "chat_completions", "chat_completion", "chat-completions", "chat-completion", "completion", "completions":
+		return "chat_completions"
+	case "responses", "response":
+		return "responses"
+	case "auto":
+		return "auto"
+	default:
+		return "chat_completions"
+	}
+}
+
 func firstModel(models []string) string {
 	for _, model := range models {
 		value := strings.TrimSpace(model)

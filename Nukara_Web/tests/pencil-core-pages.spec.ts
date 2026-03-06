@@ -9,6 +9,39 @@ test('chat page has pencil-like input bar', async ({ page }) => {
   await expect(page.locator('.conv-list')).toBeVisible()
 })
 
+test('chat page keeps message input visible on small viewport', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 560 })
+  await page.addInitScript(() => {
+    localStorage.setItem('nukara_token', 'test-token')
+  })
+
+  await page.route('**/api/v1/conversations/conv-1/messages?limit=50', async (route) => {
+    const messages = Array.from({ length: 24 }, (_, index) => ({
+      id: `m-${index}`,
+      conversation_id: 'conv-1',
+      sender_type: index % 2 === 0 ? 'user' : 'bot',
+      content: { type: 'text', text: `message ${index} `.repeat(10).trim() },
+      created_at: new Date(Date.UTC(2026, 2, 6, 12, index, 0)).toISOString(),
+    }))
+
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(messages),
+    })
+  })
+
+  await page.goto('http://127.0.0.1:5173/chat/conv-1')
+
+  const inputBar = page.locator('.input-bar')
+  await expect(inputBar).toBeVisible()
+  await expect(inputBar.getByPlaceholder('输入消息...')).toBeVisible()
+
+  const box = await inputBar.boundingBox()
+  expect(box).not.toBeNull()
+  expect((box?.y ?? 0) + (box?.height ?? 0)).toBeLessThanOrEqual(560)
+})
+
 test('bot detail page renders key sections', async ({ page }) => {
   await page.addInitScript(() => {
     localStorage.setItem('nukara_token', 'test-token')

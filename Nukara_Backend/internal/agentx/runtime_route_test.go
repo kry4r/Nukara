@@ -103,8 +103,8 @@ func TestRuntimeUsesUserSelectedProviderRoute(t *testing.T) {
 	routeClient := &captureStreamClient{chunks: []string{"route-provider-hit"}}
 	resolverStore := resolverStoreStub{
 		providers: []store.Provider{
-			{ID: "provider_default", BaseURL: "http://default.local", APIKey: "default-key", Models: []string{"default-model"}, IsActive: true, Priority: 1},
-			{ID: "provider_user", BaseURL: "http://user.local", APIKey: "user-key", Models: []string{"user-model"}, Priority: 2},
+			{ID: "provider_default", BaseURL: "http://default.local", APIKey: "default-key", Models: []string{"default-model"}, APIMode: "chat_completions", IsActive: true, Priority: 1},
+			{ID: "provider_user", BaseURL: "http://user.local", APIKey: "user-key", Models: []string{"user-model"}, APIMode: "responses", Priority: 2},
 		},
 		systemSettings: map[string]string{
 			"default_chat_provider_id": "provider_default",
@@ -141,6 +141,9 @@ func TestRuntimeUsesUserSelectedProviderRoute(t *testing.T) {
 	}
 	if routeSeen.ProviderID != "provider_user" {
 		t.Fatalf("route provider = %q, want provider_user", routeSeen.ProviderID)
+	}
+	if routeSeen.APIMode != "responses" {
+		t.Fatalf("route api mode = %q, want responses", routeSeen.APIMode)
 	}
 
 	defaultCalls, _ := defaultClient.snapshot()
@@ -193,5 +196,33 @@ func TestRuntimeFallsBackWhenResolvedRouteMissingBaseURL(t *testing.T) {
 	routeCalls, _ := routeClient.snapshot()
 	if routeCalls != 0 {
 		t.Fatalf("route client should not be called, got %d calls", routeCalls)
+	}
+}
+
+func TestRuntimeForwardsSystemPromptAndHistory(t *testing.T) {
+	client := &captureStreamClient{chunks: []string{"ok"}}
+	rt := NewRuntime(RuntimeDeps{ProviderClient: client})
+
+	_, finalCh, err := rt.StreamTurn(context.Background(), TurnRequest{
+		UserID:         "user-1",
+		BotID:          "bot-1",
+		ConversationID: "conv-1",
+		AggregatedText: "你还记得吗",
+		SystemPrompt:   "你是GrokBot，要像朋友一样聊天。",
+		History: []llm.ChatMessage{
+			{Role: "assistant", Content: "我刚才说我最喜欢热拿铁。"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("StreamTurn failed: %v", err)
+	}
+	_ = readFinalText(t, finalCh)
+
+	_, req := client.snapshot()
+	if req.SystemPrompt != "你是GrokBot，要像朋友一样聊天。" {
+		t.Fatalf("system prompt = %q", req.SystemPrompt)
+	}
+	if len(req.History) != 1 || req.History[0].Content != "我刚才说我最喜欢热拿铁。" {
+		t.Fatalf("history forwarded incorrectly: %#v", req.History)
 	}
 }

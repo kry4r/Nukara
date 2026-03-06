@@ -17,6 +17,7 @@ import (
 
 	"nukara/backend/internal/agent"
 	"nukara/backend/internal/agentx"
+	agentxmemory "nukara/backend/internal/agentx/memory"
 	"nukara/backend/internal/agentx/llm"
 	agentprovider "nukara/backend/internal/agentx/provider"
 	"nukara/backend/internal/agentx/subtasks"
@@ -35,12 +36,22 @@ type routeStore interface {
 	GetSystemSetting(key string) (value string, ok bool)
 }
 
+type semanticRecall interface {
+	Build(ctx context.Context, in agentxmemory.RecallInput) ([]store.MemoryItem, error)
+}
+
+type memoryTool interface {
+	Save(ctx context.Context, item store.MemoryItem) (store.MemoryItem, error)
+}
+
 type Server struct {
-	store    store.DataStore
-	agent    *agent.Agent
-	runtime  wsChatRuntime
-	wsQueue  *wsConversationQueue
-	subtasks interface {
+	store        store.DataStore
+	agent        *agent.Agent
+	runtime      wsChatRuntime
+	memoryTool   memoryTool
+	memoryRecall semanticRecall
+	wsQueue      *wsConversationQueue
+	subtasks     interface {
 		Run(ctx context.Context, in subtasks.Input) (subtasks.Result, error)
 	}
 	apns     *apns.Client
@@ -70,48 +81,38 @@ func NewServer(st store.DataStore, agentClient *agent.Agent, apnsClient *apns.Cl
 		}
 		s.runtime = agentx.NewRuntime(deps)
 	}
-	s.subtasks = subtasks.NewRunner(subtasks.RunnerDeps{
-		Store: st,
-		MemoryExtractor: func(ctx context.Context, in subtasks.Input) (string, error) {
-			if s.agent == nil {
-				return `{"items":[]}`, nil
-			}
-			prompt := buildMemoryExtractPrompt(in.UserText, in.BotText)
-			raw, err := s.agent.Chat(ctx, agent.NanobotConvID(in.UserID, in.BotID, in.ConversationID), "subtask", prompt, nil)
-			if err != nil {
-				return "", err
-			}
-			return raw, nil
-		},
-		CompactUpdater: func(ctx context.Context, in subtasks.Input) (string, error) {
-			if s.agent == nil {
-				return `{"summary":"","facts":[]}`, nil
-			}
-			prompt := buildCompactPrompt(in.UserText, in.BotText)
-			raw, err := s.agent.Chat(ctx, agent.NanobotConvID(in.UserID, in.BotID, in.ConversationID), "subtask", prompt, nil)
-			if err != nil {
-				return "", err
-			}
-			return raw, nil
-		},
-		PersonaIterator: func(ctx context.Context, in subtasks.Input) (string, error) {
-			if s.agent == nil {
-				return `{"self_cognition_adds":[]}`, nil
-			}
-			prompt := buildPersonaIteratePrompt(in.UserText, in.BotText)
-			raw, err := s.agent.Chat(ctx, agent.NanobotConvID(in.UserID, in.BotID, in.ConversationID), "subtask", prompt, nil)
-			if err != nil {
-				return "", err
-			}
-			return raw, nil
-		},
-	})
+	s.initSubtasks()
 	s.wsQueue = newWSConversationQueue(s)
 	return s
 }
 
+func (s *Server) initSubtasks() {
+	s.subtasks = subtasks.NewRunner(subtasks.RunnerDeps{
+		Store:      s.store,
+		MemoryTool: s.memoryTool,
+		MemoryExtractor: func(ctx context.Context, in subtasks.Input) (string, error) {
+			prompt := buildMemoryExtractPrompt(in.UserText, in.BotText, s.buildMemoryCandidateContext(in.UserID, in.BotID, in.UserText, in.BotText))
+			return s.runSubtaskPrompt(ctx, in, prompt, `{"items":[]}`)
+		},
+		CompactUpdater: func(ctx context.Context, in subtasks.Input) (string, error) {
+			prompt := buildCompactPrompt(in.UserText, in.BotText)
+			return s.runSubtaskPrompt(ctx, in, prompt, `{"summary":"","facts":[]}`)
+		},
+		PersonaIterator: func(ctx context.Context, in subtasks.Input) (string, error) {
+			prompt := buildPersonaIteratePrompt(in.UserText, in.BotText)
+			return s.runSubtaskPrompt(ctx, in, prompt, `{"self_cognition_adds":[]}`)
+		},
+	})
+}
+
 func (s *Server) SetChatRuntime(runtime wsChatRuntime) {
 	s.runtime = runtime
+}
+
+func (s *Server) SetMemoryServices(tool memoryTool, recall semanticRecall) {
+	s.memoryTool = tool
+	s.memoryRecall = recall
+	s.initSubtasks()
 }
 
 func (s *Server) Handler() http.Handler {

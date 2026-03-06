@@ -10,6 +10,7 @@ import (
 
 type memoryItemsEnvelope struct {
 	Items []struct {
+		MemoryID   string   `json:"memory_id"`
 		Kind       string   `json:"kind"`
 		Owner      string   `json:"owner"`
 		Content    string   `json:"content"`
@@ -40,6 +41,7 @@ func ParseMemoryItems(raw string) ([]store.MemoryItem, error) {
 			}
 		}
 		items = append(items, store.MemoryItem{
+			ID:         strings.TrimSpace(item.MemoryID),
 			Kind:       strings.TrimSpace(item.Kind),
 			Owner:      strings.TrimSpace(item.Owner),
 			Content:    strings.TrimSpace(item.Content),
