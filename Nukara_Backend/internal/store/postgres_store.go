@@ -99,6 +99,49 @@ func (p *PostgresStore) HasRedis() bool {
 
 func ensurePostgresSchema(ctx context.Context, db *sql.DB) error {
 	const schema = `
+DO $$
+DECLARE
+    providers_id_type TEXT;
+    provider_health_type TEXT;
+    provider_usage_type TEXT;
+BEGIN
+    SELECT data_type INTO providers_id_type
+    FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'providers' AND column_name = 'id';
+
+    IF providers_id_type = 'uuid' THEN
+        IF to_regclass('public.provider_health') IS NOT NULL THEN
+            EXECUTE 'ALTER TABLE provider_health DROP CONSTRAINT IF EXISTS provider_health_provider_id_fkey';
+        END IF;
+        IF to_regclass('public.provider_usage') IS NOT NULL THEN
+            EXECUTE 'ALTER TABLE provider_usage DROP CONSTRAINT IF EXISTS provider_usage_provider_id_fkey';
+        END IF;
+
+        EXECUTE 'ALTER TABLE providers ALTER COLUMN id DROP DEFAULT';
+        EXECUTE 'ALTER TABLE providers ALTER COLUMN id TYPE TEXT USING id::text';
+
+        SELECT data_type INTO provider_health_type
+        FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'provider_health' AND column_name = 'provider_id';
+        IF provider_health_type = 'uuid' THEN
+            EXECUTE 'ALTER TABLE provider_health ALTER COLUMN provider_id TYPE TEXT USING provider_id::text';
+        END IF;
+        IF to_regclass('public.provider_health') IS NOT NULL THEN
+            EXECUTE 'ALTER TABLE provider_health ADD CONSTRAINT provider_health_provider_id_fkey FOREIGN KEY (provider_id) REFERENCES providers(id) ON DELETE CASCADE';
+        END IF;
+
+        SELECT data_type INTO provider_usage_type
+        FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'provider_usage' AND column_name = 'provider_id';
+        IF provider_usage_type = 'uuid' THEN
+            EXECUTE 'ALTER TABLE provider_usage ALTER COLUMN provider_id TYPE TEXT USING provider_id::text';
+        END IF;
+        IF to_regclass('public.provider_usage') IS NOT NULL THEN
+            EXECUTE 'ALTER TABLE provider_usage ADD CONSTRAINT provider_usage_provider_id_fkey FOREIGN KEY (provider_id) REFERENCES providers(id) ON DELETE CASCADE';
+        END IF;
+    END IF;
+END $$;
+
 CREATE TABLE IF NOT EXISTS users (
     id UUID PRIMARY KEY,
     phone VARCHAR(20) UNIQUE NOT NULL,
@@ -270,12 +313,17 @@ CREATE TABLE IF NOT EXISTS providers (
     name TEXT NOT NULL,
     api_key TEXT NOT NULL DEFAULT '',
     base_url TEXT NOT NULL DEFAULT '',
+    api_mode TEXT NOT NULL DEFAULT 'chat_completions',
     models JSONB NOT NULL DEFAULT '[]'::jsonb,
     is_active BOOLEAN NOT NULL DEFAULT FALSE,
     priority INT NOT NULL DEFAULT 100,
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
+DO $$ BEGIN
+    ALTER TABLE providers ADD COLUMN api_mode TEXT NOT NULL DEFAULT 'chat_completions';
+EXCEPTION WHEN duplicate_column THEN NULL;
+END $$;
 
 CREATE TABLE IF NOT EXISTS user_provider_settings (
     user_id UUID PRIMARY KEY,
@@ -343,12 +391,13 @@ CREATE TABLE IF NOT EXISTS agent_traces (
     created_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
 
-INSERT INTO providers(id, name, api_key, base_url, models, is_active, priority)
+INSERT INTO providers(id, name, api_key, base_url, api_mode, models, is_active, priority)
 VALUES (
     'minimax_m2_5',
     'MiniMax M2.5',
     'sk-sp-EVlIgxw4GopFgkn6qlniBjL2n77hoLBK',
     'https://aigw-gzgy2.cucloud.cn:8443/v1',
+    'chat_completions',
     '["MiniMax-M2.5"]'::jsonb,
     TRUE,
     1

@@ -2,6 +2,7 @@ package agentx
 
 import (
 	"context"
+	"errors"
 	"log"
 	"strings"
 
@@ -30,7 +31,7 @@ func NewRuntime(deps RuntimeDeps) *Runtime {
 	factory := deps.ClientFactory
 	if factory == nil {
 		factory = func(route provider.Route) llm.StreamClient {
-			return llm.NewOpenAICompatClient(route.BaseURL, route.APIKey, route.Model, nil)
+			return llm.NewOpenAICompatClient(route.BaseURL, route.APIKey, route.Model, route.APIMode, nil)
 		}
 	}
 	return &Runtime{
@@ -43,20 +44,28 @@ func NewRuntime(deps RuntimeDeps) *Runtime {
 func (r *Runtime) StreamTurn(ctx context.Context, req TurnRequest) (<-chan StreamDelta, <-chan FinalTurn, error) {
 	client := r.providerClient
 	providerMode := "default"
+	providerBaseURL := ""
 	request := llm.ChatRequest{
 		ConversationID: req.ConversationID,
 		RobotID:        req.BotID,
 		Prompt:         req.AggregatedText,
 		SystemContext:  req.SystemContext,
+		SystemPrompt:   req.SystemPrompt,
+		History:        append([]llm.ChatMessage(nil), req.History...),
 	}
 	if r.routeResolver != nil && r.clientFactory != nil {
 		if route, routeErr := r.routeResolver.ResolveChatRoute(req.UserID, req.BotID); routeErr == nil && strings.TrimSpace(route.BaseURL) != "" {
 			client = r.clientFactory(route)
 			request.Model = route.Model
 			providerMode = "route:" + strings.TrimSpace(route.ProviderID)
+			providerBaseURL = strings.TrimSpace(route.BaseURL)
 		}
 	}
-	log.Printf("[agentx-runtime] conv=%s mode=%s model=%s prompt_chars=%d", req.ConversationID, providerMode, strings.TrimSpace(request.Model), len([]rune(strings.TrimSpace(req.AggregatedText))))
+	log.Printf("[agentx-runtime] conv=%s mode=%s base=%s model=%s prompt_chars=%d", req.ConversationID, providerMode, providerBaseURL, strings.TrimSpace(request.Model), len([]rune(strings.TrimSpace(req.AggregatedText))))
+	if client == nil {
+		return nil, nil, errors.New("chat provider client is not configured")
+	}
+
 	rawDeltaCh, errCh, err := client.StreamChat(ctx, request)
 	if err != nil {
 		return nil, nil, err
@@ -94,13 +103,16 @@ func (r *Runtime) StreamTurn(ctx context.Context, req TurnRequest) (<-chan Strea
 					errCh = nil
 					continue
 				}
-				_ = err // keep stream stable; fallback below if no content
+				if err != nil {
+					log.Printf("[agentx-runtime] stream error conv=%s mode=%s model=%s err=%v", req.ConversationID, providerMode, strings.TrimSpace(request.Model), err)
+				}
 				errCh = nil
 			}
 		}
 
 		fullRaw := strings.TrimSpace(rawText.String())
 		if fullRaw == "" {
+			log.Printf("[agentx-runtime] empty provider response conv=%s mode=%s model=%s", req.ConversationID, providerMode, strings.TrimSpace(request.Model))
 			finalCh <- fallbackTurn()
 			return
 		}

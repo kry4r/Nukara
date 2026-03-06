@@ -55,6 +55,10 @@ This folder contains the backend implementation aligned with:
 - `NUKARA_QDRANT_URL`: Qdrant endpoint (default `http://localhost:6333`).
 - `NUKARA_QDRANT_API_KEY`: optional Qdrant API key.
 - `NUKARA_QDRANT_COLLECTION`: collection name for memory retrieval.
+- `NUKARA_NEO4J_URL`: Neo4j HTTP adapter endpoint for topic expansion / graph writes.
+- `NUKARA_NEO4J_USER`: optional Neo4j basic auth username.
+- `NUKARA_NEO4J_PASSWORD`: optional Neo4j basic auth password.
+- `NUKARA_EMBEDDING_MODEL`: OpenAI-compatible embedding model used for semantic memory recall / upsert.
 - `NUKARA_APNS_TOPIC`: APNs topic / bundle id.
 - `NUKARA_APNS_KEY_ID`: APNs key id.
 - `NUKARA_APNS_TEAM_ID`: Apple team id.

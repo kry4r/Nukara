@@ -144,7 +144,7 @@ func TestWSChatQueueingWaitsForFinalMessageBeforeNextStreamStart(t *testing.T) {
 	defer provider.Close()
 
 	server, token, _, convID, closeFn := setupTestServerWithInjectedRuntime(t, agentx.NewRuntime(agentx.RuntimeDeps{
-		ProviderClient: llm.NewOpenAICompatClient(provider.URL, "test-key", "test-model", provider.Client()),
+		ProviderClient: llm.NewOpenAICompatClient(provider.URL, "test-key", "test-model", "chat_completions", provider.Client()),
 	}))
 	defer closeFn()
 

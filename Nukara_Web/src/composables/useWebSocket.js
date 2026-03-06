@@ -45,11 +45,15 @@ export function useWebSocket() {
     ws.onclose = () => {
       isConnected.value = false
       _stopHeartbeat()
-      if (!manualClose) _scheduleReconnect()
+      if (!manualClose) {
+        _dispatch({ type: 'connection_error', message: 'WebSocket 已断开，正在尝试重连。' })
+        _scheduleReconnect()
+      }
     }
 
     ws.onerror = () => {
       isConnected.value = false
+      _dispatch({ type: 'error', message: 'WebSocket 连接失败，请检查网络或服务状态。' })
     }
   }
 

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"nukara/backend/internal/agentx/memory"
 	"nukara/backend/internal/agentx/persona"
 	"nukara/backend/internal/store"
 )
@@ -34,9 +35,14 @@ type personaApplyInput = store.PersonaPatchInput
 type RunnerDeps struct {
 	Store interface {
 		UpsertMemoryItem(item store.MemoryItem) (store.MemoryItem, error)
+		ListMemoryItems(userID, botID string, limit int) []store.MemoryItem
 		UpsertCompact(conversationID, compactJSON, untilTurnID string) error
 		GetBot(userID, botID string) (store.Bot, bool)
 		ApplyBotPersonaPatch(userID, botID string, input store.PersonaPatchInput) (store.Bot, bool)
+		IncrementTurnCount(userID, botID string) int
+	}
+	MemoryTool interface {
+		Save(ctx context.Context, item store.MemoryItem) (store.MemoryItem, error)
 	}
 	MemoryExtractor MemoryExtractor
 	CompactUpdater  CompactUpdater
@@ -44,15 +50,23 @@ type RunnerDeps struct {
 }
 
 type Runner struct {
-	store           RunnerDeps
+	store RunnerDeps
+	memoryTool interface {
+		Save(ctx context.Context, item store.MemoryItem) (store.MemoryItem, error)
+	}
 	memoryExtractor MemoryExtractor
 	compactUpdater  CompactUpdater
 	personaIterator PersonaIterator
 }
 
 func NewRunner(deps RunnerDeps) *Runner {
+	memoryTool := deps.MemoryTool
+	if memoryTool == nil {
+		memoryTool = memory.NewStore(deps.Store)
+	}
 	return &Runner{
 		store:           deps,
+		memoryTool:      memoryTool,
 		memoryExtractor: deps.MemoryExtractor,
 		compactUpdater:  deps.CompactUpdater,
 		personaIterator: deps.PersonaIterator,
@@ -78,51 +92,54 @@ func (r *Runner) Run(ctx context.Context, in Input) (Result, error) {
 	}
 
 	if r.personaIterator != nil {
-		raw, err := r.personaIterator(ctx, in)
-		if err != nil {
-			return result, nil
-		}
-		patch, err := persona.ParsePatch(raw)
-		if err != nil {
-			return result, nil
-		}
-		patch, err = persona.ValidatePatch(patch)
-		if err != nil {
-			return result, nil
-		}
+		turnCount := r.store.Store.IncrementTurnCount(in.UserID, in.BotID)
+		if turnCount%3 == 0 {
+			raw, err := r.personaIterator(ctx, in)
+			if err != nil {
+				return result, nil
+			}
+			patch, err := persona.ParsePatch(raw)
+			if err != nil {
+				return result, nil
+			}
+			patch, err = persona.ValidatePatch(patch)
+			if err != nil {
+				return result, nil
+			}
 
-		bot, found := r.store.Store.GetBot(in.UserID, in.BotID)
-		if !found {
-			return result, nil
-		}
-		prompt := persona.CompilePrompt(store.Bot{
-			Name:          bot.Name,
-			Relationship:  firstNonEmpty(patch.Relationship, bot.Relationship),
-			Role:          firstNonEmpty(patch.Role, bot.Role),
-			SelfCognition: append(append([]string(nil), bot.SelfCognition...), patch.SelfCognitionAdds...),
-			SpeakingStyle: strings.Join(append(split(bot.SpeakingStyle), patch.SpeakingStyleAdds...), "|"),
-			Traits:        append(append([]string(nil), bot.Traits...), patch.TraitAdds...),
-			Gender:        firstNonEmpty(patch.Gender, bot.Gender),
-		}, 420)
+			bot, found := r.store.Store.GetBot(in.UserID, in.BotID)
+			if !found {
+				return result, nil
+			}
+			prompt := persona.CompilePrompt(store.Bot{
+				Name:          bot.Name,
+				Relationship:  firstNonEmpty(patch.Relationship, bot.Relationship),
+				Role:          firstNonEmpty(patch.Role, bot.Role),
+				SelfCognition: append(append([]string(nil), bot.SelfCognition...), patch.SelfCognitionAdds...),
+				SpeakingStyle: strings.Join(append(split(bot.SpeakingStyle), patch.SpeakingStyleAdds...), "|"),
+				Traits:        append(append([]string(nil), bot.Traits...), patch.TraitAdds...),
+				Gender:        firstNonEmpty(patch.Gender, bot.Gender),
+			}, 420)
 
-		var genderPtr *string
-		if patch.Gender != "" {
-			gender := patch.Gender
-			genderPtr = &gender
-		}
-		_, ok := r.store.Store.ApplyBotPersonaPatch(in.UserID, in.BotID, store.PersonaPatchInput{
-			Relationship:      patch.Relationship,
-			Role:              patch.Role,
-			SelfCognitionAdds: patch.SelfCognitionAdds,
-			SpeakingStyleAdds: patch.SpeakingStyleAdds,
-			TraitAdds:         patch.TraitAdds,
-			Gender:            genderPtr,
-			PersonaPrompt:     prompt,
-		})
-		if ok {
-			result.PersonaUpdated = true
-			result.Patch = patch
-			result.PatchSummary = summarizePatch(patch)
+			var genderPtr *string
+			if patch.Gender != "" {
+				gender := patch.Gender
+				genderPtr = &gender
+			}
+			_, ok := r.store.Store.ApplyBotPersonaPatch(in.UserID, in.BotID, store.PersonaPatchInput{
+				Relationship:      patch.Relationship,
+				Role:              patch.Role,
+				SelfCognitionAdds: patch.SelfCognitionAdds,
+				SpeakingStyleAdds: patch.SpeakingStyleAdds,
+				TraitAdds:         patch.TraitAdds,
+				Gender:            genderPtr,
+				PersonaPrompt:     prompt,
+			})
+			if ok {
+				result.PersonaUpdated = true
+				result.Patch = patch
+				result.PatchSummary = summarizePatch(patch)
+			}
 		}
 	}
 
@@ -148,6 +165,12 @@ func (r *Runner) applyMemory(raw string, in Input) error {
 		}
 		if strings.TrimSpace(item.Status) == "" {
 			item.Status = "active"
+		}
+		if r.memoryTool != nil {
+			if _, err := r.memoryTool.Save(context.Background(), item); err != nil {
+				return err
+			}
+			continue
 		}
 		if _, err := r.store.Store.UpsertMemoryItem(item); err != nil {
 			return err

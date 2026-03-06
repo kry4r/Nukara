@@ -19,9 +19,13 @@ type QdrantClient struct {
 }
 
 type QdrantSearchResult struct {
-	ID      string
-	Content string
-	Topics  []string
+	ID         string
+	Kind       string
+	Owner      string
+	Content    string
+	Importance int
+	Status     string
+	Topics     []string
 }
 
 func NewQdrantClient(baseURL, apiKey, collection string, httpClient *http.Client) *QdrantClient {
@@ -36,15 +40,15 @@ func NewQdrantClient(baseURL, apiKey, collection string, httpClient *http.Client
 	}
 }
 
-func (c *QdrantClient) Search(ctx context.Context, userID, botID, query string, limit int) ([]QdrantSearchResult, error) {
-	if c == nil || c.baseURL == "" || c.collection == "" {
+func (c *QdrantClient) Search(ctx context.Context, userID, botID, query string, vector []float64, limit int) ([]QdrantSearchResult, error) {
+	if c == nil || c.baseURL == "" || c.collection == "" || len(vector) == 0 {
 		return nil, nil
 	}
 	if limit <= 0 {
 		limit = 5
 	}
 	payload := map[string]any{
-		"vector": []float64{0.1, 0.2, 0.3},
+		"vector": vector,
 		"limit":  limit,
 		"filter": map[string]any{
 			"must": []map[string]any{
@@ -53,6 +57,7 @@ func (c *QdrantClient) Search(ctx context.Context, userID, botID, query string, 
 				{"key": "status", "match": map[string]any{"value": "active"}},
 			},
 		},
+		"with_payload": true,
 		"params": map[string]any{
 			"query": query,
 		},
@@ -81,8 +86,12 @@ func (c *QdrantClient) Search(ctx context.Context, userID, botID, query string, 
 		Result []struct {
 			ID      any `json:"id"`
 			Payload struct {
-				Content string   `json:"content"`
-				Topics  []string `json:"topics"`
+				Kind       string   `json:"kind"`
+				Owner      string   `json:"owner"`
+				Content    string   `json:"content"`
+				Importance int      `json:"importance"`
+				Status     string   `json:"status"`
+				Topics     []string `json:"topics"`
 			} `json:"payload"`
 		} `json:"result"`
 	}
@@ -92,9 +101,13 @@ func (c *QdrantClient) Search(ctx context.Context, userID, botID, query string, 
 	out := make([]QdrantSearchResult, 0, len(parsed.Result))
 	for _, item := range parsed.Result {
 		out = append(out, QdrantSearchResult{
-			ID:      fmt.Sprintf("%v", item.ID),
-			Content: strings.TrimSpace(item.Payload.Content),
-			Topics:  append([]string(nil), item.Payload.Topics...),
+			ID:         fmt.Sprintf("%v", item.ID),
+			Kind:       strings.TrimSpace(item.Payload.Kind),
+			Owner:      strings.TrimSpace(item.Payload.Owner),
+			Content:    strings.TrimSpace(item.Payload.Content),
+			Importance: item.Payload.Importance,
+			Status:     strings.TrimSpace(item.Payload.Status),
+			Topics:     append([]string(nil), item.Payload.Topics...),
 		})
 	}
 	return out, nil

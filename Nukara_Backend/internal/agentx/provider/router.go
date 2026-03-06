@@ -19,30 +19,10 @@ func NewRouter(st ResolverStore) *Router {
 }
 
 func (r *Router) ResolveChatRoute(userID, botID string) (Route, error) {
-	if r == nil || r.store == nil {
-		return Route{}, errNoProviderAvailable
-	}
-	providers, err := r.store.ListProviders()
+	sorted, err := r.sortedProviders()
 	if err != nil {
 		return Route{}, err
 	}
-	if len(providers) == 0 {
-		return Route{}, errNoProviderAvailable
-	}
-
-	sorted := make([]store.Provider, 0, len(providers))
-	for _, provider := range providers {
-		if strings.TrimSpace(provider.ID) == "" {
-			continue
-		}
-		sorted = append(sorted, provider)
-	}
-	sort.Slice(sorted, func(i, j int) bool {
-		if sorted[i].Priority == sorted[j].Priority {
-			return sorted[i].ID < sorted[j].ID
-		}
-		return sorted[i].Priority < sorted[j].Priority
-	})
 
 	defaultProviderID, _ := r.store.GetSystemSetting("default_chat_provider_id")
 	defaultModel, _ := r.store.GetSystemSetting("default_chat_model")
@@ -71,6 +51,62 @@ func (r *Router) ResolveChatRoute(userID, botID string) (Route, error) {
 	return buildRoute(sorted[0], defaultModel), nil
 }
 
+func (r *Router) ResolveEmbeddingRoute() (Route, error) {
+	sorted, err := r.sortedProviders()
+	if err != nil {
+		return Route{}, err
+	}
+
+	embeddingProviderID, _ := r.store.GetSystemSetting("embedding_provider_id")
+	embeddingModel, _ := r.store.GetSystemSetting("embedding_model")
+	defaultProviderID, _ := r.store.GetSystemSetting("default_chat_provider_id")
+	defaultModel, _ := r.store.GetSystemSetting("default_chat_model")
+
+	if provider, found := findProvider(sorted, embeddingProviderID); found {
+		return buildRoute(provider, firstNonEmpty(embeddingModel, defaultModel)), nil
+	}
+	if provider, found := findProvider(sorted, defaultProviderID); found {
+		return buildRoute(provider, firstNonEmpty(embeddingModel, defaultModel)), nil
+	}
+	for _, provider := range sorted {
+		if provider.IsActive {
+			return buildRoute(provider, firstNonEmpty(embeddingModel, defaultModel)), nil
+		}
+	}
+	return buildRoute(sorted[0], firstNonEmpty(embeddingModel, defaultModel)), nil
+}
+
+func (r *Router) sortedProviders() ([]store.Provider, error) {
+	if r == nil || r.store == nil {
+		return nil, errNoProviderAvailable
+	}
+	providers, err := r.store.ListProviders()
+	if err != nil {
+		return nil, err
+	}
+	if len(providers) == 0 {
+		return nil, errNoProviderAvailable
+	}
+
+	sorted := make([]store.Provider, 0, len(providers))
+	for _, provider := range providers {
+		if strings.TrimSpace(provider.ID) == "" {
+			continue
+		}
+		sorted = append(sorted, provider)
+	}
+	sort.Slice(sorted, func(i, j int) bool {
+		if sorted[i].Priority == sorted[j].Priority {
+			return sorted[i].ID < sorted[j].ID
+		}
+		return sorted[i].Priority < sorted[j].Priority
+	})
+	if len(sorted) == 0 {
+		return nil, errNoProviderAvailable
+	}
+	return sorted, nil
+}
+
 func buildRoute(provider store.Provider, candidateModel string) Route {
 	model := strings.TrimSpace(candidateModel)
 	if model == "" && len(provider.Models) > 0 {
@@ -81,6 +117,17 @@ func buildRoute(provider store.Provider, candidateModel string) Route {
 		Model:      model,
 		BaseURL:    provider.BaseURL,
 		APIKey:     provider.APIKey,
+		APIMode:    normalizeRouteAPIMode(provider.APIMode),
+	}
+}
+
+func normalizeRouteAPIMode(raw string) string {
+	value := strings.TrimSpace(strings.ToLower(raw))
+	switch value {
+	case "responses", "auto":
+		return value
+	default:
+		return "chat_completions"
 	}
 }
 

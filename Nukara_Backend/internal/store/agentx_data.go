@@ -2,6 +2,7 @@ package store
 
 import (
 	"errors"
+	"sort"
 	"strings"
 	"time"
 )
@@ -183,4 +184,33 @@ func (s *Store) GetMemoryItem(memoryID string) (MemoryItem, bool) {
 	defer s.mu.RUnlock()
 	item, ok := s.memoryItemsByID[strings.TrimSpace(memoryID)]
 	return item, ok
+}
+
+func (s *Store) ListMemoryItems(userID, botID string, limit int) []MemoryItem {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if limit <= 0 {
+		limit = 20
+	}
+	items := make([]MemoryItem, 0, len(s.memoryItemsByID))
+	for _, item := range s.memoryItemsByID {
+		if strings.TrimSpace(item.UserID) != strings.TrimSpace(userID) || strings.TrimSpace(item.BotID) != strings.TrimSpace(botID) {
+			continue
+		}
+		if strings.TrimSpace(item.Status) != "" && !strings.EqualFold(strings.TrimSpace(item.Status), "active") {
+			continue
+		}
+		items = append(items, item)
+	}
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].Importance != items[j].Importance {
+			return items[i].Importance > items[j].Importance
+		}
+		return items[i].OccurredAt.After(items[j].OccurredAt)
+	})
+	if len(items) > limit {
+		items = items[:limit]
+	}
+	return append([]MemoryItem(nil), items...)
 }

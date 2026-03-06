@@ -83,7 +83,7 @@ func (s *Server) runProviderChatTest(id, message, model string) (string, error) 
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	client := llm.NewOpenAICompatClient(provider.BaseURL, provider.APIKey, selectedModel, &http.Client{Timeout: timeout})
+	client := llm.NewOpenAICompatClient(provider.BaseURL, provider.APIKey, selectedModel, normalizeProviderAPIMode(provider.APIMode), &http.Client{Timeout: timeout})
 	deltaCh, errCh, err := client.StreamChat(ctx, llm.ChatRequest{
 		ConversationID: "admin-provider-chat-test",
 		RobotID:        "admin-provider-chat-test",

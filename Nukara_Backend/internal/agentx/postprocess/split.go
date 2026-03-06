@@ -17,6 +17,12 @@ func SplitSegments(text string, maxRunes int) []string {
 		for _, sentence := range sentences {
 			runes := []rune(sentence)
 			if len(runes) <= maxRunes {
+				if len(runes) > 24 {
+					if paused := splitByPause(sentence); len(paused) > 1 {
+						segments = append(segments, paused...)
+						continue
+					}
+				}
 				segments = append(segments, strings.TrimSpace(sentence))
 				continue
 			}
@@ -25,7 +31,35 @@ func SplitSegments(text string, maxRunes int) []string {
 		return compactSegments(segments)
 	}
 
+	if len([]rune(text)) <= maxRunes {
+		if len([]rune(text)) > 24 {
+			if paused := splitByPause(text); len(paused) > 1 {
+				return compactSegments(paused)
+			}
+		}
+		return []string{text}
+	}
 	return compactSegments(splitLongByMaxRunes(text, maxRunes))
+}
+
+func splitByPause(text string) []string {
+	var out []string
+	var buf strings.Builder
+	for _, r := range text {
+		buf.WriteRune(r)
+		switch r {
+		case '，', '、', '；', ';', '：', ':', '～', '…':
+			segment := strings.TrimSpace(buf.String())
+			if segment != "" {
+				out = append(out, segment)
+			}
+			buf.Reset()
+		}
+	}
+	if tail := strings.TrimSpace(buf.String()); tail != "" {
+		out = append(out, tail)
+	}
+	return compactSegments(out)
 }
 
 func splitBySentence(text string) []string {
@@ -66,7 +100,7 @@ func splitLongByMaxRunes(text string, maxRunes int) []string {
 		cut := end
 		for i := end; i > start+maxRunes/2; i-- {
 			switch runes[i-1] {
-			case '。', '！', '？', '.', '!', '?', '\n':
+			case '。', '！', '？', '.', '!', '?', '\n', '，', '、', '；', ';', '：', ':', '～', '…':
 				cut = i
 				goto found
 			}

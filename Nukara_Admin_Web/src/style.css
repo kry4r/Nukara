@@ -142,6 +142,7 @@ select {
   gap: 20px;
   grid-template-columns: 360px minmax(0, 1fr);
   min-height: 680px;
+  align-items: start;
 }
 
 .left-column,
@@ -153,6 +154,9 @@ select {
   display: grid;
   align-content: start;
   gap: 16px;
+  position: sticky;
+  top: 20px;
+  max-height: calc(100vh - 40px);
 }
 
 .panel-card,
@@ -175,6 +179,8 @@ select {
 
 .provider-list-card {
   gap: 12px;
+  max-height: calc(100vh - 40px);
+  overflow: hidden;
 }
 
 .provider-list-header {
@@ -195,6 +201,10 @@ select {
 .provider-card-list {
   display: grid;
   gap: 8px;
+  min-height: 0;
+  max-height: min(42vh, 360px);
+  overflow: auto;
+  padding-right: 2px;
 }
 
 .provider-item-card {
@@ -251,6 +261,8 @@ select {
 .provider-item-actions {
   display: flex;
   justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 .default-summary {
@@ -282,6 +294,28 @@ select {
   color: #5a9e6f;
   font-size: 12px;
   font-weight: 600;
+}
+
+.provider-test-box {
+  display: grid;
+  gap: 8px;
+  padding-top: 2px;
+}
+
+.provider-test-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.provider-test-reply {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: rgba(123, 160, 91, 0.1);
+  color: #456233;
+  font-size: 12px;
+  line-height: 1.5;
+  word-break: break-word;
 }
 
 .mini-form-field {
@@ -484,6 +518,17 @@ select {
 
   .left-column {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+    position: static;
+    top: auto;
+    max-height: none;
+  }
+
+  .provider-list-card {
+    max-height: none;
+  }
+
+  .provider-card-list {
+    max-height: none;
   }
 }
 
@@ -500,6 +545,9 @@ select {
 
   .left-column {
     grid-template-columns: 1fr;
+    position: static;
+    top: auto;
+    max-height: none;
   }
 
   .filter-row {

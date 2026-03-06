@@ -61,6 +61,7 @@ type DataStore interface {
 	GetConversationCompact(conversationID string) (ConversationCompact, bool)
 	UpsertMemoryItem(item MemoryItem) (MemoryItem, error)
 	GetMemoryItem(memoryID string) (MemoryItem, bool)
+	ListMemoryItems(userID, botID string, limit int) []MemoryItem
 
 	// Emotion tracking
 	AppendEmotionBuffer(userID, botID, text string) int // returns buffer length

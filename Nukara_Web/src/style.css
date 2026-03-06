@@ -4,6 +4,12 @@
   box-sizing: border-box;
 }
 
+html,
+body,
+#app {
+  height: 100%;
+}
+
 body {
   font-family: var(--font-family);
   background:
@@ -12,10 +18,15 @@ body {
     #eff4e8;
   color: var(--text-primary);
   min-height: 100vh;
+  min-height: 100dvh;
 }
 
 #app {
   min-height: 100vh;
+  min-height: 100dvh;
+  height: 100vh;
+  height: 100dvh;
+  display: flex;
   padding: 10px;
 }
 
@@ -28,7 +39,9 @@ a {
   outline-offset: 2px;
 }
 
-input, textarea, select {
+input,
+textarea,
+select {
   font-family: inherit;
   font-size: inherit;
 }
@@ -36,4 +49,10 @@ input, textarea, select {
 button {
   font-family: inherit;
   cursor: pointer;
+}
+
+@media (max-width: 640px) {
+  #app {
+    padding: 0;
+  }
 }

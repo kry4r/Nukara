@@ -178,14 +178,14 @@ func (s *Server) processQueuedTurn(turn queuedTurn) {
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 
-	deltaCh, finalCh, err := s.runtime.StreamTurn(ctx, agentx.TurnRequest{
-		UserID:         turn.UserID,
-		BotID:          turn.Bot.ID,
-		ConversationID: turn.Conversation.ID,
-		AggregatedText: turn.AggregatedText,
-		UserMessageIDs: turn.UserMessageIDs,
-		SystemContext:  turn.SystemContext,
-	})
+	deltaCh, finalCh, err := s.runtime.StreamTurn(ctx, s.newTurnRequest(
+		turn.UserID,
+		turn.Bot.ID,
+		turn.Conversation.ID,
+		turn.AggregatedText,
+		turn.UserMessageIDs,
+		turn.SystemContext,
+	))
 	if err != nil {
 		s.wsHub.publishToUser(turn.UserID, map[string]any{"type": "error", "message": err.Error()})
 		s.wsHub.publishToUser(turn.UserID, map[string]any{
@@ -235,7 +235,7 @@ func (s *Server) processQueuedTurn(turn queuedTurn) {
 	persistedSegments := make([]string, 0, len(finalTurn.Segments))
 	for _, segment := range finalTurn.Segments {
 		safeText := postprocess.SanitizeVisible(segment.Text)
-		for _, split := range postprocess.SplitSegments(safeText, 220) {
+		for _, split := range postprocess.SplitSegments(safeText, 80) {
 			msg, _ := s.store.SaveMessage(turn.UserID, store.Message{
 				ConversationID: turn.Conversation.ID,
 				SenderType:     "bot",

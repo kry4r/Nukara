@@ -14,6 +14,7 @@ export const useChatStore = defineStore('chat', () => {
   const inputText = ref('')
   const isRemoteTyping = ref(false)
   const isLoading = ref(false)
+  const errorBanner = ref('')
   const activeReplyGroups = ref({})
   const streamDraftByReply = ref({})
   const personaUpdate = ref({ summary: '', timestamp: 0 })
@@ -51,6 +52,7 @@ export const useChatStore = defineStore('chat', () => {
   async function loadMessages(convId) {
     conversationId.value = convId
     isLoading.value = true
+    errorBanner.value = ''
     try {
       const data = await api.get(
         `/api/v1/conversations/${convId}/messages?limit=50`
@@ -62,6 +64,7 @@ export const useChatStore = defineStore('chat', () => {
 
   async function sendMessage(text) {
     if (!text.trim() || !conversationId.value) return
+    errorBanner.value = ''
     const clientMsgId = 'c_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8)
 
     // Optimistic update
@@ -93,9 +96,10 @@ export const useChatStore = defineStore('chat', () => {
         if (data.ack) handleAck(data.ack)
         if (data.bot_message) handleMessage(data.bot_message)
         if (data.bot_status_update) handleBotStatusUpdate(data.bot_status_update)
-      } catch (_) {
+      } catch (error) {
         const msg = messages.value.find(m => m.id === clientMsgId)
         if (msg) msg.status = 'failed'
+        errorBanner.value = error?.message || '消息发送失败，请稍后重试。'
       }
     }
 
@@ -267,6 +271,11 @@ export const useChatStore = defineStore('chat', () => {
     })
   }
 
+  function handleError(data) {
+    errorBanner.value = data?.message || '对话服务暂时不可用，请稍后重试。'
+    isRemoteTyping.value = false
+  }
+
   function handleBotPersonaUpdated(data) {
     personaUpdate.value = {
       summary: data.summary || '人设有更新',
@@ -280,6 +289,7 @@ export const useChatStore = defineStore('chat', () => {
     botName.value = ''
     botStatus.value = { emoji: '', text: '' }
     isRemoteTyping.value = false
+    errorBanner.value = ''
     activeReplyGroups.value = {}
     streamDraftByReply.value = {}
     personaUpdate.value = { summary: '', timestamp: 0 }
@@ -288,12 +298,12 @@ export const useChatStore = defineStore('chat', () => {
   return {
     conversationId, botName, botStatus,
     messages, inputText, isRemoteTyping,
-    isLoading, activeReplyGroups, personaUpdate,
+    isLoading, errorBanner, activeReplyGroups, personaUpdate,
     setWsSend, loadMessages, sendMessage, sendTyping, clear,
     handleAck, handleTyping,
     handleStreamStart, handleStreamChunk, handleStreamEnd,
     handleMultiReplyStart, handleMessage,
     handleMultiReplyEnd, handleBotStatusUpdate,
-    handleProactiveMessage, handleBotPersonaUpdated,
+    handleProactiveMessage, handleError, handleBotPersonaUpdated,
   }
 })

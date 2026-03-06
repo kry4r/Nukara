@@ -21,17 +21,28 @@ ENV_FILE="$DEPLOY_DIR/.env"
 INSTALL_DIR="/opt/nukara"
 ADMIN_WEB_PORT_DEFAULT="9527"
 ADMIN_API_PORT_DEFAULT="19527"
+DEPLOY_SOURCE_ROOT=""
+DEPLOY_SOURCE_SNAPSHOT=""
+DEPLOY_SOURCE_COMMIT="unknown"
 
 log()  { echo -e "${GREEN}[Nukara]${NC} $*"; }
 warn() { echo -e "${YELLOW}[WARN]${NC} $*"; }
 err()  { echo -e "${RED}[ERROR]${NC} $*" >&2; exit 1; }
 info() { echo -e "${CYAN}[INFO]${NC} $*"; }
+append_env_var() {
+  local key="$1"
+  local value="${2-}"
+  printf '%s=%q\n' "$key" "$value" >> "$ENV_FILE"
+}
 
 # --- Parse command line arguments ---
 INCREMENTAL_MODE=false
 FORCE_FULL_DEPLOY=false
 DRY_RUN=false
 FORCE_CLEAN=false
+NON_INTERACTIVE=false
+POSTGRES_SERVICE_NAME="postgresql"
+REDIS_SERVICE_NAME="redis"
 
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -51,9 +62,13 @@ while [[ $# -gt 0 ]]; do
       FORCE_CLEAN=true
       shift
       ;;
+    --non-interactive)
+      NON_INTERACTIVE=true
+      shift
+      ;;
     *)
       echo "Unknown option: $1"
-      echo "Usage: $0 [--incremental|--full|--dry-run|--force-clean]"
+      echo "Usage: $0 [--incremental|--full|--dry-run|--force-clean|--non-interactive]"
       exit 1
       ;;
   esac
@@ -102,6 +117,129 @@ pkg_install() {
   esac
 }
 
+list_systemd_unit_candidates() {
+  local pattern="$1"
+  systemctl list-unit-files "$pattern" --no-legend 2>/dev/null | awk '{print $1}' | sed 's/\.service$//' | awk 'NF'
+}
+
+start_and_enable_service() {
+  local result_var="$1"
+  shift
+  local candidate
+  for candidate in "$@"; do
+    [ -n "$candidate" ] || continue
+    systemctl start "$candidate" 2>/dev/null || continue
+    systemctl enable "$candidate" 2>/dev/null || true
+    printf -v "$result_var" '%s' "$candidate"
+    return 0
+  done
+  return 1
+}
+
+ensure_postgres_cluster() {
+  case "$DISTRO_ID" in
+    ubuntu|debian)
+      return 0
+      ;;
+  esac
+
+  if [ -f /var/lib/pgsql/data/PG_VERSION ] || compgen -G "/var/lib/pgsql/*/data/PG_VERSION" >/dev/null; then
+    return 0
+  fi
+
+  local setup_cmd=""
+  local candidate
+  for candidate in /usr/bin/postgresql-setup /usr/pgsql-*/bin/postgresql-setup; do
+    [ -x "$candidate" ] || continue
+    setup_cmd="$candidate"
+    break
+  done
+
+  if [ -n "$setup_cmd" ]; then
+    log "Initializing PostgreSQL data directory..."
+    "$setup_cmd" --initdb
+    return 0
+  fi
+
+  warn "PostgreSQL data directory is not initialized and postgresql-setup was not found; initialize PostgreSQL manually if startup fails."
+}
+
+generate_secret() {
+  if command -v openssl >/dev/null 2>&1; then
+    openssl rand -hex 16
+  elif command -v xxd >/dev/null 2>&1; then
+    head -c 32 /dev/urandom | xxd -p | head -c 32
+  else
+    od -An -N16 -tx1 /dev/urandom | tr -d ' \n'
+  fi
+}
+
+apply_config_defaults() {
+  LLM_API_BASE="${LLM_API_BASE:-https://maas-api.cn-huabei-1.xf-yun.com/v2}"
+  LLM_MODEL="${LLM_MODEL:-xminimaxm25}"
+  LLM_API_MODE="${LLM_API_MODE:-chat_completions}"
+  DOMAIN="${DOMAIN:-localhost}"
+  HTTP_PORT="${HTTP_PORT:-80}"
+  GATEWAY_PORT="${GATEWAY_PORT:-8080}"
+  ADMIN_WEB_PORT="${ADMIN_WEB_PORT:-$ADMIN_WEB_PORT_DEFAULT}"
+  ADMIN_API_PORT="${ADMIN_API_PORT:-$ADMIN_API_PORT_DEFAULT}"
+  JWT_SECRET="${JWT_SECRET:-$(generate_secret)}"
+  POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-nukara123}"
+  NUKARA_ADMIN_USERNAME="${NUKARA_ADMIN_USERNAME:-admin}"
+  PROACTIVE_INTERVAL="${PROACTIVE_INTERVAL:-5m}"
+  INACTIVITY_THRESHOLD="${INACTIVITY_THRESHOLD:-30m}"
+  PROACTIVE_COOLDOWN="${PROACTIVE_COOLDOWN:-60m}"
+  DEFAULT_PROVIDER_NAME="${DEFAULT_PROVIDER_NAME:-astron}"
+  DEFAULT_PROVIDER_BASE_URL="${DEFAULT_PROVIDER_BASE_URL:-$LLM_API_BASE}"
+  DEFAULT_PROVIDER_API_KEY="${DEFAULT_PROVIDER_API_KEY:-${LLM_API_KEY:-}}"
+  DEFAULT_PROVIDER_MODELS="${DEFAULT_PROVIDER_MODELS:-$LLM_MODEL}"
+  DEFAULT_PROVIDER_PRIORITY="${DEFAULT_PROVIDER_PRIORITY:-1}"
+  DEFAULT_PROVIDER_API_MODE="${DEFAULT_PROVIDER_API_MODE:-$LLM_API_MODE}"
+  NUKARA_QDRANT_COLLECTION="${NUKARA_QDRANT_COLLECTION:-agent_memory_v1}"
+  NUKARA_EMBEDDING_MODEL="${NUKARA_EMBEDDING_MODEL:-text-embedding-3-small}"
+}
+
+validate_config() {
+  [ -n "${LLM_API_KEY:-}" ] || err "LLM API Key is required (set LLM_API_KEY or deploy/.env)"
+  [ -n "${NUKARA_ADMIN_PASSWORD:-}" ] || err "Admin password is required (set NUKARA_ADMIN_PASSWORD or deploy/.env)"
+}
+
+persist_config() {
+  : > "$ENV_FILE"
+  printf '# Nukara Local Deploy — generated %s\n' "$(date +%Y-%m-%d)" >> "$ENV_FILE"
+  append_env_var LLM_API_KEY "$LLM_API_KEY"
+  append_env_var LLM_API_BASE "$LLM_API_BASE"
+  append_env_var LLM_MODEL "$LLM_MODEL"
+  append_env_var LLM_API_MODE "$LLM_API_MODE"
+  append_env_var DOMAIN "$DOMAIN"
+  append_env_var HTTP_PORT "$HTTP_PORT"
+  append_env_var GATEWAY_PORT "$GATEWAY_PORT"
+  append_env_var JWT_SECRET "$JWT_SECRET"
+  append_env_var POSTGRES_PASSWORD "$POSTGRES_PASSWORD"
+  append_env_var PROACTIVE_INTERVAL "$PROACTIVE_INTERVAL"
+  append_env_var INACTIVITY_THRESHOLD "$INACTIVITY_THRESHOLD"
+  append_env_var PROACTIVE_COOLDOWN "$PROACTIVE_COOLDOWN"
+  append_env_var ADMIN_WEB_PORT "$ADMIN_WEB_PORT"
+  append_env_var ADMIN_API_PORT "$ADMIN_API_PORT"
+  append_env_var NUKARA_ADMIN_USERNAME "$NUKARA_ADMIN_USERNAME"
+  append_env_var NUKARA_ADMIN_PASSWORD "$NUKARA_ADMIN_PASSWORD"
+  append_env_var DEFAULT_PROVIDER_NAME "$DEFAULT_PROVIDER_NAME"
+  append_env_var DEFAULT_PROVIDER_BASE_URL "$DEFAULT_PROVIDER_BASE_URL"
+  append_env_var DEFAULT_PROVIDER_API_KEY "$DEFAULT_PROVIDER_API_KEY"
+  append_env_var DEFAULT_PROVIDER_MODELS "$DEFAULT_PROVIDER_MODELS"
+  append_env_var DEFAULT_PROVIDER_PRIORITY "$DEFAULT_PROVIDER_PRIORITY"
+  append_env_var DEFAULT_PROVIDER_API_MODE "$DEFAULT_PROVIDER_API_MODE"
+  append_env_var NUKARA_QDRANT_URL "$NUKARA_QDRANT_URL"
+  append_env_var NUKARA_QDRANT_API_KEY "$NUKARA_QDRANT_API_KEY"
+  append_env_var NUKARA_QDRANT_COLLECTION "$NUKARA_QDRANT_COLLECTION"
+  append_env_var NUKARA_NEO4J_URL "$NUKARA_NEO4J_URL"
+  append_env_var NUKARA_NEO4J_USER "$NUKARA_NEO4J_USER"
+  append_env_var NUKARA_NEO4J_PASSWORD "$NUKARA_NEO4J_PASSWORD"
+  append_env_var NUKARA_EMBEDDING_MODEL "$NUKARA_EMBEDDING_MODEL"
+
+  log "Config saved to $ENV_FILE"
+}
+
 # --- Install system dependencies ---
 install_deps() {
   log "Installing system dependencies..."
@@ -109,10 +247,10 @@ install_deps() {
   case "$DISTRO_ID" in
     ubuntu|debian)
       apt-get update -qq
-      pkg_install curl wget git build-essential ca-certificates gnupg lsb-release
+      pkg_install curl wget git build-essential ca-certificates gnupg lsb-release jq rsync xz-utils lsof openssl
       ;;
     centos|rhel|fedora|rocky|almalinux)
-      pkg_install curl wget git gcc make ca-certificates
+      pkg_install curl wget git gcc make ca-certificates jq rsync xz lsof openssl
       ;;
   esac
 
@@ -126,8 +264,10 @@ install_deps() {
       *) pkg_install postgresql-server postgresql ;;
     esac
   fi
-  systemctl enable postgresql
-  systemctl start postgresql
+  ensure_postgres_cluster
+  local postgres_units=()
+  readarray -t postgres_units < <(list_systemd_unit_candidates 'postgresql*.service')
+  start_and_enable_service POSTGRES_SERVICE_NAME "postgresql" "${postgres_units[@]}" || err "Failed to start PostgreSQL service"
 
   # --- Redis ---
   if command -v redis-server &>/dev/null; then
@@ -139,8 +279,9 @@ install_deps() {
       *) pkg_install redis ;;
     esac
   fi
-  systemctl enable redis 2>/dev/null || systemctl enable redis-server 2>/dev/null || true
-  systemctl start redis 2>/dev/null || systemctl start redis-server 2>/dev/null || true
+  local redis_units=()
+  readarray -t redis_units < <(list_systemd_unit_candidates 'redis*.service')
+  start_and_enable_service REDIS_SERVICE_NAME "redis" "redis-server" "${redis_units[@]}" || warn "Failed to start Redis service automatically"
 
   # --- Nginx ---
   if command -v nginx &>/dev/null; then
@@ -156,7 +297,7 @@ install_deps() {
 
 # --- Install Go 1.22 ---
 install_go() {
-  if command -v go &>/dev/null && go version | grep -q "go1.2"; then
+  if command -v go &>/dev/null && go version | grep -Eq 'go1\.(2[2-9]|[3-9][0-9])(\.| |$)'; then
     log "Go already installed: $(go version)"
     return
   fi
@@ -238,6 +379,15 @@ collect_config() {
     set -a; source "$ENV_FILE"; set +a
   fi
 
+  apply_config_defaults
+
+  if [ "$NON_INTERACTIVE" = true ] || [ ! -t 0 ]; then
+    log "Using non-interactive config mode"
+    validate_config
+    persist_config
+    return
+  fi
+
   echo ""
   echo -e "${BOLD}=========================================${NC}"
   echo -e "${BOLD}  Nukara — Local Deploy Config${NC}"
@@ -254,6 +404,8 @@ collect_config() {
 
   read -rp "  Model ID [${LLM_MODEL:-xminimaxm25}]: " input
   LLM_MODEL="${input:-${LLM_MODEL:-xminimaxm25}}"
+  read -rp "  API mode [${LLM_API_MODE:-chat_completions}] (chat_completions/responses/auto): " input
+  LLM_API_MODE="${input:-${LLM_API_MODE:-chat_completions}}"
 
   echo ""
   echo -e "${CYAN}[2/4] Domain & Ports${NC}"
@@ -269,16 +421,15 @@ collect_config() {
   ADMIN_API_PORT="${ADMIN_API_PORT:-$ADMIN_API_PORT_DEFAULT}"
 
   echo ""
-  echo -e "${CYAN}[3/5] Security${NC}"
-  DEFAULT_JWT=$(openssl rand -hex 16 2>/dev/null || head -c 32 /dev/urandom | xxd -p | head -c 32)
+  echo -e "${CYAN}[3/6] Security${NC}"
   read -rp "  JWT Secret [auto-generated]: " input
-  JWT_SECRET="${input:-${JWT_SECRET:-$DEFAULT_JWT}}"
+  JWT_SECRET="${input:-$JWT_SECRET}"
 
   read -rp "  Postgres password [${POSTGRES_PASSWORD:-nukara123}]: " input
   POSTGRES_PASSWORD="${input:-${POSTGRES_PASSWORD:-nukara123}}"
 
   echo ""
-  echo -e "${CYAN}[4/5] Admin Account${NC}"
+  echo -e "${CYAN}[4/6] Admin Account${NC}"
   read -rp "  Admin username [${NUKARA_ADMIN_USERNAME:-admin}]: " input
   NUKARA_ADMIN_USERNAME="${input:-${NUKARA_ADMIN_USERNAME:-admin}}"
 
@@ -288,7 +439,7 @@ collect_config() {
   [ -z "$NUKARA_ADMIN_PASSWORD" ] && err "Admin password is required"
 
   echo ""
-  echo -e "${CYAN}[5/5] Proactive + Default Provider${NC}"
+  echo -e "${CYAN}[5/6] Proactive + Default Provider${NC}"
   read -rp "  Check interval [${PROACTIVE_INTERVAL:-5m}]: " input
   PROACTIVE_INTERVAL="${input:-${PROACTIVE_INTERVAL:-5m}}"
   read -rp "  Inactivity threshold [${INACTIVITY_THRESHOLD:-30m}]: " input
@@ -306,30 +457,58 @@ collect_config() {
   DEFAULT_PROVIDER_MODELS="${input:-${DEFAULT_PROVIDER_MODELS:-$LLM_MODEL}}"
   read -rp "  Default provider priority [${DEFAULT_PROVIDER_PRIORITY:-1}]: " input
   DEFAULT_PROVIDER_PRIORITY="${input:-${DEFAULT_PROVIDER_PRIORITY:-1}}"
+  read -rp "  Default provider API mode [${DEFAULT_PROVIDER_API_MODE:-${LLM_API_MODE:-chat_completions}}] (chat_completions/responses/auto): " input
+  DEFAULT_PROVIDER_API_MODE="${input:-${DEFAULT_PROVIDER_API_MODE:-${LLM_API_MODE:-chat_completions}}}"
 
-  cat > "$ENV_FILE" <<EOF
-# Nukara Local Deploy — generated $(date +%Y-%m-%d)
-LLM_API_KEY=$LLM_API_KEY
-LLM_API_BASE=$LLM_API_BASE
-LLM_MODEL=$LLM_MODEL
-DOMAIN=$DOMAIN
-HTTP_PORT=$HTTP_PORT
-GATEWAY_PORT=$GATEWAY_PORT
-JWT_SECRET=$JWT_SECRET
-POSTGRES_PASSWORD=$POSTGRES_PASSWORD
-PROACTIVE_INTERVAL=$PROACTIVE_INTERVAL
-INACTIVITY_THRESHOLD=$INACTIVITY_THRESHOLD
-PROACTIVE_COOLDOWN=$PROACTIVE_COOLDOWN
-ADMIN_WEB_PORT=$ADMIN_WEB_PORT
-ADMIN_API_PORT=$ADMIN_API_PORT
-NUKARA_ADMIN_USERNAME=$NUKARA_ADMIN_USERNAME
-NUKARA_ADMIN_PASSWORD=$NUKARA_ADMIN_PASSWORD
-DEFAULT_PROVIDER_NAME=$DEFAULT_PROVIDER_NAME
-DEFAULT_PROVIDER_BASE_URL=$DEFAULT_PROVIDER_BASE_URL
-DEFAULT_PROVIDER_API_KEY=$DEFAULT_PROVIDER_API_KEY
-DEFAULT_PROVIDER_MODELS=$DEFAULT_PROVIDER_MODELS
-DEFAULT_PROVIDER_PRIORITY=$DEFAULT_PROVIDER_PRIORITY
-EOF
+  echo ""
+  echo -e "${CYAN}[6/6] Memory Infra (Optional)${NC}"
+  read -rp "  Qdrant URL [${NUKARA_QDRANT_URL:-}]: " input
+  NUKARA_QDRANT_URL="${input:-${NUKARA_QDRANT_URL:-}}"
+  read -rp "  Qdrant API key [${NUKARA_QDRANT_API_KEY:-}]: " input
+  NUKARA_QDRANT_API_KEY="${input:-${NUKARA_QDRANT_API_KEY:-}}"
+  read -rp "  Qdrant collection [${NUKARA_QDRANT_COLLECTION:-agent_memory_v1}]: " input
+  NUKARA_QDRANT_COLLECTION="${input:-${NUKARA_QDRANT_COLLECTION:-agent_memory_v1}}"
+  read -rp "  Neo4j URL [${NUKARA_NEO4J_URL:-}]: " input
+  NUKARA_NEO4J_URL="${input:-${NUKARA_NEO4J_URL:-}}"
+  read -rp "  Neo4j user [${NUKARA_NEO4J_USER:-}]: " input
+  NUKARA_NEO4J_USER="${input:-${NUKARA_NEO4J_USER:-}}"
+  read -rsp "  Neo4j password [hidden]: " input
+  echo ""
+  NUKARA_NEO4J_PASSWORD="${input:-${NUKARA_NEO4J_PASSWORD:-}}"
+  read -rp "  Embedding model [${NUKARA_EMBEDDING_MODEL:-text-embedding-3-small}]: " input
+  NUKARA_EMBEDDING_MODEL="${input:-${NUKARA_EMBEDDING_MODEL:-text-embedding-3-small}}"
+
+  : > "$ENV_FILE"
+  printf '# Nukara Local Deploy — generated %s\n' "$(date +%Y-%m-%d)" >> "$ENV_FILE"
+  append_env_var LLM_API_KEY "$LLM_API_KEY"
+  append_env_var LLM_API_BASE "$LLM_API_BASE"
+  append_env_var LLM_MODEL "$LLM_MODEL"
+  append_env_var LLM_API_MODE "$LLM_API_MODE"
+  append_env_var DOMAIN "$DOMAIN"
+  append_env_var HTTP_PORT "$HTTP_PORT"
+  append_env_var GATEWAY_PORT "$GATEWAY_PORT"
+  append_env_var JWT_SECRET "$JWT_SECRET"
+  append_env_var POSTGRES_PASSWORD "$POSTGRES_PASSWORD"
+  append_env_var PROACTIVE_INTERVAL "$PROACTIVE_INTERVAL"
+  append_env_var INACTIVITY_THRESHOLD "$INACTIVITY_THRESHOLD"
+  append_env_var PROACTIVE_COOLDOWN "$PROACTIVE_COOLDOWN"
+  append_env_var ADMIN_WEB_PORT "$ADMIN_WEB_PORT"
+  append_env_var ADMIN_API_PORT "$ADMIN_API_PORT"
+  append_env_var NUKARA_ADMIN_USERNAME "$NUKARA_ADMIN_USERNAME"
+  append_env_var NUKARA_ADMIN_PASSWORD "$NUKARA_ADMIN_PASSWORD"
+  append_env_var DEFAULT_PROVIDER_NAME "$DEFAULT_PROVIDER_NAME"
+  append_env_var DEFAULT_PROVIDER_BASE_URL "$DEFAULT_PROVIDER_BASE_URL"
+  append_env_var DEFAULT_PROVIDER_API_KEY "$DEFAULT_PROVIDER_API_KEY"
+  append_env_var DEFAULT_PROVIDER_MODELS "$DEFAULT_PROVIDER_MODELS"
+  append_env_var DEFAULT_PROVIDER_PRIORITY "$DEFAULT_PROVIDER_PRIORITY"
+  append_env_var DEFAULT_PROVIDER_API_MODE "$DEFAULT_PROVIDER_API_MODE"
+  append_env_var NUKARA_QDRANT_URL "$NUKARA_QDRANT_URL"
+  append_env_var NUKARA_QDRANT_API_KEY "$NUKARA_QDRANT_API_KEY"
+  append_env_var NUKARA_QDRANT_COLLECTION "$NUKARA_QDRANT_COLLECTION"
+  append_env_var NUKARA_NEO4J_URL "$NUKARA_NEO4J_URL"
+  append_env_var NUKARA_NEO4J_USER "$NUKARA_NEO4J_USER"
+  append_env_var NUKARA_NEO4J_PASSWORD "$NUKARA_NEO4J_PASSWORD"
+  append_env_var NUKARA_EMBEDDING_MODEL "$NUKARA_EMBEDDING_MODEL"
 
   log "Config saved to $ENV_FILE"
 }
@@ -363,6 +542,75 @@ setup_postgres() {
   log "PostgreSQL database ready"
 }
 
+# --- Resolve and lock deployment source before cleanup ---
+source_root_has_components() {
+  local root="$1"
+  [ -d "$root/deploy" ] && [ -d "$root/Nukara_Backend" ] && [ -d "$root/Nukara_Web" ] && [ -d "$root/Nukara_Admin_Web" ]
+}
+
+sync_tree() {
+  local src="$1"
+  local dst="$2"
+  mkdir -p "$dst"
+  if command -v rsync >/dev/null 2>&1; then
+    rsync -a --delete \
+      --exclude '.git' \
+      --exclude 'node_modules' \
+      --exclude 'dist' \
+      --exclude '.venv' \
+      --exclude '__pycache__' \
+      "$src/" "$dst/"
+  else
+    rm -rf "$dst"
+    mkdir -p "$dst"
+    cp -a "$src"/. "$dst"/
+    rm -rf "$dst/.git" "$dst/node_modules" "$dst/dist" "$dst/.venv" "$dst/__pycache__"
+  fi
+}
+
+resolve_deploy_source_root() {
+  if [ -n "${NUKARA_SOURCE_ROOT:-}" ]; then
+    local configured_root
+    configured_root="$(cd "$NUKARA_SOURCE_ROOT" && pwd)"
+    source_root_has_components "$configured_root" || err "NUKARA_SOURCE_ROOT is invalid: $configured_root"
+    printf '%s\n' "$configured_root"
+    return 0
+  fi
+
+  local candidate_root
+  candidate_root="$(cd "$DEPLOY_DIR/.." && pwd)"
+  if source_root_has_components "$candidate_root"; then
+    printf '%s\n' "$candidate_root"
+    return 0
+  fi
+
+  err "Unable to resolve deployment source root from $DEPLOY_DIR. Set NUKARA_SOURCE_ROOT and retry."
+}
+
+lock_deploy_source() {
+  DEPLOY_SOURCE_ROOT="$(resolve_deploy_source_root)"
+  if git -C "$DEPLOY_SOURCE_ROOT" rev-parse HEAD >/dev/null 2>&1; then
+    DEPLOY_SOURCE_COMMIT="$(git -C "$DEPLOY_SOURCE_ROOT" rev-parse HEAD)"
+  fi
+
+  if [[ "$DEPLOY_SOURCE_ROOT" == "$INSTALL_DIR"* ]]; then
+    DEPLOY_SOURCE_SNAPSHOT="$(mktemp -d /tmp/nukara-source.XXXXXX)"
+    log "Source root is inside install dir; snapshotting to $DEPLOY_SOURCE_SNAPSHOT"
+    sync_tree "$DEPLOY_SOURCE_ROOT" "$DEPLOY_SOURCE_SNAPSHOT"
+    DEPLOY_SOURCE_ROOT="$DEPLOY_SOURCE_SNAPSHOT"
+  fi
+
+  log "Locked deployment source: $DEPLOY_SOURCE_ROOT"
+  log "Deployment source commit: $DEPLOY_SOURCE_COMMIT"
+}
+
+cleanup_locked_source() {
+  if [ -n "$DEPLOY_SOURCE_SNAPSHOT" ] && [ -d "$DEPLOY_SOURCE_SNAPSHOT" ]; then
+    rm -rf "$DEPLOY_SOURCE_SNAPSHOT"
+    DEPLOY_SOURCE_SNAPSHOT=""
+  fi
+}
+
 # --- Clear /opt install residue before each deployment ---
 cleanup_install_residue() {
   log "Clearing installation residue under $INSTALL_DIR ..."
@@ -379,76 +627,15 @@ cleanup_install_residue() {
 # --- Prepare source code ---
 prepare_sources() {
   mkdir -p "$INSTALL_DIR"
-  local workspace_root
-  workspace_root="$(cd "$DEPLOY_DIR/.." && pwd)"
-  local snapshot_root=""
-  local snapshot_repo=""
+  [ -n "$DEPLOY_SOURCE_ROOT" ] || err "Deployment source root is not locked"
 
-  sync_from_workspace() {
-    local name="$1"
-    local src="$2"
-    local dst="$3"
-    [ -d "$src" ] || return 1
+  for component in deploy Nukara_Backend Nukara_Web Nukara_Admin_Web; do
+    [ -d "$DEPLOY_SOURCE_ROOT/$component" ] || err "Missing component in deployment source: $DEPLOY_SOURCE_ROOT/$component"
+    log "Syncing $component from locked source..."
+    sync_tree "$DEPLOY_SOURCE_ROOT/$component" "$INSTALL_DIR/$component"
+  done
 
-    log "Syncing $name from local workspace..."
-    mkdir -p "$dst"
-    if command -v rsync >/dev/null 2>&1; then
-      rsync -a --delete \
-        --exclude '.git' \
-        --exclude 'node_modules' \
-        --exclude 'dist' \
-        --exclude '.venv' \
-        --exclude '__pycache__' \
-        "$src/" "$dst/"
-    else
-      rm -rf "$dst"
-      mkdir -p "$dst"
-      cp -a "$src"/. "$dst"/
-      rm -rf "$dst/.git" "$dst/node_modules" "$dst/dist" "$dst/.venv" "$dst/__pycache__"
-    fi
-    return 0
-  }
-
-  ensure_repo_snapshot() {
-    if [ -n "$snapshot_repo" ] && [ -d "$snapshot_repo" ]; then
-      return 0
-    fi
-    snapshot_root="$(mktemp -d "$INSTALL_DIR/.nukara-src.XXXXXX")"
-    snapshot_repo="$snapshot_root/repo"
-    log "Fetching latest Nukara snapshot..."
-    git clone --depth 1 https://github.com/kry4r/Nukara.git "$snapshot_repo"
-  }
-
-  refresh_component_from_snapshot() {
-    local name="$1"
-    local subdir="$2"
-    local dst="$3"
-    ensure_repo_snapshot
-    log "Refreshing $name from repository snapshot..."
-    rm -rf "$dst"
-    mkdir -p "$dst"
-    cp -a "$snapshot_repo/$subdir"/. "$dst"/
-  }
-
-  # Backend
-  if ! sync_from_workspace "Nukara_Backend" "$workspace_root/Nukara_Backend" "$INSTALL_DIR/Nukara_Backend"; then
-    refresh_component_from_snapshot "Nukara_Backend" "Nukara_Backend" "$INSTALL_DIR/Nukara_Backend"
-  fi
-
-  # Web frontend
-  if ! sync_from_workspace "Nukara_Web" "$workspace_root/Nukara_Web" "$INSTALL_DIR/Nukara_Web"; then
-    refresh_component_from_snapshot "Nukara_Web" "Nukara_Web" "$INSTALL_DIR/Nukara_Web"
-  fi
-
-  # Admin web frontend
-  if ! sync_from_workspace "Nukara_Admin_Web" "$workspace_root/Nukara_Admin_Web" "$INSTALL_DIR/Nukara_Admin_Web"; then
-    refresh_component_from_snapshot "Nukara_Admin_Web" "Nukara_Admin_Web" "$INSTALL_DIR/Nukara_Admin_Web"
-  fi
-
-  if [ -n "$snapshot_root" ] && [ -d "$snapshot_root" ]; then
-    rm -rf "$snapshot_root"
-  fi
-
+  cleanup_locked_source
   log "Source code ready at $INSTALL_DIR"
 }
 
@@ -477,11 +664,13 @@ build_services() {
     log "Building frontend..."
     npm ci --registry https://registry.npmmirror.com
     npm run build
+    [ -f "$INSTALL_DIR/Nukara_Web/dist/index.html" ] || err "Frontend build output missing: $INSTALL_DIR/Nukara_Web/dist/index.html"
 
     cd "$INSTALL_DIR/Nukara_Admin_Web"
     log "Building admin web..."
     npm ci --registry https://registry.npmmirror.com
     npm run build
+    [ -f "$INSTALL_DIR/Nukara_Admin_Web/dist/index.html" ] || err "Admin frontend build output missing: $INSTALL_DIR/Nukara_Admin_Web/dist/index.html"
   else
     log "Skipping frontend build (no changes)"
   fi
@@ -499,8 +688,8 @@ create_services() {
   cat > /etc/systemd/system/nukara-gateway.service <<EOF
 [Unit]
 Description=Nukara Gateway
-After=postgresql.service redis.service
-Wants=postgresql.service redis.service
+After=${POSTGRES_SERVICE_NAME}.service ${REDIS_SERVICE_NAME}.service
+Wants=${POSTGRES_SERVICE_NAME}.service ${REDIS_SERVICE_NAME}.service
 
 [Service]
 Type=simple
@@ -511,6 +700,17 @@ Environment=NUKARA_JWT_SECRET=${JWT_SECRET}
 Environment=NUKARA_POSTGRES_DSN=${PG_DSN}
 Environment=NUKARA_REDIS_ADDR=127.0.0.1:6379
 Environment=NUKARA_PROACTIVE_INTERVAL=${PROACTIVE_INTERVAL}
+Environment=NUKARA_CHAT_BASE_URL=${LLM_API_BASE}
+Environment=NUKARA_CHAT_API_KEY=${LLM_API_KEY}
+Environment=NUKARA_CHAT_MODEL=${LLM_MODEL}
+Environment=NUKARA_CHAT_API_MODE=${LLM_API_MODE}
+Environment=NUKARA_QDRANT_URL=${NUKARA_QDRANT_URL:-}
+Environment=NUKARA_QDRANT_API_KEY=${NUKARA_QDRANT_API_KEY:-}
+Environment=NUKARA_QDRANT_COLLECTION=${NUKARA_QDRANT_COLLECTION:-agent_memory_v1}
+Environment=NUKARA_NEO4J_URL=${NUKARA_NEO4J_URL:-}
+Environment=NUKARA_NEO4J_USER=${NUKARA_NEO4J_USER:-}
+Environment=NUKARA_NEO4J_PASSWORD=${NUKARA_NEO4J_PASSWORD:-}
+Environment=NUKARA_EMBEDDING_MODEL=${NUKARA_EMBEDDING_MODEL:-}
 Environment=NUKARA_INACTIVITY_THRESHOLD=${INACTIVITY_THRESHOLD}
 Environment=NUKARA_PROACTIVE_COOLDOWN=${PROACTIVE_COOLDOWN}
 
@@ -534,6 +734,17 @@ Environment=NUKARA_JWT_SECRET=${JWT_SECRET}
 Environment=NUKARA_POSTGRES_DSN=${PG_DSN}
 Environment=NUKARA_REDIS_ADDR=127.0.0.1:6379
 Environment=NUKARA_PROACTIVE_INTERVAL=${PROACTIVE_INTERVAL}
+Environment=NUKARA_CHAT_BASE_URL=${LLM_API_BASE}
+Environment=NUKARA_CHAT_API_KEY=${LLM_API_KEY}
+Environment=NUKARA_CHAT_MODEL=${LLM_MODEL}
+Environment=NUKARA_CHAT_API_MODE=${LLM_API_MODE}
+Environment=NUKARA_QDRANT_URL=${NUKARA_QDRANT_URL:-}
+Environment=NUKARA_QDRANT_API_KEY=${NUKARA_QDRANT_API_KEY:-}
+Environment=NUKARA_QDRANT_COLLECTION=${NUKARA_QDRANT_COLLECTION:-agent_memory_v1}
+Environment=NUKARA_NEO4J_URL=${NUKARA_NEO4J_URL:-}
+Environment=NUKARA_NEO4J_USER=${NUKARA_NEO4J_USER:-}
+Environment=NUKARA_NEO4J_PASSWORD=${NUKARA_NEO4J_PASSWORD:-}
+Environment=NUKARA_EMBEDDING_MODEL=${NUKARA_EMBEDDING_MODEL:-}
 
 [Install]
 WantedBy=multi-user.target
@@ -543,8 +754,8 @@ EOF
   cat > /etc/systemd/system/nukara-admin.service <<EOF
 [Unit]
 Description=Nukara Admin API
-After=postgresql.service redis.service
-Wants=postgresql.service redis.service
+After=${POSTGRES_SERVICE_NAME}.service ${REDIS_SERVICE_NAME}.service
+Wants=${POSTGRES_SERVICE_NAME}.service ${REDIS_SERVICE_NAME}.service
 
 [Service]
 Type=simple
@@ -628,14 +839,13 @@ start_services() {
   restart_services
 
   # Update global deployment state
-  local current_commit=$(git -C "$INSTALL_DIR/Nukara_Backend" rev-parse HEAD 2>/dev/null || echo "unknown")
-  update_deploy_state "$current_commit" "" ""
+  update_deploy_state "$DEPLOY_SOURCE_COMMIT" "" ""
 
   echo ""
   echo -e "${BOLD}=========================================${NC}"
   echo -e "${BOLD}  Service Status${NC}"
   echo -e "${BOLD}=========================================${NC}"
-  for svc in postgresql redis nginx nukara-gateway nukara-proactive nukara-admin; do
+  for svc in "$POSTGRES_SERVICE_NAME" "$REDIS_SERVICE_NAME" nginx nukara-gateway nukara-proactive nukara-admin; do
     if systemctl is-active --quiet "$svc" 2>/dev/null; then
       echo -e "  ${GREEN}●${NC} $svc"
     else
@@ -698,7 +908,10 @@ main() {
     RELOAD_CONFIG=true
   fi
 
-  # Always clear /opt residue and perform full rebuild.
+  collect_config
+
+  # Lock deployment source before cleanup, then clear /opt residue and rebuild.
+  lock_deploy_source
   cleanup_install_residue
   REBUILD_BACKEND=true
   REBUILD_WEB=true
@@ -708,9 +921,8 @@ main() {
   install_deps
   install_go
   install_node
-  collect_config
-  setup_postgres
   prepare_sources
+  setup_postgres
   build_services
   create_services
   configure_nginx

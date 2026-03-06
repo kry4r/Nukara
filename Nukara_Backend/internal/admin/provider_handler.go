@@ -104,6 +104,7 @@ func (s *Server) createProvider(w http.ResponseWriter, r *http.Request) {
 	}
 
 	models := normalizeModels(req.Models)
+	apiMode := normalizeProviderAPIMode(req.APIMode)
 	priority := req.Priority
 	if priority <= 0 {
 		nextPriority, err := s.nextProviderPriority()
@@ -123,10 +124,10 @@ func (s *Server) createProvider(w http.ResponseWriter, r *http.Request) {
 	}
 
 	err = s.db.QueryRow(`
-		INSERT INTO providers(id, name, api_key, base_url, models, is_active, priority, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, NOW(), NOW())
+		INSERT INTO providers(id, name, api_key, base_url, api_mode, models, is_active, priority, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, NOW(), NOW())
 		RETURNING created_at, updated_at
-	`, id, name, strings.TrimSpace(req.APIKey), strings.TrimSpace(req.BaseURL), string(modelsRaw), req.IsActive, priority).
+	`, id, name, strings.TrimSpace(req.APIKey), strings.TrimSpace(req.BaseURL), apiMode, string(modelsRaw), req.IsActive, priority).
 		Scan(&createdAt, &updatedAt)
 	if err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "duplicate key") {
@@ -224,6 +225,10 @@ func (s *Server) updateProvider(w http.ResponseWriter, r *http.Request, id strin
 	if req.Priority > 0 {
 		priority = req.Priority
 	}
+	apiMode := current.APIMode
+	if strings.TrimSpace(req.APIMode) != "" {
+		apiMode = normalizeProviderAPIMode(req.APIMode)
+	}
 	isActive := current.IsActive || req.IsActive
 	modelsRaw, err := json.Marshal(models)
 	if err != nil {
@@ -236,12 +241,13 @@ func (s *Server) updateProvider(w http.ResponseWriter, r *http.Request, id strin
 		SET name = $1,
 		    api_key = $2,
 		    base_url = $3,
-		    models = $4::jsonb,
-		    is_active = $5,
-		    priority = $6,
+		    api_mode = $4,
+		    models = $5::jsonb,
+		    is_active = $6,
+		    priority = $7,
 		    updated_at = NOW()
-		WHERE id = $7
-	`, name, strings.TrimSpace(req.APIKey), strings.TrimSpace(req.BaseURL), string(modelsRaw), isActive, priority, id)
+		WHERE id = $8
+	`, name, strings.TrimSpace(req.APIKey), strings.TrimSpace(req.BaseURL), apiMode, string(modelsRaw), isActive, priority, id)
 	if err != nil {
 		http.Error(w, "Failed to update provider: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -416,7 +422,7 @@ func (s *Server) nextProviderPriority() (int, error) {
 
 func (s *Server) listProvidersFromDB() ([]store.Provider, error) {
 	rows, err := s.db.Query(`
-		SELECT id, name, api_key, base_url, models, is_active, priority, created_at, updated_at
+		SELECT id, name, api_key, base_url, api_mode, models, is_active, priority, created_at, updated_at
 		FROM providers
 		WHERE id <> 'custom'
 		ORDER BY priority ASC, created_at DESC
@@ -430,7 +436,7 @@ func (s *Server) listProvidersFromDB() ([]store.Provider, error) {
 	for rows.Next() {
 		var p store.Provider
 		var modelsRaw []byte
-		if scanErr := rows.Scan(&p.ID, &p.Name, &p.APIKey, &p.BaseURL, &modelsRaw, &p.IsActive, &p.Priority, &p.CreatedAt, &p.UpdatedAt); scanErr != nil {
+		if scanErr := rows.Scan(&p.ID, &p.Name, &p.APIKey, &p.BaseURL, &p.APIMode, &modelsRaw, &p.IsActive, &p.Priority, &p.CreatedAt, &p.UpdatedAt); scanErr != nil {
 			return nil, scanErr
 		}
 		p.Models = unmarshalModels(modelsRaw)
@@ -450,11 +456,11 @@ func (s *Server) getProviderByID(id string) (store.Provider, error) {
 	var p store.Provider
 	var modelsRaw []byte
 	err := s.db.QueryRow(`
-		SELECT id, name, api_key, base_url, models, is_active, priority, created_at, updated_at
+		SELECT id, name, api_key, base_url, api_mode, models, is_active, priority, created_at, updated_at
 		FROM providers
 		WHERE id = $1 AND id <> 'custom'
 	`, strings.TrimSpace(id)).
-		Scan(&p.ID, &p.Name, &p.APIKey, &p.BaseURL, &modelsRaw, &p.IsActive, &p.Priority, &p.CreatedAt, &p.UpdatedAt)
+		Scan(&p.ID, &p.Name, &p.APIKey, &p.BaseURL, &p.APIMode, &modelsRaw, &p.IsActive, &p.Priority, &p.CreatedAt, &p.UpdatedAt)
 	if err != nil {
 		return store.Provider{}, err
 	}
@@ -510,7 +516,7 @@ func (s *Server) syncActiveProviderToDB(activeProviderID, model string) error {
 	}
 	if _, err = tx.Exec(`
 		INSERT INTO system_settings(key, value, updated_at)
-		VALUES ('default_chat_provider_id', jsonb_build_object('value', $1), NOW())
+		VALUES ('default_chat_provider_id', jsonb_build_object('value', $1::text), NOW())
 		ON CONFLICT (key)
 		DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
 	`, strings.TrimSpace(activeProviderID)); err != nil {
@@ -519,7 +525,7 @@ func (s *Server) syncActiveProviderToDB(activeProviderID, model string) error {
 	if strings.TrimSpace(model) != "" {
 		if _, err = tx.Exec(`
 			INSERT INTO system_settings(key, value, updated_at)
-			VALUES ('default_chat_model', jsonb_build_object('value', $1), NOW())
+			VALUES ('default_chat_model', jsonb_build_object('value', $1::text), NOW())
 			ON CONFLICT (key)
 			DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
 		`, strings.TrimSpace(model)); err != nil {

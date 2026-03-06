@@ -18,29 +18,42 @@ type RecallInput struct {
 }
 
 type RecallDeps struct {
-	Qdrant *QdrantClient
-	Neo4j  *Neo4jClient
+	Embedder    Embedder
+	VectorIndex VectorIndex
+	TopicGraph  TopicGraph
 }
 
 type RecallBuilder struct {
-	qdrant *QdrantClient
-	neo4j  *Neo4jClient
+	embedder    Embedder
+	vectorIndex VectorIndex
+	topicGraph  TopicGraph
 }
 
 func NewRecallBuilder(deps RecallDeps) *RecallBuilder {
 	return &RecallBuilder{
-		qdrant: deps.Qdrant,
-		neo4j:  deps.Neo4j,
+		embedder:    deps.Embedder,
+		vectorIndex: deps.VectorIndex,
+		topicGraph:  deps.TopicGraph,
 	}
 }
 
 func (b *RecallBuilder) Build(ctx context.Context, in RecallInput) ([]store.MemoryItem, error) {
+	if b == nil || b.vectorIndex == nil || b.embedder == nil {
+		return nil, nil
+	}
 	limit := in.Limit
 	if limit <= 0 {
 		limit = 6
 	}
+	vector, err := b.embedder.Embed(ctx, in.QueryText)
+	if err != nil {
+		return nil, err
+	}
+	if len(vector) == 0 {
+		return nil, nil
+	}
 
-	qdrantItems, err := b.qdrant.Search(ctx, in.UserID, in.BotID, in.QueryText, limit)
+	qdrantItems, err := b.vectorIndex.Search(ctx, in.UserID, in.BotID, in.QueryText, vector, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -63,18 +76,18 @@ func (b *RecallBuilder) Build(ctx context.Context, in RecallInput) ([]store.Memo
 			ID:         item.ID,
 			UserID:     in.UserID,
 			BotID:      in.BotID,
-			Kind:       "fact",
-			Owner:      "shared",
+			Kind:       firstNonEmpty(item.Kind, "fact"),
+			Owner:      firstNonEmpty(item.Owner, "shared"),
 			Content:    content,
-			Importance: 50,
+			Importance: maxInt(item.Importance, 50),
 			OccurredAt: time.Now().UTC(),
-			Status:     "active",
+			Status:     firstNonEmpty(item.Status, "active"),
 			Topics:     append([]string(nil), item.Topics...),
 		})
 	}
 
-	if in.WithExpand && b.neo4j != nil && len(seedTopics) > 0 {
-		topicEdges, expandErr := b.neo4j.ExpandTopics(ctx, dedup(seedTopics), limit)
+	if in.WithExpand && b.topicGraph != nil && len(seedTopics) > 0 {
+		topicEdges, expandErr := b.topicGraph.ExpandTopics(ctx, dedup(seedTopics), limit)
 		if expandErr != nil {
 			return out, nil
 		}
@@ -126,4 +139,14 @@ func dedup(values []string) []string {
 		out = append(out, value)
 	}
 	return out
+}
+
+func maxInt(values ...int) int {
+	best := 0
+	for _, value := range values {
+		if value > best {
+			best = value
+		}
+	}
+	return best
 }

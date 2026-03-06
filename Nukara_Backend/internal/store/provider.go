@@ -10,6 +10,7 @@ type Provider struct {
 	Name      string    `json:"name"`
 	APIKey    string    `json:"api_key"`
 	BaseURL   string    `json:"base_url"`
+	APIMode   string    `json:"api_mode"`
 	Models    []string  `json:"models"`
 	IsActive  bool      `json:"is_active"`
 	Priority  int       `json:"priority"`
@@ -24,10 +25,10 @@ func (ps *PostgresStore) CreateProvider(p Provider) (Provider, error) {
 	}
 
 	err := ps.db.QueryRow(`
-		INSERT INTO providers (id, name, api_key, base_url, models, is_active, priority, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW())
+		INSERT INTO providers (id, name, api_key, base_url, api_mode, models, is_active, priority, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), NOW())
 		RETURNING id, created_at, updated_at
-	`, p.ID, p.Name, p.APIKey, p.BaseURL, modelsJSON, p.IsActive, p.Priority).
+	`, p.ID, p.Name, p.APIKey, p.BaseURL, p.APIMode, modelsJSON, p.IsActive, p.Priority).
 		Scan(&p.ID, &p.CreatedAt, &p.UpdatedAt)
 
 	return p, err
@@ -35,7 +36,7 @@ func (ps *PostgresStore) CreateProvider(p Provider) (Provider, error) {
 
 func (ps *PostgresStore) ListProviders() ([]Provider, error) {
 	rows, err := ps.db.Query(`
-		SELECT id, name, api_key, base_url, models, is_active, priority, created_at, updated_at
+		SELECT id, name, api_key, base_url, api_mode, models, is_active, priority, created_at, updated_at
 		FROM providers
 		ORDER BY priority ASC, created_at DESC
 	`)
@@ -48,7 +49,7 @@ func (ps *PostgresStore) ListProviders() ([]Provider, error) {
 	for rows.Next() {
 		var p Provider
 		var modelsJSON []byte
-		err := rows.Scan(&p.ID, &p.Name, &p.APIKey, &p.BaseURL, &modelsJSON,
+		err := rows.Scan(&p.ID, &p.Name, &p.APIKey, &p.BaseURL, &p.APIMode, &modelsJSON,
 			&p.IsActive, &p.Priority, &p.CreatedAt, &p.UpdatedAt)
 		if err != nil {
 			return nil, err
@@ -65,9 +66,9 @@ func (ps *PostgresStore) GetProvider(id string) (Provider, error) {
 	var modelsJSON []byte
 
 	err := ps.db.QueryRow(`
-		SELECT id, name, api_key, base_url, models, is_active, priority, created_at, updated_at
+		SELECT id, name, api_key, base_url, api_mode, models, is_active, priority, created_at, updated_at
 		FROM providers WHERE id = $1
-	`, id).Scan(&p.ID, &p.Name, &p.APIKey, &p.BaseURL, &modelsJSON,
+	`, id).Scan(&p.ID, &p.Name, &p.APIKey, &p.BaseURL, &p.APIMode, &modelsJSON,
 		&p.IsActive, &p.Priority, &p.CreatedAt, &p.UpdatedAt)
 
 	if err != nil {
@@ -83,10 +84,10 @@ func (ps *PostgresStore) UpdateProvider(id string, p Provider) error {
 
 	_, err := ps.db.Exec(`
 		UPDATE providers
-		SET name = $1, api_key = $2, base_url = $3, models = $4,
-		    is_active = $5, priority = $6, updated_at = NOW()
-		WHERE id = $7
-	`, p.Name, p.APIKey, p.BaseURL, modelsJSON, p.IsActive, p.Priority, id)
+		SET name = $1, api_key = $2, base_url = $3, api_mode = $4, models = $5,
+		    is_active = $6, priority = $7, updated_at = NOW()
+		WHERE id = $8
+	`, p.Name, p.APIKey, p.BaseURL, p.APIMode, modelsJSON, p.IsActive, p.Priority, id)
 
 	return err
 }
@@ -103,13 +104,11 @@ func (ps *PostgresStore) SwitchActiveProvider(id string) error {
 	}
 	defer tx.Rollback()
 
-	// 将所有 provider 设为 inactive
 	_, err = tx.Exec(`UPDATE providers SET is_active = false`)
 	if err != nil {
 		return err
 	}
 
-	// 将指定 provider 设为 active
 	_, err = tx.Exec(`UPDATE providers SET is_active = true WHERE id = $1`, id)
 	if err != nil {
 		return err

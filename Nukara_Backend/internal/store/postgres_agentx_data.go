@@ -162,7 +162,7 @@ func (p *PostgresStore) GetConversationCompact(conversationID string) (Conversat
 	var compact ConversationCompact
 	var raw json.RawMessage
 	err := p.db.QueryRowContext(ctx, `
-		SELECT conversation_id, compact_json, COALESCE(until_turn_id, ''), updated_at
+		SELECT conversation_id, compact_json, COALESCE(until_turn_id::text, ''), updated_at
 		FROM conversation_compacts
 		WHERE conversation_id=$1
 	`, strings.TrimSpace(conversationID)).Scan(&compact.ConversationID, &raw, &compact.UntilTurnID, &compact.UpdatedAt)
@@ -220,6 +220,46 @@ func (p *PostgresStore) GetMemoryItem(memoryID string) (MemoryItem, bool) {
 		log.Printf("get memory item failed: %v", err)
 	}
 	return p.Store.GetMemoryItem(memoryID)
+}
+
+func (p *PostgresStore) ListMemoryItems(userID, botID string, limit int) []MemoryItem {
+	ctx, cancel := p.withTimeout()
+	defer cancel()
+
+	if limit <= 0 {
+		limit = 20
+	}
+	rows, err := p.db.QueryContext(ctx, `
+		SELECT id, user_id, bot_id, kind, owner, content, importance, occurred_at, status, topics, created_at, updated_at
+		FROM memory_items
+		WHERE user_id=$1 AND bot_id=$2 AND status='active'
+		ORDER BY importance DESC, occurred_at DESC
+		LIMIT $3
+	`, strings.TrimSpace(userID), strings.TrimSpace(botID), limit)
+	if err != nil {
+		log.Printf("list memory items failed: %v", err)
+		return p.Store.ListMemoryItems(userID, botID, limit)
+	}
+	defer rows.Close()
+
+	items := make([]MemoryItem, 0, limit)
+	for rows.Next() {
+		var item MemoryItem
+		var topicsRaw []byte
+		if scanErr := rows.Scan(
+			&item.ID, &item.UserID, &item.BotID, &item.Kind, &item.Owner, &item.Content, &item.Importance,
+			&item.OccurredAt, &item.Status, &topicsRaw, &item.CreatedAt, &item.UpdatedAt,
+		); scanErr != nil {
+			log.Printf("scan memory item failed: %v", scanErr)
+			continue
+		}
+		_ = json.Unmarshal(topicsRaw, &item.Topics)
+		items = append(items, item)
+	}
+	if len(items) == 0 {
+		return p.Store.ListMemoryItems(userID, botID, limit)
+	}
+	return items
 }
 
 func marshalSettingValue(value string) string {
