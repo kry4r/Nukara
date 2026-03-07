@@ -5,11 +5,13 @@ import {
   createProvider,
   deleteProvider,
   getAdminCredentials,
+  getEmbeddingConfig,
   chatTestProvider,
   listProviders,
   listUserProviderSettings,
   switchProvider,
   testProvider,
+  updateEmbeddingConfig,
   updateProvider,
   updateUserProviderSetting,
 } from './api/admin.js'
@@ -21,6 +23,7 @@ const statusMessage = ref('')
 const errorMessage = ref('')
 const searchQuery = ref('')
 const creatingProvider = ref(false)
+const embeddingSaving = ref(false)
 const showCreateProvider = ref(false)
 const createStatus = ref('')
 const selectedSourceId = ref('')
@@ -54,6 +57,12 @@ const newProvider = reactive({
   api_key: '',
   api_mode: 'chat_completions',
   models: '',
+})
+const embeddingConfig = reactive({
+  base_url: '',
+  api_key: '',
+  model: '',
+  provider_id: '',
 })
 
 const activeProvider = computed(() =>
@@ -103,6 +112,13 @@ const selectedSourceName = computed(() => {
 function defaultProviderName() {
   const target = providers.value.find((provider) => provider.id === defaultProviderId.value)
   return target?.name || defaultProviderId.value || '未配置'
+}
+
+function applyEmbeddingConfig(payload = {}) {
+  embeddingConfig.base_url = payload.base_url || ''
+  embeddingConfig.api_key = payload.api_key || ''
+  embeddingConfig.model = payload.model || ''
+  embeddingConfig.provider_id = payload.provider_id || ''
 }
 
 function modelOptionsForProvider(providerId) {
@@ -202,13 +218,14 @@ async function refreshAll() {
       throw new Error('请先在浏览器 localStorage 中设置 nukara_admin_username / nukara_admin_password')
     }
 
-    const [settingPayload, providerPayload] = await Promise.all([
+    const [settingPayload, providerPayload, embeddingPayload] = await Promise.all([
       listUserProviderSettings({
         q: searchQuery.value,
         limit: 100,
         offset: 0,
       }),
       listProviders().catch(() => []),
+      getEmbeddingConfig().catch(() => ({})),
     ])
 
     const fullProviders = Array.isArray(providerPayload) ? providerPayload : []
@@ -227,6 +244,7 @@ async function refreshAll() {
       defaultProviderId.value = providers.value.find((provider) => provider.is_active)?.id || providers.value[0]?.id || ''
     }
     defaultModel.value = settingPayload.default_model || ''
+    applyEmbeddingConfig(embeddingPayload)
     if (selectedSourceId.value && !providers.value.some((provider) => provider.id === selectedSourceId.value)) {
       selectedSourceId.value = ''
     }
@@ -405,6 +423,24 @@ async function runProviderMessageTest(provider) {
   }
 }
 
+async function saveEmbeddingSettings() {
+  if (embeddingSaving.value) {
+    return
+  }
+
+  embeddingSaving.value = true
+  errorMessage.value = ''
+  try {
+    const payload = await updateEmbeddingConfig(embeddingConfig)
+    applyEmbeddingConfig(payload)
+    statusMessage.value = 'Embedding 配置已保存。'
+  } catch (error) {
+    errorMessage.value = error.message
+  } finally {
+    embeddingSaving.value = false
+  }
+}
+
 async function testAndCreateProvider() {
   if (creatingProvider.value) {
     return
@@ -568,6 +604,37 @@ onMounted(() => {
             <div class="kv-row">
               <span>Model</span>
               <strong>{{ activeProviderModel }}</strong>
+            </div>
+          </div>
+
+          <div class="embedding-config-card">
+            <p class="panel-eyebrow">全局 Embedding Config</p>
+            <p class="panel-desc">默认所有用户 / Bot 共用这一套 embedding 模型，仅用于记忆检索，不影响聊天回复模型。这里填写到 <strong>/v1</strong> 即可，实际请求会自动走 <strong>/embeddings</strong>。</p>
+            <label class="mini-form-field">
+              <span>Embedding Base URL</span>
+              <input v-model.trim="embeddingConfig.base_url" placeholder="https://router.tumuer.me/v1" />
+            </label>
+            <label class="mini-form-field">
+              <span>Embedding API Key</span>
+              <input v-model.trim="embeddingConfig.api_key" type="password" placeholder="sk-..." />
+            </label>
+            <label class="mini-form-field">
+              <span>Embedding Model</span>
+              <input v-model.trim="embeddingConfig.model" placeholder="Qwen/Qwen3-Embedding-4B" />
+            </label>
+            <label class="mini-form-field">
+              <span>未配置专用 URL/Key 时的回退 Provider（可选）</span>
+              <select v-model="embeddingConfig.provider_id">
+                <option value="">不指定</option>
+                <option v-for="provider in providers" :key="provider.id" :value="provider.id">
+                  {{ provider.name }}
+                </option>
+              </select>
+            </label>
+            <div class="create-actions">
+              <button type="button" :disabled="embeddingSaving" @click="saveEmbeddingSettings">
+                {{ embeddingSaving ? '保存中...' : '保存全局 Embedding 配置' }}
+              </button>
             </div>
           </div>
 

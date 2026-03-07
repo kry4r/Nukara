@@ -71,3 +71,34 @@ func TestResolveEmbeddingRouteUsesEmbeddingSettings(t *testing.T) {
 		t.Fatalf("base url = %s", route.BaseURL)
 	}
 }
+
+func TestResolveEmbeddingRoutePrefersDedicatedEmbeddingConfig(t *testing.T) {
+	router := NewRouter(resolverStoreStub{
+		providers: []store.Provider{
+			{ID: "chat_default", BaseURL: "https://chat.local/v1", APIKey: "chat-key", Models: []string{"chat-model"}, IsActive: true, Priority: 1},
+			{ID: "embed_provider", BaseURL: "https://embed.local/v1", APIKey: "embed-key", Models: []string{"embed-model-fallback"}, IsActive: false, Priority: 2},
+		},
+		systemSettings: map[string]string{
+			"default_chat_provider_id": "chat_default",
+			"default_chat_model":       "chat-model",
+			"embedding_provider_id":    "embed_provider",
+			"embedding_model":          "text-embedding-3-small",
+			"embedding_base_url":       "https://embed-small.local/v1",
+			"embedding_api_key":        "embed-small-key",
+		},
+	})
+
+	route, err := router.ResolveEmbeddingRoute()
+	if err != nil {
+		t.Fatalf("ResolveEmbeddingRoute failed: %v", err)
+	}
+	if route.BaseURL != "https://embed-small.local/v1" {
+		t.Fatalf("base url = %s", route.BaseURL)
+	}
+	if route.APIKey != "embed-small-key" {
+		t.Fatalf("api key = %s", route.APIKey)
+	}
+	if route.Model != "text-embedding-3-small" {
+		t.Fatalf("model = %s", route.Model)
+	}
+}

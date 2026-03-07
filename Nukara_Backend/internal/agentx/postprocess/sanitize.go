@@ -18,6 +18,7 @@ var startMarkers = []string{
 	"[memory:",
 	"[internal:",
 	"[debug:",
+	MessageBoundaryToken,
 }
 
 type StreamSanitizer struct {
@@ -83,6 +84,8 @@ func (s *StreamSanitizer) Push(delta string) string {
 				return out.String()
 			}
 			i += len(marker) + end + 1
+		case MessageBoundaryToken:
+			i += len(marker)
 		default:
 			out.WriteByte(input[i])
 			i++
@@ -97,7 +100,8 @@ func SanitizeVisible(text string) string {
 	}
 	withoutThink := thinkBlockRe.ReplaceAllString(text, "")
 	withoutTags := hiddenTagRe.ReplaceAllString(withoutThink, "")
-	lines := strings.Split(withoutTags, "\n")
+	withoutProtocol := strings.ReplaceAll(withoutTags, MessageBoundaryToken, "")
+	lines := strings.Split(withoutProtocol, "\n")
 	cleaned := make([]string, 0, len(lines))
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)

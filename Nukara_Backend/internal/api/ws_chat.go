@@ -74,6 +74,11 @@ func (s *Server) handleWSChat(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
+		if _, exists := s.store.FindUserByID(userID); !exists {
+			_ = conn.WriteJSON(map[string]any{"type": "error", "message": "session invalidated"})
+			return
+		}
+
 		switch strings.TrimSpace(msg.Type) {
 		case "message":
 			s.handleWSChatMessage(userID, msg, aggregator)
@@ -234,16 +239,19 @@ func (s *Server) processQueuedTurn(turn queuedTurn) {
 
 	persistedSegments := make([]string, 0, len(finalTurn.Segments))
 	for _, segment := range finalTurn.Segments {
-		safeText := postprocess.SanitizeVisible(segment.Text)
-		for _, split := range postprocess.SplitSegments(safeText, 80) {
+		for _, split := range postprocess.SplitSegments(segment.Text, 80) {
+			safeText := postprocess.SanitizeVisible(split)
+			if strings.TrimSpace(safeText) == "" {
+				continue
+			}
 			msg, _ := s.store.SaveMessage(turn.UserID, store.Message{
 				ConversationID: turn.Conversation.ID,
 				SenderType:     "bot",
 				ContentType:    "text",
-				Content:        store.MessageContent{Type: "text", Text: split},
+				Content:        store.MessageContent{Type: "text", Text: safeText},
 				EmotionTag:     segment.EmotionTag,
 			})
-			persistedSegments = append(persistedSegments, split)
+			persistedSegments = append(persistedSegments, safeText)
 			payload := wsMessageEvent(msg)
 			payload["reply_id"] = replyID
 			s.wsHub.publishToUser(turn.UserID, payload)

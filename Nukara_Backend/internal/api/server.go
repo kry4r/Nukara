@@ -1070,6 +1070,10 @@ func (s *Server) authUserID(w http.ResponseWriter, r *http.Request) (string, boo
 		respondJSON(w, http.StatusUnauthorized, map[string]any{"error": "invalid token"})
 		return "", false
 	}
+	if _, exists := s.store.FindUserByID(userID); !exists {
+		respondJSON(w, http.StatusUnauthorized, map[string]any{"error": "session invalidated"})
+		return "", false
+	}
 	return userID, true
 }
 

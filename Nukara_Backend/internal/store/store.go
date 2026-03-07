@@ -331,6 +331,8 @@ func NewStore() *Store {
 	s.systemSettings["default_chat_model"] = "MiniMax-M2.5"
 	s.systemSettings["embedding_provider_id"] = "minimax_m2_5"
 	s.systemSettings["embedding_model"] = "MiniMax-M2.5"
+	s.systemSettings["embedding_base_url"] = ""
+	s.systemSettings["embedding_api_key"] = ""
 
 	return s
 }

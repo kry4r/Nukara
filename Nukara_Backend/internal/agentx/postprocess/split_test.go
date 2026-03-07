@@ -29,14 +29,12 @@ func TestSplitSegmentsSplitLongTextByMaxRunes(t *testing.T) {
 	}
 }
 
-func TestSplitSegmentsPrefersChatLikePausesForLongSentence(t *testing.T) {
+func TestSplitSegmentsKeepsNaturalSingleReplyWithoutExplicitBoundary(t *testing.T) {
 	text := "今晚就别想事儿了，关掉手机，泡个热水脚，然后窝沙发上听首轻音乐，10分钟后你准能放松下来。"
+	want := []string{"今晚就别想事儿了，关掉手机，泡个热水脚，然后窝沙发上听首轻音乐，10分钟后你准能放松下来。"}
 	got := SplitSegments(text, 80)
-	if len(got) < 3 {
-		t.Fatalf("expected long sentence to split into chat-like chunks, got %#v", got)
-	}
-	if got[0] != "今晚就别想事儿了，" {
-		t.Fatalf("first segment mismatch: %#v", got)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("SplitSegments() = %#v, want %#v", got, want)
 	}
 }
 
@@ -66,4 +64,3 @@ func TestSplitSegmentsKeepsShortReplySingleMessage(t *testing.T) {
 		t.Fatalf("SplitSegments() = %#v, want %#v", got, want)
 	}
 }
-

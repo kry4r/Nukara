@@ -39,8 +39,9 @@ func (e *OpenAICompatEmbedder) Embed(ctx context.Context, input string) ([]float
 		return nil, nil
 	}
 	payload := map[string]any{
-		"model": model,
-		"input": input,
+		"model":           model,
+		"input":           input,
+		"encoding_format": "float",
 	}
 	raw, err := json.Marshal(payload)
 	if err != nil {
