@@ -21,7 +21,9 @@ export const useChatStore = defineStore('chat', () => {
 
   let wsSend = null
 
-  function setWsSend(fn) { wsSend = fn }
+  function setWsSend(fn) {
+    wsSend = typeof fn === 'function' ? fn : null
+  }
 
   function sanitizeDisplayText(input) {
     if (typeof input !== 'string') return ''
@@ -50,6 +52,22 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
+  function isActiveConversation(convId) {
+    return Boolean(convId) && convId === conversationId.value
+  }
+
+  async function markConversationRead(targetConversationId = conversationId.value) {
+    const convId = String(targetConversationId || '').trim()
+    if (!convId) {
+      return
+    }
+    const convStore = useConversationsStore()
+    convStore.markConversationReadLocal(convId)
+    try {
+      await api.post(`/api/v1/conversations/${convId}/mark-read`)
+    } catch (_) {}
+  }
+
   async function loadMessages(convId) {
     conversationId.value = convId
     isLoading.value = true
@@ -59,6 +77,7 @@ export const useChatStore = defineStore('chat', () => {
         `/api/v1/conversations/${convId}/messages?limit=50`
       )
       messages.value = Array.isArray(data) ? data.map(sanitizeIncomingMessage) : []
+      await markConversationRead(convId)
     } catch (_) {}
     isLoading.value = false
   }
@@ -68,7 +87,6 @@ export const useChatStore = defineStore('chat', () => {
     errorBanner.value = ''
     const clientMsgId = 'c_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8)
 
-    // Optimistic update
     const draft = {
       id: clientMsgId,
       conversation_id: conversationId.value,
@@ -79,7 +97,6 @@ export const useChatStore = defineStore('chat', () => {
     }
     messages.value.push(draft)
 
-    // Try WebSocket first
     const sent = wsSend && wsSend({
       type: 'message',
       conversation_id: conversationId.value,
@@ -87,7 +104,6 @@ export const useChatStore = defineStore('chat', () => {
       content: { type: 'text', text },
     })
 
-    // Fallback to HTTP
     if (!sent) {
       try {
         const data = await api.post(
@@ -98,13 +114,12 @@ export const useChatStore = defineStore('chat', () => {
         if (data.bot_message) handleMessage(data.bot_message)
         if (data.bot_status_update) handleBotStatusUpdate(data.bot_status_update)
       } catch (error) {
-        const msg = messages.value.find(m => m.id === clientMsgId)
+        const msg = messages.value.find((m) => m.id === clientMsgId)
         if (msg) msg.status = 'failed'
         errorBanner.value = error?.message || '消息发送失败，请稍后重试。'
       }
     }
 
-    // Sync conversation list
     const convStore = useConversationsStore()
     convStore.updateConversation(conversationId.value, {
       last_message: text,
@@ -122,7 +137,7 @@ export const useChatStore = defineStore('chat', () => {
 
   function handleAck(data) {
     const msg = messages.value.find(
-      m => m.id === data.client_msg_id || m.id === data.client_message_id
+      (m) => m.id === data.client_msg_id || m.id === data.client_message_id
     )
     if (msg) {
       msg.id = data.server_msg_id || data.server_message_id || msg.id
@@ -143,7 +158,7 @@ export const useChatStore = defineStore('chat', () => {
     isRemoteTyping.value = true
     const draftId = `stream-${replyId}`
     streamDraftByReply.value[replyId] = draftId
-    if (!messages.value.some(m => m.id === draftId)) {
+    if (!messages.value.some((m) => m.id === draftId)) {
       messages.value.push({
         id: draftId,
         conversation_id: data.conversation_id,
@@ -160,7 +175,7 @@ export const useChatStore = defineStore('chat', () => {
     const replyId = data.reply_id
     const draftId = streamDraftByReply.value[replyId]
     if (!draftId) return
-    const draft = messages.value.find(m => m.id === draftId)
+    const draft = messages.value.find((m) => m.id === draftId)
     if (!draft) return
     const delta = sanitizeDisplayText(data.delta || '')
     if (!delta) return
@@ -174,7 +189,7 @@ export const useChatStore = defineStore('chat', () => {
     const replyId = data.reply_id
     const draftId = streamDraftByReply.value[replyId]
     if (!draftId) return
-    const draft = messages.value.find(m => m.id === draftId)
+    const draft = messages.value.find((m) => m.id === draftId)
     if (draft) {
       draft.is_streaming = false
     }
@@ -190,29 +205,62 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
+  function syncConversationPreview(normalized) {
+    const targetConversationId = normalized.conversation_id || conversationId.value
+    const isBotMessage = normalized.sender_type === 'bot' || !normalized.sender_type
+    if (!targetConversationId || !isBotMessage) {
+      return
+    }
+    const convStore = useConversationsStore()
+    const isActive = isActiveConversation(targetConversationId)
+    void convStore.applyIncomingPreview(
+      {
+        ...normalized,
+        conversation_id: targetConversationId,
+      },
+      {
+        incrementUnread: !isActive,
+        markRead: isActive,
+      }
+    )
+    if (isActive) {
+      void markConversationRead(targetConversationId)
+    }
+  }
+
   function handleMessage(data) {
-    const replyId = data.reply_id
+    const normalized = sanitizeIncomingMessage(data)
+    const targetConversationId = normalized.conversation_id || conversationId.value
+    const isBotMessage = normalized.sender_type === 'bot' || !normalized.sender_type
+    if (isBotMessage && !normalized.content?.text) {
+      return
+    }
+
+    syncConversationPreview({
+      ...normalized,
+      conversation_id: targetConversationId,
+    })
+
+    if (!isActiveConversation(targetConversationId)) {
+      return
+    }
+
+    const replyId = normalized.reply_id
     const draftId = replyId ? streamDraftByReply.value[replyId] : ''
     if (draftId) {
-      const idx = messages.value.findIndex(m => m.id === draftId)
+      const idx = messages.value.findIndex((m) => m.id === draftId)
       if (idx >= 0) {
         messages.value.splice(idx, 1)
       }
       delete streamDraftByReply.value[replyId]
     }
 
-    // Deduplicate
-    const msgId = data.msg_id || data.id
-    if (messages.value.some(m => m.id === msgId)) return
-
-    const normalized = sanitizeIncomingMessage(data)
-    if ((normalized.sender_type === 'bot' || !normalized.sender_type) && !normalized.content?.text) {
-      return
-    }
+    const msgId = normalized.msg_id || normalized.id
+    if (messages.value.some((m) => m.id === msgId)) return
 
     messages.value.push({
       id: msgId,
-      conversation_id: normalized.conversation_id || conversationId.value,
+      conversation_id: targetConversationId,
       sender_type: normalized.sender_type || 'bot',
       content: normalized.content,
       emotion_tag: normalized.emotion_tag,
@@ -222,31 +270,18 @@ export const useChatStore = defineStore('chat', () => {
       created_at: normalized.created_at,
     })
 
-    // Track reply group progress
     if (normalized.reply_group_id && activeReplyGroups.value[normalized.reply_group_id]) {
       activeReplyGroups.value[normalized.reply_group_id].received++
-    }
-
-    // Sync conversation list
-    if (normalized.sender_type === 'bot' || !normalized.sender_type) {
-      const convStore = useConversationsStore()
-      convStore.updateConversation(
-        normalized.conversation_id || conversationId.value,
-        {
-          last_message: normalized.content?.text || '',
-          last_message_at: normalized.created_at,
-        }
-      )
     }
   }
 
   function handleMultiReplyEnd(data) {
-    if (data.conversation_id === conversationId.value) {
-      isRemoteTyping.value = false
-      delete activeReplyGroups.value[data.reply_group_id]
+    if (!isActiveConversation(data.conversation_id)) {
+      return
     }
-    // Mark read
-    api.post(`/api/v1/conversations/${conversationId.value}/mark-read`).catch(() => {})
+    isRemoteTyping.value = false
+    delete activeReplyGroups.value[data.reply_group_id]
+    void markConversationRead(data.conversation_id)
   }
 
   function handleBotStatusUpdate(data) {
@@ -263,12 +298,6 @@ export const useChatStore = defineStore('chat', () => {
       ...data,
       sender_type: 'bot',
       is_proactive: true,
-    })
-    const convStore = useConversationsStore()
-    convStore.updateConversation(data.conversation_id, {
-      last_message: data.content?.text || '',
-      last_message_at: resolveMessageTimestamp(data, Date.now()),
-      is_proactive_message: true,
     })
   }
 
@@ -304,14 +333,33 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   return {
-    conversationId, botName, botStatus,
-    messages, inputText, isRemoteTyping,
-    isLoading, errorBanner, activeReplyGroups, personaUpdate,
-    setWsSend, loadMessages, sendMessage, sendTyping, clear,
-    handleAck, handleTyping,
-    handleStreamStart, handleStreamChunk, handleStreamEnd,
-    handleMultiReplyStart, handleMessage,
-    handleMultiReplyEnd, handleBotStatusUpdate,
-    handleProactiveMessage, handleError, handleBotPersonaUpdated,
+    conversationId,
+    botName,
+    botStatus,
+    messages,
+    inputText,
+    isRemoteTyping,
+    isLoading,
+    errorBanner,
+    activeReplyGroups,
+    personaUpdate,
+    setWsSend,
+    loadMessages,
+    sendMessage,
+    sendTyping,
+    clear,
+    markConversationRead,
+    handleAck,
+    handleTyping,
+    handleStreamStart,
+    handleStreamChunk,
+    handleStreamEnd,
+    handleMultiReplyStart,
+    handleMessage,
+    handleMultiReplyEnd,
+    handleBotStatusUpdate,
+    handleProactiveMessage,
+    handleError,
+    handleBotPersonaUpdated,
   }
 })

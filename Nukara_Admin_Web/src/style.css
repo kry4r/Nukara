@@ -180,7 +180,9 @@ select {
 .provider-list-card {
   gap: 12px;
   max-height: calc(100vh - 40px);
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding-right: 6px;
 }
 
 .provider-list-header {

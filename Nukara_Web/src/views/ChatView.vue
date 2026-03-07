@@ -3,7 +3,7 @@ import { ref, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useChatStore } from '../stores/chat'
 import { useConversationsStore } from '../stores/conversations'
-import { useWebSocket } from '../composables/useWebSocket'
+import { useRealtimeStore } from '../stores/realtime'
 import MessageBubble from '../components/MessageBubble.vue'
 import MessageInput from '../components/MessageInput.vue'
 import TypingIndicator from '../components/TypingIndicator.vue'
@@ -13,47 +13,24 @@ const route = useRoute()
 const router = useRouter()
 const chat = useChatStore()
 const convStore = useConversationsStore()
-const ws = useWebSocket()
+const realtime = useRealtimeStore()
 
 const listEl = ref(null)
 const convId = route.params.convId
 const nearBottomThreshold = 120
 
-// Find conversation info
-const conv = convStore.list.find(c => c.id === convId)
+const conv = convStore.list.find((item) => item.id === convId)
 if (conv) {
   chat.botName = conv.bot_name || conv.name || 'Bot'
 }
 
-// Wire WS events to chat store handlers
-ws.on('ack', chat.handleAck)
-ws.on('typing', chat.handleTyping)
-ws.on('stream_start', chat.handleStreamStart)
-ws.on('stream_chunk', chat.handleStreamChunk)
-ws.on('stream_end', chat.handleStreamEnd)
-ws.on('multi_reply_start', chat.handleMultiReplyStart)
-ws.on('message', chat.handleMessage)
-ws.on('multi_reply_end', chat.handleMultiReplyEnd)
-ws.on('bot_status_update', chat.handleBotStatusUpdate)
-ws.on('proactive_message', chat.handleProactiveMessage)
-ws.on('error', chat.handleError)
-ws.on('connection_error', chat.handleError)
-ws.on('bot_persona_updated', chat.handleBotPersonaUpdated)
-
-chat.setWsSend(ws.send)
-
 onMounted(async () => {
-  const token = localStorage.getItem('nukara_token')
-  const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
-  const wsUrl = `${protocol}//${location.host}/ws/chat?token=${token}&conversation_id=${convId}`
-  ws.connect(wsUrl)
   await chat.loadMessages(convId)
   scrollToBottom(true)
 })
 
 onUnmounted(() => {
   chat.sendTyping(false)
-  ws.disconnect()
   chat.clear()
 })
 
@@ -103,7 +80,7 @@ function goBack() {
         <span class="bot-name">{{ chat.botName }}</span>
         <BotStatusBadge :emoji="chat.botStatus.emoji" :text="chat.botStatus.text" />
       </div>
-      <span class="ws-dot" :class="{ online: ws.isConnected.value }" aria-hidden="true"></span>
+      <span class="ws-dot" :class="{ online: realtime.isConnected }" aria-hidden="true"></span>
     </header>
 
     <main ref="listEl" class="message-list" aria-label="聊天消息列表">
