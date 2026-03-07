@@ -894,6 +894,46 @@ prepare_sources() {
   log "Source code ready at $INSTALL_DIR"
 }
 
+file_hash() {
+  local file="$1"
+  if [ ! -f "$file" ]; then
+    printf '\n'
+    return 0
+  fi
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$file" | awk '{print $1}'
+    return 0
+  fi
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$file" | awk '{print $1}'
+    return 0
+  fi
+  err "sha256sum/shasum not found; unable to hash $file"
+}
+
+ensure_npm_dependencies() {
+  local app_dir="$1"
+  local label="$2"
+  local manifest_hash
+  local stamp_file="$app_dir/node_modules/.nukara-deps.hash"
+
+  if [ -f "$app_dir/package-lock.json" ]; then
+    manifest_hash="$(file_hash "$app_dir/package-lock.json")"
+  else
+    manifest_hash="$(file_hash "$app_dir/package.json")"
+  fi
+
+  if [ -d "$app_dir/node_modules" ] && [ -f "$stamp_file" ] && [ "$(cat "$stamp_file")" = "$manifest_hash" ]; then
+    log "Reusing existing ${label} node_modules"
+    return 0
+  fi
+
+  log "Installing ${label} dependencies..."
+  npm ci --registry https://registry.npmmirror.com
+  mkdir -p "$app_dir/node_modules"
+  printf '%s\n' "$manifest_hash" > "$stamp_file"
+}
+
 # --- Build all services ---
 build_services() {
   log "Building services..."
@@ -919,13 +959,13 @@ build_services() {
   if [ "$REBUILD_WEB" = true ]; then
     cd "$INSTALL_DIR/Nukara_Web"
     log "Building frontend..."
-    npm ci --registry https://registry.npmmirror.com
+    ensure_npm_dependencies "$INSTALL_DIR/Nukara_Web" "frontend"
     npm run build
     [ -f "$INSTALL_DIR/Nukara_Web/dist/index.html" ] || err "Frontend build output missing: $INSTALL_DIR/Nukara_Web/dist/index.html"
 
     cd "$INSTALL_DIR/Nukara_Admin_Web"
     log "Building admin web..."
-    npm ci --registry https://registry.npmmirror.com
+    ensure_npm_dependencies "$INSTALL_DIR/Nukara_Admin_Web" "admin web"
     npm run build
     [ -f "$INSTALL_DIR/Nukara_Admin_Web/dist/index.html" ] || err "Admin frontend build output missing: $INSTALL_DIR/Nukara_Admin_Web/dist/index.html"
   else
@@ -1185,11 +1225,10 @@ main() {
     log "Running in incremental deployment mode"
     detect_changes
 
-    # No-change is no longer an early-exit condition:
-    # clean deployment is enforced every run.
     if [ "$REBUILD_BACKEND" = false ] && \
        [ "$REBUILD_WEB" = false ] && [ "$RELOAD_CONFIG" = false ]; then
-      log "No source changes detected, but clean deploy is enforced; continuing."
+      log "No source or config changes detected; skipping deploy."
+      exit 0
     fi
   else
     # Full deployment mode
@@ -1209,13 +1248,17 @@ main() {
     fi
   fi
 
-  # Lock deployment source before cleanup, then clear /opt residue and rebuild.
+  # Lock deployment source before syncing. Only wipe the install dir for explicit clean/reset flows.
   lock_deploy_source
-  cleanup_install_residue
-  REBUILD_BACKEND=true
-  REBUILD_WEB=true
-  RELOAD_CONFIG=true
-  log "Forced full rebuild after residue cleanup"
+  if [ "$FORCE_CLEAN" = true ] || [ "$RESET_DATA" = true ]; then
+    cleanup_install_residue
+    REBUILD_BACKEND=true
+    REBUILD_WEB=true
+    RELOAD_CONFIG=true
+    log "Forced full rebuild after requested cleanup"
+  else
+    log "Preserving existing installation while preparing new build artifacts"
+  fi
 
   install_deps
   if [ "$RESET_DATA" = true ]; then

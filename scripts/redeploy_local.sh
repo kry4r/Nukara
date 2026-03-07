@@ -4,14 +4,31 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DEPLOY_SCRIPT="$ROOT_DIR/deploy/deploy-local.sh"
 
-args=(--force-clean --reset-data --non-interactive "$@")
+args=("$@")
 needs_root=true
+has_mode=false
+has_non_interactive=false
+
 for arg in "$@"; do
-  if [ "$arg" = "--dry-run" ]; then
-    needs_root=false
-    break
-  fi
+  case "$arg" in
+    --dry-run)
+      needs_root=false
+      ;;
+    --incremental|--full)
+      has_mode=true
+      ;;
+    --non-interactive)
+      has_non_interactive=true
+      ;;
+  esac
 done
+
+if [ "$has_mode" = false ]; then
+  args=(--incremental "${args[@]}")
+fi
+if [ "$has_non_interactive" = false ]; then
+  args=(--non-interactive "${args[@]}")
+fi
 
 cd "$ROOT_DIR"
 

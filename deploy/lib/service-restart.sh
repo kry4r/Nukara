@@ -70,12 +70,12 @@ reload_nginx() {
 restart_services() {
   local any_restart=false
 
-  if [ "$REBUILD_BACKEND" = true ]; then
+  if [ "$REBUILD_BACKEND" = true ] || [ "$RELOAD_CONFIG" = true ]; then
     restart_backend_services
     any_restart=true
   fi
 
-  if [ "$REBUILD_WEB" = true ]; then
+  if [ "$REBUILD_WEB" = true ] || [ "$RELOAD_CONFIG" = true ]; then
     reload_nginx
     any_restart=true
   fi
