@@ -12,6 +12,7 @@ sudo bash deploy/deploy-local.sh --force-clean
 - `--full`：强制全量重建
 - `--dry-run`：仅检测变更，不执行部署
 - `--force-clean`：部署前停止旧服务并清理关键端口
+- `--reset-data`：部署前清空 Nukara 的 PostgreSQL / Redis / Qdrant / Neo4j 应用数据
 - `--non-interactive`：不走交互输入，直接使用环境变量或 `deploy/.env`
 
 非交互示例：
@@ -20,6 +21,12 @@ sudo bash deploy/deploy-local.sh --force-clean
 export LLM_API_KEY=your-key
 export NUKARA_ADMIN_PASSWORD=your-admin-password
 sudo bash deploy/deploy-local.sh --force-clean --non-interactive
+
+# 清空原有 Nukara 数据后重建
+sudo bash deploy/deploy-local.sh --reset-data
+
+# 非交互模式下清空原有数据并重建
+sudo bash deploy/deploy-local.sh --force-clean --reset-data --non-interactive
 ```
 
 核心端口：
@@ -47,13 +54,18 @@ sudo bash deploy/deploy-local.sh --dry-run
 
 # 部署前清理旧服务 + 端口
 sudo bash deploy/deploy-local.sh --force-clean
+
+# 先清空 Nukara 数据，再重建服务
+sudo bash deploy/deploy-local.sh --reset-data
 ```
 
 ### 数据持久化保证
 
-- **PostgreSQL**: 数据库不会被删除或重置
-- **Redis**: 缓存数据保持不变
+- 默认情况下：**PostgreSQL** 数据库不会被删除或重置
+- 默认情况下：**Redis** 缓存数据保持不变
+- 默认情况下：**Qdrant / Neo4j** 记忆数据保持不变
 - **文件存储**: `/opt/nukara/data/uploads/` 中的用户文件保持不变
+- 若显式传入 `--reset-data`：会重建 `nukara` PostgreSQL 数据库、删除 Redis `nukara:*` 键、删除配置中的 Qdrant collection，并清空配置中的 Neo4j 数据库图数据
 
 ### 变更检测逻辑
 
@@ -132,6 +144,23 @@ sudo bash deploy/deploy-local.sh --force-clean
 
 - 该操作会中断当前在线流量，请在维护窗口执行。
 - 非 `--dry-run` 下会直接终止占用目标端口的旧进程。
+
+## 清空应用数据（Reset Data）
+
+`--reset-data` 会在本地原生部署前清空 Nukara 的应用级数据，然后继续完整重建流程。
+
+具体包括：
+
+- 重建 PostgreSQL `nukara` 数据库
+- 删除 Redis 中匹配 `nukara:*` 的键
+- 删除 `NUKARA_QDRANT_COLLECTION` 对应的 Qdrant collection
+- 清空 `NUKARA_NEO4J_DATABASE` 中的图数据
+
+安全行为：
+
+- 交互模式下需要手动输入 `RESET` 确认
+- `--non-interactive` 下不会再二次确认，请谨慎使用
+- `--dry-run --reset-data` 只打印将执行的清理动作，不实际删除数据
 
 ### 部署状态
 
