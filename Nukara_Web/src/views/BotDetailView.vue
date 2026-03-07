@@ -199,8 +199,10 @@ onMounted(async () => {
 <style scoped>
 .detail-page {
   flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
   background: var(--bg-page);
 }
 
@@ -241,7 +243,9 @@ onMounted(async () => {
 
 .detail-main {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
   padding: 14px 14px calc(14px + 76px);
   display: flex;
   flex-direction: column;

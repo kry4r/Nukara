@@ -23,7 +23,9 @@ watch(() => auth.token, (token) => {
   <div id="stage">
     <div class="phone-shell">
       <div id="app-root">
-        <router-view />
+        <div class="app-content">
+          <router-view />
+        </div>
         <NavBar v-if="showNav()" />
       </div>
     </div>

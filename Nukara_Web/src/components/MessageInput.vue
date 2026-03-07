@@ -116,9 +116,9 @@ onBeforeUnmount(() => {
 }
 
 .input-shell:focus-within {
-  border-color: #7fa860;
-  background: rgba(255, 255, 255, 0.96);
-  box-shadow: 0 0 0 3px rgba(127, 168, 96, 0.18);
+  border-color: #d9e2cb;
+  background: rgba(255, 255, 255, 0.82);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.85);
 }
 
 .input-bar input {
@@ -126,7 +126,7 @@ onBeforeUnmount(() => {
   min-width: 0;
   padding: 8px 0;
   border: 0;
-  font-size: 14px;
+  font-size: 16px;
   color: var(--text-primary);
   background: transparent;
   outline: none;

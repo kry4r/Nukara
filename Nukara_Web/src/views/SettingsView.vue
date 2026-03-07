@@ -126,9 +126,11 @@ function handleLogout() {
 <style scoped>
 .settings-page {
   flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   gap: var(--spacing-lg);
+  overflow: hidden;
   background: linear-gradient(180deg, #f8faef 0%, #f2f6ea 68%, #edf2e2 100%);
   padding: var(--spacing-xl) var(--spacing-lg) calc(var(--spacing-xl) + 76px);
 }
@@ -161,7 +163,9 @@ function handleLogout() {
 
 .settings-body {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
   display: flex;
   flex-direction: column;
   gap: var(--spacing-md);
