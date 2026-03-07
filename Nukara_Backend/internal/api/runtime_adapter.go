@@ -59,8 +59,9 @@ func (s *Server) runRuntimeChatText(ctx context.Context, userID, botID, conversa
 }
 
 func (s *Server) runRuntimeProactive(ctx context.Context, userID, botID, conversationID, trigger string, systemContext map[string]any) (string, string, string, string, error) {
-	prompt := proactivePrompt(trigger, systemContext)
-	return s.runRuntimeChatText(ctx, userID, botID, conversationID, prompt, systemContext)
+	enrichedContext := enrichLocaleSystemContext(systemContext, time.Now().UTC())
+	prompt := proactivePrompt(trigger, enrichedContext)
+	return s.runRuntimeChatText(ctx, userID, botID, conversationID, prompt, enrichedContext)
 }
 
 func proactivePrompt(trigger string, systemContext map[string]any) string {
@@ -73,6 +74,17 @@ func proactivePrompt(trigger string, systemContext map[string]any) string {
 	}
 	if since, ok := systemContext["time_since_last_user_message"].(string); ok && strings.TrimSpace(since) != "" {
 		hints = append(hints, fmt.Sprintf("距上次用户消息：%s", strings.TrimSpace(since)))
+	}
+	if localTime, ok := systemContext["local_time"].(string); ok && strings.TrimSpace(localTime) != "" {
+		localHint := fmt.Sprintf("角色当地时间：%s", strings.TrimSpace(localTime))
+		if timezone, ok := systemContext["local_timezone"].(string); ok && strings.TrimSpace(timezone) != "" {
+			localHint += "（" + strings.TrimSpace(timezone)
+			if dayPhase, ok := systemContext["day_phase"].(string); ok && strings.TrimSpace(dayPhase) != "" {
+				localHint += "，" + strings.TrimSpace(dayPhase)
+			}
+			localHint += "）"
+		}
+		hints = append(hints, localHint)
 	}
 
 	contextHint := ""

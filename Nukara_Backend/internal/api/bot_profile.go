@@ -18,13 +18,11 @@ const (
 )
 
 type iterateAdds struct {
-	Relationship      string   `json:"relationship"`
-	Role              string   `json:"role"`
-	SelfCognitionAdds []string `json:"self_cognition_adds"`
-	SpeakingStyleAdds []string `json:"speaking_style_adds"`
-	BackgroundAdds    []string `json:"background_adds"`
-	TraitAdds         []string `json:"trait_adds"`
-	Gender            string   `json:"gender"`
+	IdentityAdds             []string `json:"identity_adds"`
+	PersonalityAdds          []string `json:"personality_adds"`
+	ExpressionStyleAdds      []string `json:"expression_style_adds"`
+	LifeContextAdds          []string `json:"life_context_adds"`
+	TaboosAndPreferencesAdds []string `json:"taboos_and_preferences_adds"`
 }
 
 func (s *Server) handleBotProfile(w http.ResponseWriter, r *http.Request, userID, botID string) {
@@ -155,34 +153,27 @@ func (s *Server) handleBotIterate(w http.ResponseWriter, r *http.Request, userID
 
 	adds := parseIterateAdds(raw)
 
-	relationship := firstNonEmpty(adds.Relationship, bot.Relationship)
-	role := firstNonEmpty(adds.Role, strings.Join(adds.BackgroundAdds, "|"), bot.Role, bot.Background)
-	speaking := strings.Join(appendUnique(splitPipe(bot.SpeakingStyle), adds.SpeakingStyleAdds, 10), "|")
-	traits := appendUnique(bot.Traits, adds.TraitAdds, 10)
-	selfCognition := appendUnique(bot.SelfCognition, adds.SelfCognitionAdds, 10)
+	identity := appendTextAdds(bot.Identity, adds.IdentityAdds)
+	personality := appendUnique(bot.Personality, adds.PersonalityAdds, 10)
+	expressionStyle := appendTextAdds(bot.ExpressionStyle, adds.ExpressionStyleAdds)
+	lifeContext := appendTextAdds(bot.LifeContext, adds.LifeContextAdds)
+	taboos := appendTextAdds(bot.TaboosAndPreferences, adds.TaboosAndPreferencesAdds)
 	compiled := agentpersona.CompilePrompt(store.Bot{
-		Name:          bot.Name,
-		Relationship:  relationship,
-		Role:          role,
-		SelfCognition: selfCognition,
-		SpeakingStyle: speaking,
-		Traits:        traits,
-		Gender:        firstNonEmpty(adds.Gender, bot.Gender),
+		Name:                 bot.Name,
+		Identity:             identity,
+		Personality:          personality,
+		ExpressionStyle:      expressionStyle,
+		LifeContext:          lifeContext,
+		TaboosAndPreferences: taboos,
 	}, 420)
 
-	var genderPtr *string
-	if adds.Gender != "" {
-		gender := adds.Gender
-		genderPtr = &gender
-	}
 	updated, found := s.store.ApplyBotPersonaPatch(userID, botID, store.PersonaPatchInput{
-		Relationship:      relationship,
-		Role:              role,
-		SelfCognitionAdds: adds.SelfCognitionAdds,
-		SpeakingStyleAdds: adds.SpeakingStyleAdds,
-		TraitAdds:         adds.TraitAdds,
-		Gender:            genderPtr,
-		PersonaPrompt:     compiled,
+		IdentityAdds:             adds.IdentityAdds,
+		PersonalityAdds:          adds.PersonalityAdds,
+		ExpressionStyleAdds:      adds.ExpressionStyleAdds,
+		LifeContextAdds:          adds.LifeContextAdds,
+		TaboosAndPreferencesAdds: adds.TaboosAndPreferencesAdds,
+		PersonaPrompt:            compiled,
 	})
 	if !found {
 		respondJSON(w, http.StatusNotFound, map[string]any{"error": "bot not found"})
@@ -198,14 +189,12 @@ func (s *Server) handleBotIterate(w http.ResponseWriter, r *http.Request, userID
 	})
 
 	respondJSON(w, http.StatusOK, map[string]any{
-		"relationship":        adds.Relationship,
-		"role":                adds.Role,
-		"self_cognition_adds": adds.SelfCognitionAdds,
-		"speaking_style_adds": adds.SpeakingStyleAdds,
-		"background_adds":     adds.BackgroundAdds,
-		"trait_adds":          adds.TraitAdds,
-		"gender":              adds.Gender,
-		"bot":                 updated,
+		"identity_adds":               adds.IdentityAdds,
+		"personality_adds":            adds.PersonalityAdds,
+		"expression_style_adds":       adds.ExpressionStyleAdds,
+		"life_context_adds":           adds.LifeContextAdds,
+		"taboos_and_preferences_adds": adds.TaboosAndPreferencesAdds,
+		"bot":                         updated,
 	})
 }
 
@@ -214,11 +203,11 @@ func buildIteratePrompt(messages []store.Message) string {
 	sb.WriteString(`[system:bot_iterate]
 你要基于最近对话提出“角色自我迭代建议”。
 仅输出JSON，不要解释，不要代码块。JSON格式如下：
-{"relationship":"","role":"","self_cognition_adds":[],"speaking_style_adds":[],"background_adds":[],"trait_adds":[],"gender":""}
+{"identity_adds":[],"personality_adds":[],"expression_style_adds":[],"life_context_adds":[],"taboos_and_preferences_adds":[]}
 约束：
 - 每个数组最多5项，每项20字以内
 - 内容必须是可直接追加到人设的短语
-- gender 仅可为 female/male/unknown 或空字符串
+- 如果某一项没有新增，就返回空数组
 
 最近对话：
 `)
@@ -272,13 +261,11 @@ func parseIterateAdds(raw string) iterateAdds {
 	if err := json.Unmarshal([]byte(cleaned), &adds); err != nil {
 		return iterateAdds{}
 	}
-	adds.Relationship = strings.TrimSpace(adds.Relationship)
-	adds.Role = strings.TrimSpace(adds.Role)
-	adds.SelfCognitionAdds = normalizeAdds(adds.SelfCognitionAdds, 5, 40)
-	adds.SpeakingStyleAdds = normalizeAdds(adds.SpeakingStyleAdds, 5, 20)
-	adds.BackgroundAdds = normalizeAdds(adds.BackgroundAdds, 5, 20)
-	adds.TraitAdds = normalizeAdds(adds.TraitAdds, 5, 20)
-	adds.Gender = normalizeGender(adds.Gender)
+	adds.IdentityAdds = normalizeAdds(adds.IdentityAdds, 5, 40)
+	adds.PersonalityAdds = normalizeAdds(adds.PersonalityAdds, 5, 20)
+	adds.ExpressionStyleAdds = normalizeAdds(adds.ExpressionStyleAdds, 5, 20)
+	adds.LifeContextAdds = normalizeAdds(adds.LifeContextAdds, 5, 40)
+	adds.TaboosAndPreferencesAdds = normalizeAdds(adds.TaboosAndPreferencesAdds, 5, 40)
 	return adds
 }
 
@@ -360,15 +347,22 @@ func normalizeAdds(values []string, maxCount, maxLen int) []string {
 	return out
 }
 
-func normalizeGender(gender string) string {
-	switch strings.ToLower(strings.TrimSpace(gender)) {
-	case "female":
-		return "female"
-	case "male":
-		return "male"
-	case "unknown":
-		return "unknown"
-	default:
-		return ""
+func appendTextAdds(base string, adds []string) string {
+	parts := appendUnique(splitTextValues(base), adds, 10)
+	return strings.Join(parts, "；")
+}
+
+func splitTextValues(v string) []string {
+	if strings.TrimSpace(v) == "" {
+		return nil
 	}
+	parts := strings.FieldsFunc(v, func(r rune) bool {
+		switch r {
+		case '|', '；', ';', '\n':
+			return true
+		default:
+			return false
+		}
+	})
+	return appendUnique(nil, parts, 0)
 }

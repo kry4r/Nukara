@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -26,24 +27,87 @@ type SMSCode struct {
 }
 
 type Bot struct {
-	ID                  string    `json:"id"`
-	UserID              string    `json:"-"`
-	Name                string    `json:"name"`
-	Avatar              string    `json:"avatar,omitempty"`
-	AvatarBase64        string    `json:"avatar_base64,omitempty"`
-	Summary             string    `json:"summary"`
-	Relationship        string    `json:"relationship,omitempty"`
-	Role                string    `json:"role,omitempty"`
-	SelfCognition       []string  `json:"self_cognition,omitempty"`
-	PersonaPrompt       string    `json:"persona_prompt,omitempty"`
-	PersonaVersion      int       `json:"persona_version,omitempty"`
-	SpeakingStyle       string    `json:"speaking_style"`
-	Background          string    `json:"background"`
-	Traits              []string  `json:"traits"`
-	Gender              string    `json:"gender"`
-	ChatBackgroundStyle string    `json:"chat_background_style"`
-	CreatedAt           time.Time `json:"created_at"`
-	UpdatedAt           time.Time `json:"updated_at"`
+	ID                   string    `json:"id"`
+	UserID               string    `json:"-"`
+	Name                 string    `json:"name"`
+	Identity             string    `json:"identity"`
+	Personality          []string  `json:"personality"`
+	ExpressionStyle      string    `json:"expression_style"`
+	LifeContext          string    `json:"life_context"`
+	TaboosAndPreferences string    `json:"taboos_and_preferences"`
+	Avatar               string    `json:"avatar,omitempty"`
+	AvatarBase64         string    `json:"avatar_base64,omitempty"`
+	Summary              string    `json:"summary"`
+	Relationship         string    `json:"relationship,omitempty"`
+	Role                 string    `json:"role,omitempty"`
+	SelfCognition        []string  `json:"self_cognition,omitempty"`
+	PersonaPrompt        string    `json:"persona_prompt,omitempty"`
+	PersonaVersion       int       `json:"persona_version,omitempty"`
+	SpeakingStyle        string    `json:"speaking_style"`
+	Background           string    `json:"background"`
+	Traits               []string  `json:"traits"`
+	Gender               string    `json:"gender"`
+	ChatBackgroundStyle  string    `json:"chat_background_style"`
+	CreatedAt            time.Time `json:"created_at"`
+	UpdatedAt            time.Time `json:"updated_at"`
+}
+
+func DerivePersonaV2FromLegacy(bot Bot) Bot {
+	if strings.TrimSpace(bot.Identity) == "" {
+		bot.Identity = firstNonEmptyPersonaField(bot.Summary, bot.Relationship)
+	}
+	if len(bot.Personality) == 0 && len(bot.Traits) > 0 {
+		bot.Personality = append([]string(nil), bot.Traits...)
+	}
+	if strings.TrimSpace(bot.ExpressionStyle) == "" {
+		bot.ExpressionStyle = strings.TrimSpace(bot.SpeakingStyle)
+	}
+	if strings.TrimSpace(bot.LifeContext) == "" {
+		bot.LifeContext = firstNonEmptyPersonaField(bot.Background, bot.Role)
+	}
+	if strings.TrimSpace(bot.TaboosAndPreferences) == "" {
+		parts := make([]string, 0, len(bot.SelfCognition))
+		for _, value := range bot.SelfCognition {
+			value = strings.TrimSpace(value)
+			if value != "" {
+				parts = append(parts, value)
+			}
+		}
+		bot.TaboosAndPreferences = strings.Join(parts, "；")
+	}
+	return bot
+}
+
+func SyncLegacyPersonaFields(bot Bot) Bot {
+	bot = DerivePersonaV2FromLegacy(bot)
+	if strings.TrimSpace(bot.Identity) != "" {
+		bot.Summary = strings.TrimSpace(bot.Identity)
+		bot.Relationship = strings.TrimSpace(bot.Identity)
+	}
+	if strings.TrimSpace(bot.ExpressionStyle) != "" {
+		bot.SpeakingStyle = strings.TrimSpace(bot.ExpressionStyle)
+	}
+	if strings.TrimSpace(bot.LifeContext) != "" {
+		bot.Background = strings.TrimSpace(bot.LifeContext)
+		bot.Role = strings.TrimSpace(bot.LifeContext)
+	}
+	if len(bot.Personality) > 0 {
+		bot.Traits = append([]string(nil), bot.Personality...)
+	}
+	if strings.TrimSpace(bot.TaboosAndPreferences) != "" {
+		bot.SelfCognition = []string{strings.TrimSpace(bot.TaboosAndPreferences)}
+	}
+	return bot
+}
+
+func firstNonEmptyPersonaField(values ...string) string {
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 type BotState struct {
@@ -105,12 +169,42 @@ type DeviceToken struct {
 }
 
 type NotificationSettings struct {
-	UserID           string    `json:"user_id"`
-	ProactiveEnabled bool      `json:"proactive_enabled"`
-	DNDStart         string    `json:"dnd_start,omitempty"`
-	DNDEnd           string    `json:"dnd_end,omitempty"`
-	Frequency        string    `json:"frequency"`
-	UpdatedAt        time.Time `json:"updated_at"`
+	UserID                   string    `json:"user_id"`
+	ProactiveEnabled         bool      `json:"proactive_enabled"`
+	DNDStart                 string    `json:"dnd_start,omitempty"`
+	DNDEnd                   string    `json:"dnd_end,omitempty"`
+	ProactiveIntervalMinutes int       `json:"proactive_interval_minutes"`
+	Frequency                string    `json:"-"`
+	UpdatedAt                time.Time `json:"updated_at"`
+}
+
+const DefaultProactiveIntervalMinutes = 240
+
+func normalizeNotificationSettings(input NotificationSettings) NotificationSettings {
+	if input.ProactiveIntervalMinutes <= 0 {
+		input.ProactiveIntervalMinutes = proactiveIntervalMinutesFromFrequency(input.Frequency)
+	}
+	if input.ProactiveIntervalMinutes <= 0 {
+		input.ProactiveIntervalMinutes = DefaultProactiveIntervalMinutes
+	}
+	input.Frequency = strconv.Itoa(input.ProactiveIntervalMinutes)
+	return input
+}
+
+func proactiveIntervalMinutesFromFrequency(raw string) int {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "high":
+		return 120
+	case "normal":
+		return 240
+	case "low":
+		return 480
+	}
+	minutes, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || minutes <= 0 {
+		return 0
+	}
+	return minutes
 }
 
 type ProactiveLog struct {
@@ -227,12 +321,12 @@ func NewStore() *Store {
 	}
 	s.usersByPhone[devUser.Phone] = devUser
 	s.usersByID[devUser.ID] = devUser
-	s.notifByUser[devUser.ID] = NotificationSettings{
-		UserID:           devUser.ID,
-		ProactiveEnabled: true,
-		Frequency:        "normal",
-		UpdatedAt:        time.Now().UTC(),
-	}
+	s.notifByUser[devUser.ID] = normalizeNotificationSettings(NotificationSettings{
+		UserID:                   devUser.ID,
+		ProactiveEnabled:         true,
+		ProactiveIntervalMinutes: DefaultProactiveIntervalMinutes,
+		UpdatedAt:                time.Now().UTC(),
+	})
 	s.systemSettings["default_chat_provider_id"] = "minimax_m2_5"
 	s.systemSettings["default_chat_model"] = "MiniMax-M2.5"
 	s.systemSettings["embedding_provider_id"] = "minimax_m2_5"
@@ -379,7 +473,7 @@ func (s *Store) CreateUser(phone, nickname string) (User, error) {
 	user := User{ID: id, Phone: phone, Nickname: nickname, CreatedAt: time.Now().UTC()}
 	s.usersByPhone[phone] = user
 	s.usersByID[id] = user
-	s.notifByUser[id] = NotificationSettings{UserID: id, ProactiveEnabled: true, Frequency: "normal", UpdatedAt: time.Now().UTC()}
+	s.notifByUser[id] = normalizeNotificationSettings(NotificationSettings{UserID: id, ProactiveEnabled: true, ProactiveIntervalMinutes: DefaultProactiveIntervalMinutes, UpdatedAt: time.Now().UTC()})
 	return user, nil
 }
 
@@ -401,9 +495,7 @@ func (s *Store) UpdateNotificationSettings(userID string, input NotificationSett
 	defer s.mu.Unlock()
 	input.UserID = userID
 	input.UpdatedAt = time.Now().UTC()
-	if input.Frequency == "" {
-		input.Frequency = "normal"
-	}
+	input = normalizeNotificationSettings(input)
 	s.notifByUser[userID] = input
 	return input
 }
@@ -413,15 +505,16 @@ func (s *Store) GetNotificationSettings(userID string) NotificationSettings {
 	defer s.mu.RUnlock()
 	settings, ok := s.notifByUser[userID]
 	if !ok {
-		return NotificationSettings{UserID: userID, ProactiveEnabled: true, Frequency: "normal", UpdatedAt: time.Now().UTC()}
+		return normalizeNotificationSettings(NotificationSettings{UserID: userID, ProactiveEnabled: true, ProactiveIntervalMinutes: DefaultProactiveIntervalMinutes, UpdatedAt: time.Now().UTC()})
 	}
-	return settings
+	return normalizeNotificationSettings(settings)
 }
 
 func (s *Store) CreateBot(userID string, bot Bot) Bot {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	bot = SyncLegacyPersonaFields(bot)
 	bot.ID = NewID()
 	bot.UserID = userID
 	bot.CreatedAt = time.Now().UTC()
@@ -431,12 +524,6 @@ func (s *Store) CreateBot(userID string, bot Bot) Bot {
 	}
 	if bot.PersonaVersion <= 0 {
 		bot.PersonaVersion = 1
-	}
-	if strings.TrimSpace(bot.Relationship) == "" {
-		bot.Relationship = strings.TrimSpace(bot.Summary)
-	}
-	if strings.TrimSpace(bot.Role) == "" {
-		bot.Role = strings.TrimSpace(bot.Background)
 	}
 	s.botsByID[bot.ID] = bot
 	s.botsByUser[userID] = append(s.botsByUser[userID], bot.ID)
@@ -465,7 +552,7 @@ func (s *Store) ListBots(userID string) []Bot {
 	ids := s.botsByUser[userID]
 	out := make([]Bot, 0, len(ids))
 	for _, id := range ids {
-		out = append(out, s.botsByID[id])
+		out = append(out, SyncLegacyPersonaFields(s.botsByID[id]))
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
 	return out
@@ -478,7 +565,7 @@ func (s *Store) GetBot(userID, botID string) (Bot, bool) {
 	if !ok || bot.UserID != userID {
 		return Bot{}, false
 	}
-	return bot, true
+	return SyncLegacyPersonaFields(bot), true
 }
 
 func (s *Store) GetBotState(userID, botID string) (BotState, bool) {
@@ -500,29 +587,67 @@ func (s *Store) UpdateBot(userID, botID string, patch Bot) (Bot, bool) {
 	if strings.TrimSpace(patch.Name) != "" {
 		bot.Name = strings.TrimSpace(patch.Name)
 	}
+	if strings.TrimSpace(patch.Identity) != "" {
+		bot.Identity = strings.TrimSpace(patch.Identity)
+	}
+	if len(patch.Personality) > 0 {
+		bot.Personality = append([]string(nil), patch.Personality...)
+	}
+	if strings.TrimSpace(patch.ExpressionStyle) != "" {
+		bot.ExpressionStyle = strings.TrimSpace(patch.ExpressionStyle)
+	}
+	if strings.TrimSpace(patch.LifeContext) != "" {
+		bot.LifeContext = strings.TrimSpace(patch.LifeContext)
+	}
+	if strings.TrimSpace(patch.TaboosAndPreferences) != "" {
+		bot.TaboosAndPreferences = strings.TrimSpace(patch.TaboosAndPreferences)
+	}
 	if patch.Summary != "" {
 		bot.Summary = strings.TrimSpace(patch.Summary)
-		bot.Relationship = strings.TrimSpace(patch.Summary)
+		if strings.TrimSpace(patch.Identity) == "" {
+			bot.Identity = bot.Summary
+		}
 	}
 	if patch.Relationship != "" {
 		bot.Relationship = strings.TrimSpace(patch.Relationship)
+		if strings.TrimSpace(patch.Identity) == "" {
+			bot.Identity = bot.Relationship
+		}
 	}
 	if patch.SpeakingStyle != "" {
 		bot.SpeakingStyle = strings.TrimSpace(patch.SpeakingStyle)
+		if strings.TrimSpace(patch.ExpressionStyle) == "" {
+			bot.ExpressionStyle = bot.SpeakingStyle
+		}
 	}
 	if patch.Background != "" {
 		bot.Background = strings.TrimSpace(patch.Background)
-		bot.Role = strings.TrimSpace(patch.Background)
+		if strings.TrimSpace(patch.LifeContext) == "" {
+			bot.LifeContext = bot.Background
+		}
 	}
 	if patch.Role != "" {
 		bot.Role = strings.TrimSpace(patch.Role)
+		if strings.TrimSpace(patch.LifeContext) == "" && strings.TrimSpace(patch.Background) == "" {
+			bot.LifeContext = bot.Role
+		}
 	}
 	if patch.Gender != "" {
 		bot.Gender = patch.Gender
 	}
 	if len(patch.Traits) > 0 {
-		bot.Traits = patch.Traits
+		bot.Traits = append([]string(nil), patch.Traits...)
+		if len(patch.Personality) == 0 {
+			bot.Personality = append([]string(nil), patch.Traits...)
+		}
 	}
+	if len(patch.SelfCognition) > 0 {
+		bot.SelfCognition = append([]string(nil), patch.SelfCognition...)
+		if strings.TrimSpace(patch.TaboosAndPreferences) == "" {
+			bot.TaboosAndPreferences = strings.TrimSpace(strings.Join(bot.SelfCognition, "；"))
+		}
+	}
+	bot = SyncLegacyPersonaFields(bot)
 	bot.UpdatedAt = time.Now().UTC()
 	s.botsByID[botID] = bot
 
@@ -539,12 +664,16 @@ func (s *Store) AppendBotPersona(userID, botID string, speakingAdds, backgroundA
 	}
 
 	bot.SpeakingStyle = strings.Join(dedup(append(splitSegments(bot.SpeakingStyle), speakingAdds...)), "|")
+	bot.ExpressionStyle = appendPersonaText(bot.ExpressionStyle, speakingAdds)
 	bot.Background = strings.Join(dedup(append(splitSegments(bot.Background), backgroundAdds...)), "|")
+	bot.LifeContext = appendPersonaText(bot.LifeContext, backgroundAdds)
 	bot.Role = bot.Background
 	bot.Traits = dedup(append(bot.Traits, traitAdds...))
+	bot.Personality = dedup(append(bot.Personality, traitAdds...))
 	if gender != nil && *gender != "" {
 		bot.Gender = *gender
 	}
+	bot = SyncLegacyPersonaFields(bot)
 	bot.UpdatedAt = time.Now().UTC()
 	s.botsByID[botID] = bot
 
@@ -552,13 +681,12 @@ func (s *Store) AppendBotPersona(userID, botID string, speakingAdds, backgroundA
 }
 
 type PersonaPatchInput struct {
-	Relationship      string
-	Role              string
-	SelfCognitionAdds []string
-	SpeakingStyleAdds []string
-	TraitAdds         []string
-	Gender            *string
-	PersonaPrompt     string
+	IdentityAdds             []string
+	PersonalityAdds          []string
+	ExpressionStyleAdds      []string
+	LifeContextAdds          []string
+	TaboosAndPreferencesAdds []string
+	PersonaPrompt            string
 }
 
 func (s *Store) ApplyBotPersonaPatch(userID, botID string, input PersonaPatchInput) (Bot, bool) {
@@ -569,29 +697,15 @@ func (s *Store) ApplyBotPersonaPatch(userID, botID string, input PersonaPatchInp
 	if !ok || bot.UserID != userID {
 		return Bot{}, false
 	}
-	if strings.TrimSpace(input.Relationship) != "" {
-		bot.Relationship = strings.TrimSpace(input.Relationship)
-		bot.Summary = bot.Relationship
-	}
-	if strings.TrimSpace(input.Role) != "" {
-		bot.Role = strings.TrimSpace(input.Role)
-		bot.Background = bot.Role
-	}
-	if len(input.SelfCognitionAdds) > 0 {
-		bot.SelfCognition = dedup(append(bot.SelfCognition, input.SelfCognitionAdds...))
-	}
-	if len(input.SpeakingStyleAdds) > 0 {
-		bot.SpeakingStyle = strings.Join(dedup(append(splitSegments(bot.SpeakingStyle), input.SpeakingStyleAdds...)), "|")
-	}
-	if len(input.TraitAdds) > 0 {
-		bot.Traits = dedup(append(bot.Traits, input.TraitAdds...))
-	}
-	if input.Gender != nil && strings.TrimSpace(*input.Gender) != "" {
-		bot.Gender = strings.TrimSpace(*input.Gender)
-	}
+	bot.Identity = appendPersonaText(bot.Identity, input.IdentityAdds)
+	bot.Personality = dedup(append(bot.Personality, input.PersonalityAdds...))
+	bot.ExpressionStyle = appendPersonaText(bot.ExpressionStyle, input.ExpressionStyleAdds)
+	bot.LifeContext = appendPersonaText(bot.LifeContext, input.LifeContextAdds)
+	bot.TaboosAndPreferences = appendPersonaText(bot.TaboosAndPreferences, input.TaboosAndPreferencesAdds)
 	if strings.TrimSpace(input.PersonaPrompt) != "" {
 		bot.PersonaPrompt = strings.TrimSpace(input.PersonaPrompt)
 	}
+	bot = SyncLegacyPersonaFields(bot)
 	bot.PersonaVersion++
 	if bot.PersonaVersion <= 0 {
 		bot.PersonaVersion = 1
@@ -914,6 +1028,26 @@ func dedup(values []string) []string {
 		out = append(out, value)
 	}
 	return out
+}
+
+func appendPersonaText(base string, adds []string) string {
+	parts := dedup(append(splitTextSegments(base), adds...))
+	return strings.Join(parts, "；")
+}
+
+func splitTextSegments(v string) []string {
+	if strings.TrimSpace(v) == "" {
+		return nil
+	}
+	fields := strings.FieldsFunc(v, func(r rune) bool {
+		switch r {
+		case '|', '；', ';', '\n':
+			return true
+		default:
+			return false
+		}
+	})
+	return dedup(fields)
 }
 
 func NewID() string {

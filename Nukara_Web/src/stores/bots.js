@@ -2,6 +2,13 @@ import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { useApi } from '../composables/useApi'
 
+function normalizeBot(bot = {}) {
+  return {
+    ...bot,
+    personality: Array.isArray(bot.personality) ? bot.personality : [],
+  }
+}
+
 export const useBotsStore = defineStore('bots', () => {
   const api = useApi()
   const list = ref([])
@@ -12,7 +19,7 @@ export const useBotsStore = defineStore('bots', () => {
     isLoading.value = true
     try {
       const data = await api.get('/api/v1/bots')
-      list.value = Array.isArray(data) ? data : []
+      list.value = Array.isArray(data) ? data.map(normalizeBot) : []
     } catch (_) {}
     isLoading.value = false
   }
@@ -21,7 +28,7 @@ export const useBotsStore = defineStore('bots', () => {
     isLoading.value = true
     error.value = ''
     try {
-      const bot = await api.post('/api/v1/bots', form)
+      const bot = normalizeBot(await api.post('/api/v1/bots', form))
       if (bot.id) {
         list.value.push(bot)
         return bot
@@ -36,11 +43,11 @@ export const useBotsStore = defineStore('bots', () => {
   }
 
   async function getBot(id) {
-    return api.get(`/api/v1/bots/${id}`)
+    return normalizeBot(await api.get(`/api/v1/bots/${id}`))
   }
 
   async function updateBot(id, updates) {
-    return api.put(`/api/v1/bots/${id}`, updates)
+    return normalizeBot(await api.put(`/api/v1/bots/${id}`, updates))
   }
 
   return { list, isLoading, error, fetchList, createBot, getBot, updateBot }

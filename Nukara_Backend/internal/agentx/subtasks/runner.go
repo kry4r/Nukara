@@ -50,7 +50,7 @@ type RunnerDeps struct {
 }
 
 type Runner struct {
-	store RunnerDeps
+	store      RunnerDeps
 	memoryTool interface {
 		Save(ctx context.Context, item store.MemoryItem) (store.MemoryItem, error)
 	}
@@ -112,28 +112,21 @@ func (r *Runner) Run(ctx context.Context, in Input) (Result, error) {
 				return result, nil
 			}
 			prompt := persona.CompilePrompt(store.Bot{
-				Name:          bot.Name,
-				Relationship:  firstNonEmpty(patch.Relationship, bot.Relationship),
-				Role:          firstNonEmpty(patch.Role, bot.Role),
-				SelfCognition: append(append([]string(nil), bot.SelfCognition...), patch.SelfCognitionAdds...),
-				SpeakingStyle: strings.Join(append(split(bot.SpeakingStyle), patch.SpeakingStyleAdds...), "|"),
-				Traits:        append(append([]string(nil), bot.Traits...), patch.TraitAdds...),
-				Gender:        firstNonEmpty(patch.Gender, bot.Gender),
+				Name:                 bot.Name,
+				Identity:             appendTextAdds(bot.Identity, patch.IdentityAdds),
+				Personality:          append(append([]string(nil), bot.Personality...), patch.PersonalityAdds...),
+				ExpressionStyle:      appendTextAdds(bot.ExpressionStyle, patch.ExpressionStyleAdds),
+				LifeContext:          appendTextAdds(bot.LifeContext, patch.LifeContextAdds),
+				TaboosAndPreferences: appendTextAdds(bot.TaboosAndPreferences, patch.TaboosAndPreferencesAdds),
 			}, 420)
 
-			var genderPtr *string
-			if patch.Gender != "" {
-				gender := patch.Gender
-				genderPtr = &gender
-			}
 			_, ok := r.store.Store.ApplyBotPersonaPatch(in.UserID, in.BotID, store.PersonaPatchInput{
-				Relationship:      patch.Relationship,
-				Role:              patch.Role,
-				SelfCognitionAdds: patch.SelfCognitionAdds,
-				SpeakingStyleAdds: patch.SpeakingStyleAdds,
-				TraitAdds:         patch.TraitAdds,
-				Gender:            genderPtr,
-				PersonaPrompt:     prompt,
+				IdentityAdds:             patch.IdentityAdds,
+				PersonalityAdds:          patch.PersonalityAdds,
+				ExpressionStyleAdds:      patch.ExpressionStyleAdds,
+				LifeContextAdds:          patch.LifeContextAdds,
+				TaboosAndPreferencesAdds: patch.TaboosAndPreferencesAdds,
+				PersonaPrompt:            prompt,
 			})
 			if ok {
 				result.PersonaUpdated = true
@@ -180,18 +173,21 @@ func (r *Runner) applyMemory(raw string, in Input) error {
 }
 
 func summarizePatch(p persona.Patch) string {
-	chunks := make([]string, 0, 4)
-	if p.Relationship != "" {
-		chunks = append(chunks, "关系更新")
+	chunks := make([]string, 0, 5)
+	if len(p.IdentityAdds) > 0 {
+		chunks = append(chunks, "身份设定+"+fmt.Sprintf("%d", len(p.IdentityAdds)))
 	}
-	if p.Role != "" {
-		chunks = append(chunks, "角色设定更新")
+	if len(p.PersonalityAdds) > 0 {
+		chunks = append(chunks, "性格特征+"+fmt.Sprintf("%d", len(p.PersonalityAdds)))
 	}
-	if len(p.SelfCognitionAdds) > 0 {
-		chunks = append(chunks, "自我认知+"+fmt.Sprintf("%d", len(p.SelfCognitionAdds)))
+	if len(p.ExpressionStyleAdds) > 0 {
+		chunks = append(chunks, "表达风格微调")
 	}
-	if len(p.SpeakingStyleAdds) > 0 || len(p.TraitAdds) > 0 {
-		chunks = append(chunks, "风格微调")
+	if len(p.LifeContextAdds) > 0 {
+		chunks = append(chunks, "生活环境补充")
+	}
+	if len(p.TaboosAndPreferencesAdds) > 0 {
+		chunks = append(chunks, "偏好边界更新")
 	}
 	if len(chunks) == 0 {
 		return "人设微调"
@@ -221,4 +217,38 @@ func split(v string) []string {
 		}
 	}
 	return out
+}
+
+func appendTextAdds(base string, adds []string) string {
+	parts := make([]string, 0, len(adds)+1)
+	parts = append(parts, splitTextValues(base)...)
+	parts = append(parts, adds...)
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		if _, ok := seen[part]; ok {
+			continue
+		}
+		seen[part] = struct{}{}
+		out = append(out, part)
+	}
+	return strings.Join(out, "；")
+}
+
+func splitTextValues(v string) []string {
+	if strings.TrimSpace(v) == "" {
+		return nil
+	}
+	return strings.FieldsFunc(v, func(r rune) bool {
+		switch r {
+		case '|', '；', ';', '\n':
+			return true
+		default:
+			return false
+		}
+	})
 }

@@ -11,29 +11,25 @@ func CompilePrompt(bot store.Bot, maxRunes int) string {
 	if maxRunes <= 0 {
 		maxRunes = 400
 	}
-	parts := []string{
-		fmt.Sprintf("你是%s。", strings.TrimSpace(bot.Name)),
+	parts := []string{}
+	if strings.TrimSpace(bot.Name) != "" {
+		parts = append(parts, fmt.Sprintf("你是%s。", strings.TrimSpace(bot.Name)))
 	}
-	if strings.TrimSpace(bot.Relationship) != "" {
-		parts = append(parts, "与用户关系："+strings.TrimSpace(bot.Relationship)+"。")
+	appendSection := func(title, value string) {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			parts = append(parts, title+value)
+		}
 	}
-	if strings.TrimSpace(bot.Role) != "" {
-		parts = append(parts, "角色设定："+strings.TrimSpace(bot.Role)+"。")
+	appendSection("【身份设定】", bot.Identity)
+	if len(bot.Personality) > 0 {
+		appendSection("【性格特征】", strings.Join(bot.Personality, "、"))
 	}
-	if len(bot.SelfCognition) > 0 {
-		parts = append(parts, "自我认知："+strings.Join(bot.SelfCognition, "；")+"。")
-	}
-	if strings.TrimSpace(bot.SpeakingStyle) != "" {
-		parts = append(parts, "说话风格："+strings.TrimSpace(strings.ReplaceAll(bot.SpeakingStyle, "|", "、"))+"。")
-	}
-	if len(bot.Traits) > 0 {
-		parts = append(parts, "特质："+strings.Join(bot.Traits, "、")+"。")
-	}
-	if strings.TrimSpace(bot.Gender) != "" {
-		parts = append(parts, "性别："+strings.TrimSpace(bot.Gender)+"。")
-	}
+	appendSection("【表达风格】", bot.ExpressionStyle)
+	appendSection("【生活环境】", bot.LifeContext)
+	appendSection("【禁忌与偏好】", bot.TaboosAndPreferences)
 
-	joined := strings.Join(parts, " ")
+	joined := strings.Join(parts, "\n")
 	runes := []rune(joined)
 	if len(runes) <= maxRunes {
 		return strings.TrimSpace(joined)

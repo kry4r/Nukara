@@ -25,11 +25,31 @@ export const DEFAULT_STATUSES = [
   '🌙 夜聊', '✨ 灵感中', '📖 读书', '🎨 创作中',
 ]
 
-export const FREQUENCY_OPTIONS = [
-  { value: 'high', label: '高频（2小时）' },
-  { value: 'normal', label: '正常（4小时）' },
-  { value: 'low', label: '低频（8小时）' },
+export const PROACTIVE_INTERVAL_OPTIONS = [
+  { value: 10, label: '10分钟' },
+  { value: 30, label: '30分钟' },
+  { value: 60, label: '1小时' },
+  { value: 120, label: '2小时' },
+  { value: 180, label: '3小时' },
+  { value: 240, label: '4小时' },
+  { value: 300, label: '5小时' },
 ]
+
+export function formatProactiveIntervalLabel(minutes) {
+  const value = Number(minutes)
+  if (!Number.isFinite(value) || value <= 0) {
+    return '未设置'
+  }
+  const hours = Math.floor(value / 60)
+  const remain = value % 60
+  if (hours > 0 && remain === 0) {
+    return `${hours}小时`
+  }
+  if (hours > 0 && remain > 0) {
+    return `${hours}小时${remain}分钟`
+  }
+  return `${value}分钟`
+}
 
 export const WS_HEARTBEAT_INTERVAL = 25000
 export const WS_MAX_RECONNECT_ATTEMPTS = 8

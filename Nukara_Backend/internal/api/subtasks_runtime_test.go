@@ -26,7 +26,7 @@ func (stubSubtaskRuntime) StreamTurn(_ context.Context, req agentx.TurnRequest) 
 		case strings.Contains(req.AggregatedText, "[system:compact_update_json]"):
 			text = `{"summary":"用户修正了饮品偏好","facts":["用户现在更喜欢绿茶"]}`
 		case strings.Contains(req.AggregatedText, "[system:persona_iterate_json]"):
-			text = `{"self_cognition_adds":[]}`
+			text = `{"identity_adds":[],"personality_adds":[],"expression_style_adds":[],"life_context_adds":[],"taboos_and_preferences_adds":[]}`
 		}
 		finalCh <- agentx.FinalTurn{Segments: []agentx.FinalSegment{{Text: text}}}
 	}()

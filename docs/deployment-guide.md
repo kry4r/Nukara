@@ -36,6 +36,27 @@ sudo bash deploy/deploy-local.sh --force-clean --reset-data --non-interactive
 - `9527`：管理端前端（Nukara_Admin_Web）
 - `19527`：管理 API（nukara-admin，供 9527 反向代理）
 
+## Persona v2 与主动消息配置
+
+当前用户前端与 Gateway 已统一到 persona v2 字段：
+
+- `identity`
+- `personality`（字符串数组）
+- `expression_style`
+- `life_context`
+- `taboos_and_preferences`
+
+通知设置接口使用显式分钟值：
+
+- `proactive_interval_minutes`：主动消息冷却间隔，单位为分钟
+- `dnd_start` / `dnd_end`：免打扰时间窗，格式为 `HH:MM`
+
+行为约定：
+
+- 旧的 `frequency=high|normal|low` 会在后端读取时自动映射到分钟值，避免老数据失效
+- 手动主动触发接口在免打扰时间内会返回 `{"should_send": false, "reason": "dnd_active"}`
+- 聊天与主动消息会注入基于 `life_context` 推断的本地时区/本地时间上下文
+
 ## 增量部署
 
 增量部署只重建变更的服务，保持数据持久性。

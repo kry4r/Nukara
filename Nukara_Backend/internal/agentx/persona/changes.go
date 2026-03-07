@@ -7,12 +7,11 @@ import (
 )
 
 type Patch struct {
-	Relationship      string   `json:"relationship"`
-	Role              string   `json:"role"`
-	SelfCognitionAdds []string `json:"self_cognition_adds"`
-	SpeakingStyleAdds []string `json:"speaking_style_adds"`
-	TraitAdds         []string `json:"trait_adds"`
-	Gender            string   `json:"gender"`
+	IdentityAdds             []string `json:"identity_adds"`
+	PersonalityAdds          []string `json:"personality_adds"`
+	ExpressionStyleAdds      []string `json:"expression_style_adds"`
+	LifeContextAdds          []string `json:"life_context_adds"`
+	TaboosAndPreferencesAdds []string `json:"taboos_and_preferences_adds"`
 }
 
 func ParsePatch(raw string) (Patch, error) {
@@ -31,19 +30,14 @@ func ParsePatch(raw string) (Patch, error) {
 }
 
 func ValidatePatch(input Patch) (Patch, error) {
-	out := Patch{
-		Relationship: strings.TrimSpace(input.Relationship),
-		Role:         strings.TrimSpace(input.Role),
-	}
-	out.SelfCognitionAdds = normalizeAdds(input.SelfCognitionAdds, 4, 40)
-	out.SpeakingStyleAdds = normalizeAdds(input.SpeakingStyleAdds, 4, 24)
-	out.TraitAdds = normalizeAdds(input.TraitAdds, 4, 16)
-
-	switch strings.ToLower(strings.TrimSpace(input.Gender)) {
-	case "", "female", "male", "unknown":
-		out.Gender = strings.ToLower(strings.TrimSpace(input.Gender))
-	default:
-		return Patch{}, errors.New("invalid gender")
+	out := Patch{}
+	out.IdentityAdds = normalizeAdds(input.IdentityAdds, 4, 40)
+	out.PersonalityAdds = normalizeAdds(input.PersonalityAdds, 4, 16)
+	out.ExpressionStyleAdds = normalizeAdds(input.ExpressionStyleAdds, 4, 24)
+	out.LifeContextAdds = normalizeAdds(input.LifeContextAdds, 4, 40)
+	out.TaboosAndPreferencesAdds = normalizeAdds(input.TaboosAndPreferencesAdds, 4, 40)
+	if len(out.IdentityAdds) == 0 && len(out.PersonalityAdds) == 0 && len(out.ExpressionStyleAdds) == 0 && len(out.LifeContextAdds) == 0 && len(out.TaboosAndPreferencesAdds) == 0 {
+		return Patch{}, errors.New("empty patch")
 	}
 	return out, nil
 }

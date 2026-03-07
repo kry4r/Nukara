@@ -1,44 +1,60 @@
 <script setup>
-import { ref, onMounted } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useSettingsStore } from '../stores/settings'
 import { useAuthStore } from '../stores/auth'
-import { FREQUENCY_OPTIONS, DEFAULT_STATUSES } from '../utils/constants'
+import { PROACTIVE_INTERVAL_OPTIONS, DEFAULT_STATUSES, formatProactiveIntervalLabel } from '../utils/constants'
 
 const router = useRouter()
 const settings = useSettingsStore()
 const auth = useAuthStore()
 
 const proactiveEnabled = ref(true)
-const frequency = ref('normal')
+const proactiveIntervalMinutes = ref(240)
 const dndStart = ref('23:00')
 const dndEnd = ref('08:00')
 const selectedStatus = ref('')
 const saved = ref(false)
 
+const intervalOptions = computed(() => {
+  const current = Number(proactiveIntervalMinutes.value)
+  if (PROACTIVE_INTERVAL_OPTIONS.some(option => option.value === current)) {
+    return PROACTIVE_INTERVAL_OPTIONS
+  }
+  if (!Number.isFinite(current) || current <= 0) {
+    return PROACTIVE_INTERVAL_OPTIONS
+  }
+  return [
+    ...PROACTIVE_INTERVAL_OPTIONS,
+    { value: current, label: `${formatProactiveIntervalLabel(current)}（当前）` },
+  ].sort((left, right) => left.value - right.value)
+})
+
 onMounted(async () => {
   await Promise.all([settings.fetchNotifications(), settings.fetchUserStatus()])
   proactiveEnabled.value = settings.notifications.proactive_enabled !== false
-  frequency.value = settings.notifications.frequency || 'normal'
+  proactiveIntervalMinutes.value = Number(settings.notifications.proactive_interval_minutes) || 240
   dndStart.value = settings.notifications.dnd_start || '23:00'
   dndEnd.value = settings.notifications.dnd_end || '08:00'
-  selectedStatus.value = settings.userStatus.text || ''
+  selectedStatus.value = settings.userStatus.text ? `${settings.userStatus.emoji} ${settings.userStatus.text}`.trim() : ''
 })
 
 async function saveSettings() {
   await settings.saveNotifications({
     proactive_enabled: proactiveEnabled.value,
-    frequency: frequency.value,
+    proactive_interval_minutes: proactiveIntervalMinutes.value,
     dnd_start: dndStart.value,
     dnd_end: dndEnd.value,
   })
   saved.value = true
-  setTimeout(() => { saved.value = false }, 2000)
+  setTimeout(() => {
+    saved.value = false
+  }, 2000)
 }
 
-async function pickStatus(s) {
-  selectedStatus.value = s
-  const parts = s.split(' ')
+async function pickStatus(status) {
+  selectedStatus.value = status
+  const parts = status.split(' ')
   await settings.saveUserStatus({ emoji: parts[0], text: parts.slice(1).join(' ') })
 }
 
@@ -63,9 +79,9 @@ function handleLogout() {
           <input type="checkbox" v-model="proactiveEnabled" @change="saveSettings" />
         </label>
         <label class="row" v-if="proactiveEnabled">
-          <span>频率</span>
-          <select v-model="frequency" @change="saveSettings">
-            <option v-for="opt in FREQUENCY_OPTIONS" :key="opt.value" :value="opt.value">
+          <span>主动频率</span>
+          <select v-model="proactiveIntervalMinutes" @change="saveSettings">
+            <option v-for="opt in intervalOptions" :key="opt.value" :value="opt.value">
               {{ opt.label }}
             </option>
           </select>
@@ -89,9 +105,14 @@ function handleLogout() {
       <section class="section-card">
         <h3>我的状态</h3>
         <div class="status-grid">
-          <button v-for="s in DEFAULT_STATUSES" :key="s"
-            :class="['status-chip', { active: selectedStatus === s }]"
-            @click="pickStatus(s)">{{ s }}</button>
+          <button
+            v-for="status in DEFAULT_STATUSES"
+            :key="status"
+            :class="['status-chip', { active: selectedStatus === status }]"
+            @click="pickStatus(status)"
+          >
+            {{ status }}
+          </button>
         </div>
       </section>
 
@@ -162,7 +183,10 @@ function handleLogout() {
 }
 
 .row {
-  display: flex; justify-content: space-between; align-items: center;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
   padding: 10px 0;
   border-bottom: 1px solid var(--border-default);
 }
@@ -176,7 +200,8 @@ function handleLogout() {
   color: var(--text-primary);
 }
 
-.row select, .num-input {
+.row select {
+  min-width: 130px;
   padding: 6px 10px;
   border: 1px solid var(--border-default);
   border-radius: 8px;
@@ -185,7 +210,6 @@ function handleLogout() {
   background: #fff;
   color: var(--text-primary);
 }
-.num-input { width: 60px; text-align: center; }
 
 .toggle-row input[type="checkbox"] {
   width: 20px;
@@ -194,10 +218,22 @@ function handleLogout() {
 }
 
 .dnd-row {
-  display: flex; gap: 16px;
+  display: flex;
+  gap: 16px;
 }
-.dnd-row label { flex: 1; display: flex; flex-direction: column; gap: 4px; }
-.dnd-row span { font-size: var(--font-size-xs); color: var(--text-muted); }
+
+.dnd-row label {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.dnd-row span {
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+}
+
 .dnd-row input[type="time"] {
   padding: 8px 10px;
   border: 1px solid var(--border-default);
@@ -207,7 +243,13 @@ function handleLogout() {
   background: #fff;
   color: var(--text-primary);
 }
-.status-grid { display: flex; flex-wrap: wrap; gap: 8px; }
+
+.status-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .status-chip {
   padding: 6px 12px;
   border: 1px solid var(--border-default);
@@ -218,11 +260,13 @@ function handleLogout() {
   cursor: pointer;
   transition: all var(--transition-fast);
 }
+
 .status-chip.active {
   border-color: var(--accent-primary);
   background: rgba(123, 160, 91, 0.14);
   color: var(--accent-dark);
 }
+
 .toast {
   text-align: center;
   padding: 8px;
@@ -233,6 +277,7 @@ function handleLogout() {
   margin: 2px 0 6px;
   box-shadow: 0 8px 16px rgba(77, 120, 84, 0.2);
 }
+
 .logout-btn {
   width: 100%;
   padding: 12px;

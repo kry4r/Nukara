@@ -1,10 +1,15 @@
 package api
 
 import (
+	"bytes"
+	"encoding/json"
+	"io"
 	"math/rand"
+	"net/http"
 	"testing"
 	"time"
 
+	"nukara/backend/internal/apns"
 	"nukara/backend/internal/store"
 )
 
@@ -203,10 +208,7 @@ func TestSchedulerCooldownEnforcement(t *testing.T) {
 	})
 
 	settings := st.GetNotificationSettings(user.ID)
-	cooldown := frequencyCooldown[settings.Frequency]
-	if cooldown == 0 {
-		cooldown = frequencyCooldown["normal"]
-	}
+	cooldown := getProactiveCooldown(settings)
 
 	recentLogs := st.ListProactiveLogs(user.ID, 1)
 	if len(recentLogs) == 0 {
@@ -241,6 +243,109 @@ func TestSchedulerBlocksShareWhenRecentlyActiveOnline(t *testing.T) {
 
 	if shouldBlockTriggerForPresence("share_personal_moment", true, now.Add(-5*time.Minute), now) {
 		t.Fatalf("expected share trigger allowed when activity is older than 3 minutes")
+	}
+}
+
+func TestSchedulerUsesExplicitIntervalMinutes(t *testing.T) {
+	settings := store.NotificationSettings{ProactiveIntervalMinutes: 10}
+	if got := getProactiveCooldown(settings); got != 10*time.Minute {
+		t.Fatalf("getProactiveCooldown() = %v, want %v", got, 10*time.Minute)
+	}
+}
+
+func TestSchedulerBlocksDNDWhenCooldownSatisfied(t *testing.T) {
+	st := store.NewStore()
+	user, _ := st.CreateUser("13900000007", "dnd-block")
+	bot := st.CreateBot(user.ID, store.Bot{
+		Name: "DndBot", Summary: "test", SpeakingStyle: "test",
+		Background: "test", Traits: []string{"test"}, Gender: "female",
+	})
+	conv, _ := st.FindConversationByBot(user.ID, bot.ID)
+	st.UpdateNotificationSettings(user.ID, store.NotificationSettings{
+		ProactiveEnabled:         true,
+		ProactiveIntervalMinutes: 10,
+		DNDStart:                 "08:00",
+		DNDEnd:                   "10:00",
+	})
+
+	server := NewServer(st, nil, apns.NewClient("com.nukara.app"), "test-secret", "")
+	sched := &proactiveScheduler{server: server}
+	now := time.Date(2026, 3, 7, 8, 30, 0, 0, time.Local)
+	conv.LastMessageAt = now.Add(-2 * time.Hour)
+	st.AddProactiveLog(store.ProactiveLog{
+		UserID:         user.ID,
+		ConversationID: conv.ID,
+		BotID:          bot.ID,
+		TriggerType:    "random_share",
+		Message:        "旧消息",
+		CreatedAt:      now.Add(-11 * time.Minute),
+	})
+
+	sched.processUser(user.ID, now)
+	logs := st.ListProactiveLogs(user.ID, 10)
+	if len(logs) != 1 {
+		t.Fatalf("expected dnd to block new proactive log, got %d logs", len(logs))
+	}
+}
+
+func TestSchedulerManualProactiveReturnsDNDActive(t *testing.T) {
+	server, token, botID, convID, closeFn := setupTestServer(t)
+	defer closeFn()
+
+	body, _ := json.Marshal(map[string]any{
+		"proactive_enabled":          true,
+		"proactive_interval_minutes": 10,
+		"dnd_start":                  "00:00",
+		"dnd_end":                    "23:59",
+	})
+	req, err := http.NewRequest(http.MethodPut, server.URL+"/api/v1/users/notification-settings", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("create settings request failed: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("save settings failed: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("save settings status = %d", resp.StatusCode)
+	}
+
+	manualBody, _ := json.Marshal(map[string]any{
+		"bot_id":          botID,
+		"conversation_id": convID,
+		"trigger_type":    "manual",
+	})
+	req, err = http.NewRequest(http.MethodPost, server.URL+"/api/v1/gateway/test/proactive", bytes.NewReader(manualBody))
+	if err != nil {
+		t.Fatalf("create proactive request failed: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("call proactive endpoint failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		payload, _ := io.ReadAll(resp.Body)
+		t.Fatalf("unexpected status %d body=%s", resp.StatusCode, string(payload))
+	}
+
+	var result struct {
+		ShouldSend bool   `json:"should_send"`
+		Reason     string `json:"reason"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("decode proactive response failed: %v", err)
+	}
+	if result.ShouldSend {
+		t.Fatalf("expected proactive send blocked during dnd")
+	}
+	if result.Reason != "dnd_active" {
+		t.Fatalf("reason = %q, want %q", result.Reason, "dnd_active")
 	}
 }
 
