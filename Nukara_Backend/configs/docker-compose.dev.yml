@@ -9,7 +9,7 @@ services:
       - ../.env
     environment:
       NUKARA_JWT_SECRET: ${NUKARA_JWT_SECRET:-nukara-dev-secret}
-      NUKARA_POSTGRES_DSN: postgres://postgres:postgres@postgres:5432/nukara?sslmode=disable
+      NUKARA_POSTGRES_DSN: postgres://nukara:nukara@postgres:5432/nukara?sslmode=disable
       NUKARA_REDIS_ADDR: redis:6379
       NUKARA_APNS_TOPIC: ${NUKARA_APNS_TOPIC:-com.nukara.app}
       NUKARA_PROACTIVE_INTERVAL: ${NUKARA_PROACTIVE_INTERVAL:-1m}
@@ -34,8 +34,8 @@ services:
     image: postgres:15-alpine
     environment:
       POSTGRES_DB: nukara
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
+      POSTGRES_USER: nukara
+      POSTGRES_PASSWORD: nukara
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
@@ -70,7 +70,7 @@ services:
       - ../.env
     environment:
       NUKARA_JWT_SECRET: ${NUKARA_JWT_SECRET:-nukara-dev-secret}
-      NUKARA_POSTGRES_DSN: postgres://postgres:postgres@postgres:5432/nukara?sslmode=disable
+      NUKARA_POSTGRES_DSN: postgres://nukara:nukara@postgres:5432/nukara?sslmode=disable
       NUKARA_REDIS_ADDR: redis:6379
       NUKARA_APNS_TOPIC: ${NUKARA_APNS_TOPIC:-com.nukara.app}
       NUKARA_PROACTIVE_INTERVAL: ${NUKARA_PROACTIVE_INTERVAL:-5m}

@@ -40,7 +40,9 @@ INCREMENTAL_MODE=false
 FORCE_FULL_DEPLOY=false
 DRY_RUN=false
 FORCE_CLEAN=false
+RESET_DATA=false
 NON_INTERACTIVE=false
+PRE_DEPLOY_CLEANED=false
 POSTGRES_SERVICE_NAME="postgresql"
 REDIS_SERVICE_NAME="redis"
 
@@ -62,13 +64,17 @@ while [[ $# -gt 0 ]]; do
       FORCE_CLEAN=true
       shift
       ;;
+    --reset-data)
+      RESET_DATA=true
+      shift
+      ;;
     --non-interactive)
       NON_INTERACTIVE=true
       shift
       ;;
     *)
       echo "Unknown option: $1"
-      echo "Usage: $0 [--incremental|--full|--dry-run|--force-clean|--non-interactive]"
+      echo "Usage: $0 [--incremental|--full|--dry-run|--force-clean|--reset-data|--non-interactive]"
       exit 1
       ;;
   esac
@@ -135,6 +141,32 @@ start_and_enable_service() {
     return 0
   done
   return 1
+}
+
+systemd_unit_exists() {
+  local unit="$1"
+  systemctl list-unit-files "${unit}.service" --no-legend 2>/dev/null | awk '{print $1}' | grep -qx "${unit}.service"
+}
+
+ensure_service_started_if_present() {
+  local unit="$1"
+  if ! systemd_unit_exists "$unit"; then
+    return 1
+  fi
+  if [ "$DRY_RUN" = true ]; then
+    log "  [dry-run] systemctl start $unit"
+    return 0
+  fi
+  systemctl start "$unit" 2>/dev/null || true
+  return 0
+}
+
+perform_pre_deploy_cleanup() {
+  if [ "$PRE_DEPLOY_CLEANED" = true ]; then
+    return 0
+  fi
+  cleanup_pre_deploy "$DRY_RUN"
+  PRE_DEPLOY_CLEANED=true
 }
 
 ensure_postgres_cluster() {
@@ -527,17 +559,203 @@ collect_config() {
 }
 
 # --- Setup PostgreSQL database ---
+run_postgres_psql() {
+  sudo -u postgres psql "$@"
+}
+
+run_nukara_psql() {
+  PGPASSWORD="$POSTGRES_PASSWORD" psql \
+    -h 127.0.0.1 \
+    -U nukara \
+    -d nukara \
+    -v ON_ERROR_STOP=1 "$@"
+}
+
+ensure_nukara_postgres_role() {
+  if ! command -v psql >/dev/null 2>&1; then
+    return 0
+  fi
+  run_postgres_psql -tc "SELECT 1 FROM pg_roles WHERE rolname='nukara'" | grep -q 1 || \
+    run_postgres_psql -c "CREATE USER nukara WITH PASSWORD '${POSTGRES_PASSWORD}';"
+}
+
+confirm_reset_data() {
+  if [ "$RESET_DATA" != true ] || [ "$DRY_RUN" = true ]; then
+    return 0
+  fi
+  if [ "$NON_INTERACTIVE" = true ]; then
+    warn "Proceeding with --reset-data in non-interactive mode"
+    return 0
+  fi
+  [ -t 0 ] || err "--reset-data requires a TTY confirmation or --non-interactive"
+
+  warn "--reset-data will delete Nukara application data from PostgreSQL, Redis, Qdrant, and Neo4j before redeploy."
+  read -rp "Type RESET to continue: " confirm
+  [ "$confirm" = "RESET" ] || err "Reset aborted by user"
+}
+
+reset_postgres_data() {
+  log "Resetting PostgreSQL database: nukara"
+  if ! command -v psql >/dev/null 2>&1; then
+    warn "Skipping PostgreSQL reset: psql not installed yet"
+    return 0
+  fi
+  if [ "$DRY_RUN" = true ]; then
+    log "  [dry-run] would recreate PostgreSQL database 'nukara'"
+    return 0
+  fi
+
+  ensure_service_started_if_present "$POSTGRES_SERVICE_NAME" || true
+  ensure_nukara_postgres_role
+  run_postgres_psql -d postgres -v ON_ERROR_STOP=1 <<'SQL'
+SELECT pg_terminate_backend(pid)
+FROM pg_stat_activity
+WHERE datname = 'nukara' AND pid <> pg_backend_pid();
+DROP DATABASE IF EXISTS nukara;
+CREATE DATABASE nukara OWNER nukara;
+SQL
+}
+
+reset_redis_data() {
+  log "Resetting Redis keys: nukara:*"
+  if ! command -v redis-cli >/dev/null 2>&1; then
+    warn "Skipping Redis reset: redis-cli not installed yet"
+    return 0
+  fi
+  if [ "$DRY_RUN" = true ]; then
+    log "  [dry-run] would delete Redis keys matching nukara:*"
+    return 0
+  fi
+
+  ensure_service_started_if_present "$REDIS_SERVICE_NAME" || true
+  if ! redis-cli ping >/dev/null 2>&1; then
+    warn "Skipping Redis reset: Redis is not reachable"
+    return 0
+  fi
+
+  local key deleted=0
+  while IFS= read -r key; do
+    [ -n "$key" ] || continue
+    redis-cli del "$key" >/dev/null
+    deleted=$((deleted + 1))
+  done < <(redis-cli --raw --scan --pattern 'nukara:*')
+  log "  Deleted Redis keys: $deleted"
+}
+
+reset_qdrant_data() {
+  [ "${NUKARA_MEMORY_INFRA_ENABLED:-true}" = "true" ] || return 0
+  [ -n "${NUKARA_QDRANT_COLLECTION:-}" ] || return 0
+
+  log "Resetting Qdrant collection: ${NUKARA_QDRANT_COLLECTION}"
+  if [ "$DRY_RUN" = true ]; then
+    log "  [dry-run] would delete Qdrant collection ${NUKARA_QDRANT_COLLECTION}"
+    return 0
+  fi
+  ensure_service_started_if_present qdrant || {
+    warn "Skipping Qdrant reset: qdrant service not installed"
+    return 0
+  }
+  wait_for_qdrant_ready 20
+
+  local collection_url="${NUKARA_QDRANT_URL%/}/collections/${NUKARA_QDRANT_COLLECTION}"
+  qdrant_request DELETE "$collection_url" || err "Failed deleting Qdrant collection: ${QDRANT_HTTP_BODY:-curl error}"
+  case "$QDRANT_HTTP_STATUS" in
+    200|202|204)
+      log "  Qdrant collection deleted: ${NUKARA_QDRANT_COLLECTION}"
+      ;;
+    404)
+      log "  Qdrant collection not found: ${NUKARA_QDRANT_COLLECTION}"
+      ;;
+    *)
+      err "Failed deleting Qdrant collection: status=$QDRANT_HTTP_STATUS body=$QDRANT_HTTP_BODY"
+      ;;
+  esac
+}
+
+reset_neo4j_data() {
+  [ "${NUKARA_MEMORY_INFRA_ENABLED:-true}" = "true" ] || return 0
+
+  log "Resetting Neo4j database contents: ${NUKARA_NEO4J_DATABASE}"
+  if [ "$DRY_RUN" = true ]; then
+    log "  [dry-run] would delete all Neo4j nodes and relationships in ${NUKARA_NEO4J_DATABASE}"
+    return 0
+  fi
+  ensure_service_started_if_present neo4j || {
+    warn "Skipping Neo4j reset: neo4j service not installed"
+    return 0
+  }
+  command -v cypher-shell >/dev/null 2>&1 || {
+    warn "Skipping Neo4j reset: cypher-shell not installed"
+    return 0
+  }
+
+  wait_for_neo4j_ready 30
+  cypher-shell \
+    -a "bolt://127.0.0.1:${NUKARA_NEO4J_BOLT_PORT}" \
+    -u "${NUKARA_NEO4J_USER}" \
+    -p "${NUKARA_NEO4J_PASSWORD}" \
+    -d "${NUKARA_NEO4J_DATABASE}" \
+    'MATCH (n) DETACH DELETE n;' >/dev/null
+  log "  Neo4j graph data cleared"
+}
+
+reset_nukara_data() {
+  [ "$RESET_DATA" = true ] || return 0
+  log "Resetting Nukara application data before redeploy..."
+  reset_postgres_data
+  reset_redis_data
+  reset_qdrant_data
+  reset_neo4j_data
+}
+
+repair_postgres_permissions() {
+  log "Repairing PostgreSQL schema ownership and grants..."
+  run_postgres_psql -d nukara -v ON_ERROR_STOP=1 <<'SQL'
+ALTER DATABASE nukara OWNER TO nukara;
+ALTER SCHEMA public OWNER TO nukara;
+GRANT ALL PRIVILEGES ON DATABASE nukara TO nukara;
+GRANT USAGE, CREATE ON SCHEMA public TO nukara;
+GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO nukara;
+GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO nukara;
+ALTER DEFAULT PRIVILEGES FOR USER postgres IN SCHEMA public GRANT ALL PRIVILEGES ON TABLES TO nukara;
+ALTER DEFAULT PRIVILEGES FOR USER postgres IN SCHEMA public GRANT ALL PRIVILEGES ON SEQUENCES TO nukara;
+
+DO $$
+DECLARE r record;
+BEGIN
+  FOR r IN
+    SELECT quote_ident(schemaname) || '.' || quote_ident(tablename) AS obj
+    FROM pg_tables
+    WHERE schemaname = 'public'
+  LOOP
+    EXECUTE 'ALTER TABLE ' || r.obj || ' OWNER TO nukara';
+  END LOOP;
+END $$;
+
+DO $$
+DECLARE r record;
+BEGIN
+  FOR r IN
+    SELECT quote_ident(sequence_schema) || '.' || quote_ident(sequence_name) AS obj
+    FROM information_schema.sequences
+    WHERE sequence_schema = 'public'
+  LOOP
+    EXECUTE 'ALTER SEQUENCE ' || r.obj || ' OWNER TO nukara';
+  END LOOP;
+END $$;
+SQL
+}
+
 setup_postgres() {
   log "Setting up PostgreSQL database..."
 
   # Create user and database
-  sudo -u postgres psql -tc "SELECT 1 FROM pg_roles WHERE rolname='nukara'" | grep -q 1 || \
-    sudo -u postgres psql -c "CREATE USER nukara WITH PASSWORD '${POSTGRES_PASSWORD}';"
+  ensure_nukara_postgres_role
 
-  sudo -u postgres psql -tc "SELECT 1 FROM pg_database WHERE datname='nukara'" | grep -q 1 || \
-    sudo -u postgres psql -c "CREATE DATABASE nukara OWNER nukara;"
+  run_postgres_psql -tc "SELECT 1 FROM pg_database WHERE datname='nukara'" | grep -q 1 || \
+    run_postgres_psql -c "CREATE DATABASE nukara OWNER nukara;"
 
-  sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE nukara TO nukara;" 2>/dev/null || true
+  repair_postgres_permissions
 
   # Execute migrations
   log "Running database migrations..."
@@ -545,12 +763,14 @@ setup_postgres() {
     for migration in "$INSTALL_DIR/Nukara_Backend/migrations"/*.sql; do
       if [ -f "$migration" ]; then
         log "  Applying $(basename "$migration")..."
-        sudo -u postgres psql -d nukara -f "$migration" || warn "Migration failed: $migration"
+        run_nukara_psql -f "$migration" || err "Migration failed: $migration"
       fi
     done
   else
     warn "Migrations directory not found, skipping migrations"
   fi
+
+  repair_postgres_permissions
 
   log "PostgreSQL database ready"
 }
@@ -930,11 +1150,11 @@ main() {
   init_deploy_state
 
   if [ "$FORCE_CLEAN" = true ]; then
-    cleanup_pre_deploy "$DRY_RUN"
+    perform_pre_deploy_cleanup
   fi
 
-  # Dry run mode
-  if [ "$DRY_RUN" = true ]; then
+  # Dry run mode without data reset exits immediately after change detection.
+  if [ "$DRY_RUN" = true ] && [ "$RESET_DATA" != true ]; then
     dry_run_changes
   fi
 
@@ -958,6 +1178,14 @@ main() {
   fi
 
   collect_config
+  confirm_reset_data
+  if [ "$RESET_DATA" = true ]; then
+    perform_pre_deploy_cleanup
+    if [ "$DRY_RUN" = true ]; then
+      reset_nukara_data
+      exit 0
+    fi
+  fi
 
   # Lock deployment source before cleanup, then clear /opt residue and rebuild.
   lock_deploy_source
@@ -968,6 +1196,9 @@ main() {
   log "Forced full rebuild after residue cleanup"
 
   install_deps
+  if [ "$RESET_DATA" = true ]; then
+    reset_nukara_data
+  fi
   install_go
   install_node
   prepare_sources

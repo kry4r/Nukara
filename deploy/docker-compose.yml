@@ -4,7 +4,7 @@ services:
     image: postgres:15-alpine
     environment:
       POSTGRES_DB: nukara
-      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_USER: ${POSTGRES_USER:-nukara}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
     volumes:
       - pgdata:/var/lib/postgresql/data
@@ -47,7 +47,7 @@ services:
         SERVICE: gateway
     environment:
       NUKARA_JWT_SECRET: ${JWT_SECRET}
-      NUKARA_POSTGRES_DSN: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/nukara?sslmode=disable
+      NUKARA_POSTGRES_DSN: postgres://${POSTGRES_USER:-nukara}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/nukara?sslmode=disable
       NUKARA_REDIS_ADDR: redis:6379
       NUKARA_ASTRON_BASE_URL: ${NUKARA_ASTRON_BASE_URL:-https://maas-api.cn-huabei-1.xf-yun.com/v2}
       NUKARA_ASTRON_API_KEY: ${NUKARA_ASTRON_API_KEY:-}
@@ -94,7 +94,7 @@ services:
         SERVICE: proactive
     environment:
       NUKARA_JWT_SECRET: ${JWT_SECRET}
-      NUKARA_POSTGRES_DSN: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/nukara?sslmode=disable
+      NUKARA_POSTGRES_DSN: postgres://${POSTGRES_USER:-nukara}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/nukara?sslmode=disable
       NUKARA_REDIS_ADDR: redis:6379
       NUKARA_ASTRON_BASE_URL: ${NUKARA_ASTRON_BASE_URL:-https://maas-api.cn-huabei-1.xf-yun.com/v2}
       NUKARA_ASTRON_API_KEY: ${NUKARA_ASTRON_API_KEY:-}
