@@ -283,6 +283,15 @@ select {
   gap: 8px;
 }
 
+.embedding-config-card {
+  border: 1px solid #d8dfcb;
+  border-radius: 12px;
+  background: #fbfdf8;
+  padding: 10px 12px;
+  display: grid;
+  gap: 8px;
+}
+
 .create-actions {
   display: flex;
   justify-content: flex-end;

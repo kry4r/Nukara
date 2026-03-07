@@ -29,6 +29,7 @@ export const useChatStore = defineStore('chat', () => {
       .replace(/<think>[\s\S]*?<\/think>/gi, '')
       .replace(/```(?:thinking|analysis)[\s\S]*?```/gi, '')
       .replace(/^\s*(?:thinking|analysis|思考|推理)[:：].*$/gim, '')
+      .replaceAll('<<<MSG>>>', '')
     while (text.includes('\n\n\n')) {
       text = text.replaceAll('\n\n\n', '\n\n')
     }
@@ -272,7 +273,14 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   function handleError(data) {
-    errorBanner.value = data?.message || '对话服务暂时不可用，请稍后重试。'
+    const message = data?.message || '对话服务暂时不可用，请稍后重试。'
+    if (message === 'session invalidated' || message === 'Unauthorized') {
+      localStorage.removeItem('nukara_token')
+      localStorage.removeItem('nukara_user')
+      window.location.href = '/auth'
+      return
+    }
+    errorBanner.value = message
     isRemoteTyping.value = false
   }
 

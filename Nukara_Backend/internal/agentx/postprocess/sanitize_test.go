@@ -60,3 +60,28 @@ func TestStreamSanitizer_DoesNotLeakMemoryTags(t *testing.T) {
 		t.Fatalf("visible text missing: %q", combined)
 	}
 }
+
+func TestStreamSanitizer_StripsMessageBoundaryProtocolAcrossChunks(t *testing.T) {
+	s := NewStreamSanitizer()
+	out1 := s.Push("先去吃饭<<<")
+	out2 := s.Push("MSG>>>吃完再和我说")
+
+	combined := out1 + out2
+	if strings.Contains(combined, MessageBoundaryToken) {
+		t.Fatalf("message boundary leaked: %q", combined)
+	}
+	if combined != "先去吃饭吃完再和我说" {
+		t.Fatalf("combined = %q", combined)
+	}
+}
+
+func TestSanitizeVisible_StripsMessageBoundaryProtocol(t *testing.T) {
+	in := "先去吃饭<<<MSG>>>吃完再和我说"
+	got := SanitizeVisible(in)
+	if strings.Contains(got, MessageBoundaryToken) {
+		t.Fatalf("message boundary leaked: %q", got)
+	}
+	if got != "先去吃饭吃完再和我说" {
+		t.Fatalf("sanitize visible = %q", got)
+	}
+}

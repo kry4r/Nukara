@@ -57,10 +57,22 @@ func (r *Router) ResolveEmbeddingRoute() (Route, error) {
 		return Route{}, err
 	}
 
+	embeddingBaseURL, _ := r.store.GetSystemSetting("embedding_base_url")
+	embeddingAPIKey, _ := r.store.GetSystemSetting("embedding_api_key")
 	embeddingProviderID, _ := r.store.GetSystemSetting("embedding_provider_id")
 	embeddingModel, _ := r.store.GetSystemSetting("embedding_model")
 	defaultProviderID, _ := r.store.GetSystemSetting("default_chat_provider_id")
 	defaultModel, _ := r.store.GetSystemSetting("default_chat_model")
+
+	if baseURL := strings.TrimSpace(embeddingBaseURL); baseURL != "" {
+		return Route{
+			ProviderID: firstNonEmpty(embeddingProviderID, "embedding_custom"),
+			Model:      firstNonEmpty(embeddingModel, defaultModel),
+			BaseURL:    strings.TrimRight(baseURL, "/"),
+			APIKey:     strings.TrimSpace(embeddingAPIKey),
+			APIMode:    "chat_completions",
+		}, nil
+	}
 
 	if provider, found := findProvider(sorted, embeddingProviderID); found {
 		return buildRoute(provider, firstNonEmpty(embeddingModel, defaultModel)), nil

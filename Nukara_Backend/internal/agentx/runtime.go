@@ -120,8 +120,8 @@ func (r *Runtime) StreamTurn(ctx context.Context, req TurnRequest) (<-chan Strea
 
 		clean, statusEmoji, statusText := agent.ExtractStatus(agent.SanitizeLLMReply(fullRaw), "")
 		clean, emotion := agent.ExtractEmotion(clean)
-		clean = strings.TrimSpace(postprocess.StripSegmentProtocol(clean))
-		if clean == "" {
+		clean = strings.TrimSpace(clean)
+		if strings.TrimSpace(postprocess.SanitizeVisible(clean)) == "" {
 			finalCh <- fallbackTurn()
 			return
 		}

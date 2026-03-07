@@ -140,6 +140,22 @@ export function listUserProviderSettings({ q = '', limit = 50, offset = 0 } = {}
   return request(`/users/provider-settings${query ? `?${query}` : ''}`)
 }
 
+export function getEmbeddingConfig() {
+  return request('/settings/embedding-config')
+}
+
+export function updateEmbeddingConfig(payload) {
+  return request('/settings/embedding-config', {
+    method: 'PUT',
+    body: {
+      base_url: payload.base_url || '',
+      api_key: payload.api_key || '',
+      model: payload.model || '',
+      provider_id: payload.provider_id || '',
+    },
+  })
+}
+
 export function updateUserProviderSetting(userId, payload) {
   return request(`/users/provider-settings/${userId}`, {
     method: 'PUT',

@@ -450,7 +450,9 @@ VALUES
     ('default_chat_provider_id', '{"value":"minimax_m2_5"}'::jsonb, NOW()),
     ('default_chat_model', '{"value":"MiniMax-M2.5"}'::jsonb, NOW()),
     ('embedding_provider_id', '{"value":"minimax_m2_5"}'::jsonb, NOW()),
-    ('embedding_model', '{"value":"MiniMax-M2.5"}'::jsonb, NOW())
+    ('embedding_model', '{"value":"MiniMax-M2.5"}'::jsonb, NOW()),
+    ('embedding_base_url', '{"value":""}'::jsonb, NOW()),
+    ('embedding_api_key', '{"value":""}'::jsonb, NOW())
 ON CONFLICT (key) DO NOTHING;
 `
 	_, err := db.ExecContext(ctx, schema)
@@ -634,10 +636,33 @@ func (p *PostgresStore) FindUserByPhone(phone string) (User, bool) {
 		 WHERE phone=$1`, phone,
 	).Scan(&user.ID, &user.Phone, &user.Nickname, &avatar, &user.CreatedAt)
 	if err != nil {
-		if !errors.Is(err, sql.ErrNoRows) {
-			log.Printf("find user by phone failed: %v", err)
+		if errors.Is(err, sql.ErrNoRows) {
+			return User{}, false
 		}
+		log.Printf("find user by phone failed: %v", err)
 		return p.Store.FindUserByPhone(phone)
+	}
+	user.Avatar = avatar.String
+	return user, true
+}
+
+func (p *PostgresStore) FindUserByID(id string) (User, bool) {
+	ctx, cancel := p.withTimeout()
+	defer cancel()
+
+	var user User
+	var avatar sql.NullString
+	err := p.db.QueryRowContext(ctx,
+		`SELECT id, phone, nickname, avatar_url, created_at
+		 FROM users
+		 WHERE id=$1`, id,
+	).Scan(&user.ID, &user.Phone, &user.Nickname, &avatar, &user.CreatedAt)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return User{}, false
+		}
+		log.Printf("find user by id failed: %v", err)
+		return p.Store.FindUserByID(id)
 	}
 	user.Avatar = avatar.String
 	return user, true

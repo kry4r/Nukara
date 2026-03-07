@@ -226,3 +226,22 @@ func TestRuntimeForwardsSystemPromptAndHistory(t *testing.T) {
 		t.Fatalf("history forwarded incorrectly: %#v", req.History)
 	}
 }
+
+func TestRuntimePreservesExplicitMessageBoundaryProtocolInFinalTurn(t *testing.T) {
+	client := &captureStreamClient{chunks: []string{"先去吃饭<<<MSG>>>吃完再和我说"}}
+	rt := NewRuntime(RuntimeDeps{ProviderClient: client})
+
+	_, finalCh, err := rt.StreamTurn(context.Background(), TurnRequest{
+		UserID:         "user-1",
+		BotID:          "bot-1",
+		ConversationID: "conv-1",
+		AggregatedText: "你现在要去做什么",
+	})
+	if err != nil {
+		t.Fatalf("StreamTurn failed: %v", err)
+	}
+
+	if got := readFinalText(t, finalCh); got != "先去吃饭<<<MSG>>>吃完再和我说" {
+		t.Fatalf("final text = %q", got)
+	}
+}

@@ -22,12 +22,6 @@ func SplitSegments(text string, maxRunes int) []string {
 		for _, sentence := range sentences {
 			runes := []rune(sentence)
 			if len(runes) <= maxRunes {
-				if len(runes) > 24 {
-					if paused := splitByPause(sentence); len(paused) > 1 {
-						segments = append(segments, paused...)
-						continue
-					}
-				}
 				segments = append(segments, strings.TrimSpace(sentence))
 				continue
 			}
@@ -37,11 +31,6 @@ func SplitSegments(text string, maxRunes int) []string {
 	}
 
 	if len([]rune(text)) <= maxRunes {
-		if len([]rune(text)) > 24 {
-			if paused := splitByPause(text); len(paused) > 1 {
-				return compactSegments(paused)
-			}
-		}
 		return []string{text}
 	}
 	return compactSegments(splitLongByMaxRunes(text, maxRunes))
@@ -143,4 +132,3 @@ func compactSegments(segments []string) []string {
 	}
 	return out
 }
-

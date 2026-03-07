@@ -119,7 +119,7 @@ func TestOpenAICompatClientUsesChatCompletionsEndpoint(t *testing.T) {
 		return &http.Response{
 			StatusCode: http.StatusOK,
 			Header:     http.Header{"Content-Type": []string{"application/json"}},
-			Body: io.NopCloser(strings.NewReader(`{"choices":[{"message":{"content":"completion-ok"}}]}`)),
+			Body:       io.NopCloser(strings.NewReader(`{"choices":[{"message":{"content":"completion-ok"}}]}`)),
 		}, nil
 	})}
 
@@ -165,15 +165,18 @@ func TestOpenAICompatEmbedderUsesEmbeddingsEndpoint(t *testing.T) {
 		if req.URL.Path != "/v1/embeddings" {
 			t.Fatalf("path = %q, want /v1/embeddings", req.URL.Path)
 		}
+		if req.Header.Get("Authorization") != "Bearer sk-test" {
+			t.Fatalf("authorization = %q", req.Header.Get("Authorization"))
+		}
 		body, _ := io.ReadAll(req.Body)
 		payload := string(body)
-		if !strings.Contains(payload, `"model":"text-embedding-3-small"`) || !strings.Contains(payload, `喜欢海边`) {
+		if !strings.Contains(payload, `"model":"text-embedding-3-small"`) || !strings.Contains(payload, `喜欢海边`) || !strings.Contains(payload, `"encoding_format":"float"`) {
 			t.Fatalf("embedding request body mismatch: %s", payload)
 		}
 		return &http.Response{
 			StatusCode: http.StatusOK,
 			Header:     http.Header{"Content-Type": []string{"application/json"}},
-			Body: io.NopCloser(strings.NewReader(`{"data":[{"embedding":[0.1,0.2,0.3]}]}`)),
+			Body:       io.NopCloser(strings.NewReader(`{"data":[{"embedding":[0.1,0.2,0.3]}]}`)),
 		}, nil
 	})}
 

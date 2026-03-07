@@ -45,6 +45,7 @@ func (s *Server) setupRoutes() {
 	s.router.HandleFunc("/api/admin/runtime/restart-agent-runtime", s.authMiddleware(s.handleRestartRuntime))
 	s.router.HandleFunc("/api/admin/users/provider-settings", s.authMiddleware(s.handleUserProviderSettings))
 	s.router.HandleFunc("/api/admin/users/provider-settings/", s.authMiddleware(s.handleUserProviderSettingByUser))
+	s.router.HandleFunc("/api/admin/settings/embedding-config", s.authMiddleware(s.handleEmbeddingConfig))
 
 	// 主动消息配置
 	s.router.HandleFunc("/api/admin/proactive/config", s.authMiddleware(s.handleProactiveConfig))
