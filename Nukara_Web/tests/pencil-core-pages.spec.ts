@@ -85,6 +85,70 @@ test('bot form page renders persona v2 labels', async ({ page }) => {
   await expect(page.getByText('禁忌与偏好')).toBeVisible()
 })
 
+test('bot form page keeps create action reachable on mobile', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.addInitScript(() => {
+    localStorage.setItem('nukara_token', 'test-token')
+  })
+
+  let createCount = 0
+  await page.route('**/api/v1/bots', async (route, request) => {
+    if (request.method() === 'POST') {
+      createCount += 1
+      const body = request.postDataJSON()
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          id: 'bot-1',
+          name: body.name,
+          identity: body.identity,
+          personality: body.personality,
+          expression_style: body.expression_style,
+          life_context: body.life_context,
+          taboos_and_preferences: body.taboos_and_preferences,
+        }),
+      })
+      return
+    }
+
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify([
+        {
+          id: 'bot-1',
+          name: '测试 Bot',
+          personality: [],
+        },
+      ]),
+    })
+  })
+
+  await page.goto(`${WEB_URL}/bots/new`)
+
+  const formBody = page.locator('.form-body')
+  await expect(formBody).toBeVisible()
+
+  const overflow = await formBody.evaluate((el) => ({
+    scrollHeight: el.scrollHeight,
+    clientHeight: el.clientHeight,
+  }))
+  expect(overflow.scrollHeight).toBeGreaterThan(overflow.clientHeight)
+
+  await page.getByPlaceholder('给 Bot 起个名字').fill('测试 Bot')
+
+  const submitBtn = page.locator('.submit-btn')
+  await expect(submitBtn).toBeVisible()
+  const box = await submitBtn.boundingBox()
+  expect(box).not.toBeNull()
+  expect((box?.y ?? 0) + (box?.height ?? 0)).toBeLessThanOrEqual(844)
+
+  await submitBtn.click()
+  await page.waitForURL(`${WEB_URL}/bots`)
+  expect(createCount).toBe(1)
+})
+
 test('bot detail page renders persona v2 sections', async ({ page }) => {
   await page.addInitScript(() => {
     localStorage.setItem('nukara_token', 'test-token')

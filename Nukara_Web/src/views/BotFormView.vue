@@ -80,37 +80,41 @@ async function handleSubmit() {
       <h2>{{ isEdit ? '编辑 Bot' : '创建 Bot' }}</h2>
     </header>
 
-    <form class="form-body" @submit.prevent="handleSubmit">
-      <label class="field">
-        <span class="label">名称</span>
-        <input v-model="form.name" type="text" placeholder="给 Bot 起个名字" />
-      </label>
-      <label class="field">
-        <span class="label">身份设定</span>
-        <textarea v-model="form.identity" rows="3" placeholder="例如：你的恋人，也是会认真接住你情绪的人"></textarea>
-      </label>
-      <label class="field">
-        <span class="label">性格特征</span>
-        <textarea v-model="form.personalityText" rows="2" placeholder="用顿号、逗号或换行分隔，例如：细腻、敏锐、会观察"></textarea>
-      </label>
-      <label class="field">
-        <span class="label">表达风格</span>
-        <textarea v-model="form.expression_style" rows="2" placeholder="例如：口语化，短句，会接梗"></textarea>
-      </label>
-      <label class="field">
-        <span class="label">生活环境</span>
-        <textarea v-model="form.life_context" rows="3" placeholder="例如：现在住在东京，平时摄影、通勤、喝便利店咖啡"></textarea>
-      </label>
-      <label class="field">
-        <span class="label">禁忌与偏好</span>
-        <textarea v-model="form.taboos_and_preferences" rows="3" placeholder="例如：不喜欢被命令式对待，更喜欢被温柔回应"></textarea>
-      </label>
+    <form class="form-shell" @submit.prevent="handleSubmit">
+      <div class="form-body">
+        <label class="field">
+          <span class="label">名称</span>
+          <input v-model="form.name" type="text" placeholder="给 Bot 起个名字" />
+        </label>
+        <label class="field">
+          <span class="label">身份设定</span>
+          <textarea v-model="form.identity" rows="3" placeholder="例如：你的恋人，也是会认真接住你情绪的人"></textarea>
+        </label>
+        <label class="field">
+          <span class="label">性格特征</span>
+          <textarea v-model="form.personalityText" rows="2" placeholder="用顿号、逗号或换行分隔，例如：细腻、敏锐、会观察"></textarea>
+        </label>
+        <label class="field">
+          <span class="label">表达风格</span>
+          <textarea v-model="form.expression_style" rows="2" placeholder="例如：口语化，短句，会接梗"></textarea>
+        </label>
+        <label class="field">
+          <span class="label">生活环境</span>
+          <textarea v-model="form.life_context" rows="3" placeholder="例如：现在住在东京，平时摄影、通勤、喝便利店咖啡"></textarea>
+        </label>
+        <label class="field">
+          <span class="label">禁忌与偏好</span>
+          <textarea v-model="form.taboos_and_preferences" rows="3" placeholder="例如：不喜欢被命令式对待，更喜欢被温柔回应"></textarea>
+        </label>
+      </div>
 
-      <div v-if="bots.error" class="error">{{ bots.error }}</div>
+      <div class="form-actions">
+        <div v-if="bots.error" class="error">{{ bots.error }}</div>
 
-      <button type="submit" class="submit-btn" :disabled="saving || !form.name.trim()">
-        {{ saving ? '保存中...' : (isEdit ? '保存' : '创建') }}
-      </button>
+        <button type="submit" class="submit-btn" :disabled="saving || !form.name.trim()">
+          {{ saving ? '保存中...' : (isEdit ? '保存' : '创建') }}
+        </button>
+      </div>
     </form>
   </div>
 </template>
@@ -118,9 +122,19 @@ async function handleSubmit() {
 <style scoped>
 .form-page {
   flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
   background: linear-gradient(180deg, #f8faef 0%, #f2f6ea 68%, #edf2e2 100%);
+}
+
+.form-shell {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
 .form-header {
@@ -130,6 +144,8 @@ async function handleSubmit() {
   padding: 16px;
   border-bottom: 1px solid var(--border-default);
   background: rgba(255, 255, 255, 0.78);
+  flex-shrink: 0;
+  backdrop-filter: blur(10px);
 }
 
 .back-btn {
@@ -145,11 +161,29 @@ async function handleSubmit() {
 }
 
 .form-body {
-  padding: 20px 16px calc(20px + 76px);
+  flex: 1;
+  min-height: 0;
+  padding: 20px 16px 24px;
   display: flex;
   flex-direction: column;
   gap: 16px;
   overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+.form-actions {
+  position: sticky;
+  bottom: 0;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 16px calc(12px + env(safe-area-inset-bottom, 0));
+  border-top: 1px solid rgba(190, 203, 174, 0.9);
+  background: linear-gradient(180deg, rgba(248, 250, 239, 0.94) 0%, rgba(242, 246, 234, 0.98) 100%);
+  backdrop-filter: blur(12px);
+  z-index: 1;
 }
 
 .field {
@@ -189,7 +223,8 @@ async function handleSubmit() {
 }
 
 .submit-btn {
-  margin-top: 8px;
+  width: 100%;
+  min-height: 52px;
   padding: 14px;
   background: #7ba05b;
   color: #fff;
