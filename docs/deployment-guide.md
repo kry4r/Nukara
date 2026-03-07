@@ -161,6 +161,7 @@ sudo bash deploy/deploy-local.sh --reset-data
 - 交互模式下需要手动输入 `RESET` 确认
 - `--non-interactive` 下不会再二次确认，请谨慎使用
 - `--dry-run --reset-data` 只打印将执行的清理动作，不实际删除数据
+- Neo4j 认证失败时，脚本会自动清空本地 Neo4j data/auth 状态，并在后续安装步骤中按当前配置重新初始化密码与数据库
 
 ### 部署状态
 

@@ -232,7 +232,7 @@ wait_for_neo4j_ready() {
     elapsed=$((elapsed + 2))
   done
 
-  err "Neo4j readiness check failed. Verify NUKARA_NEO4J_PASSWORD matches the installed database password."
+  return 1
 }
 
 install_neo4j_repository() {
@@ -287,7 +287,7 @@ install_neo4j() {
 
   systemctl enable neo4j
   systemctl restart neo4j
-  wait_for_neo4j_ready 90
+  wait_for_neo4j_ready 90 || err "Neo4j readiness check failed. Verify NUKARA_NEO4J_PASSWORD matches the installed database password."
 }
 
 install_memory_infra() {

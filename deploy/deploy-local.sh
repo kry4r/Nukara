@@ -672,6 +672,24 @@ reset_qdrant_data() {
   esac
 }
 
+reset_neo4j_auth_and_data() {
+  warn "Neo4j password mismatch detected; resetting local Neo4j auth and data"
+  if [ "$DRY_RUN" = true ]; then
+    log "  [dry-run] would stop Neo4j and clear /var/lib/neo4j/data/databases/*, /var/lib/neo4j/data/transactions/*, and /var/lib/neo4j/data/dbms/auth*"
+    return 0
+  fi
+
+  if systemd_unit_exists nukara-neo4j-adapter; then
+    systemctl stop nukara-neo4j-adapter 2>/dev/null || true
+  fi
+  systemctl stop neo4j 2>/dev/null || true
+  rm -rf /var/lib/neo4j/data/databases/*
+  rm -rf /var/lib/neo4j/data/transactions/*
+  rm -rf /var/lib/neo4j/data/dbms/*
+  mkdir -p /var/lib/neo4j/data/databases /var/lib/neo4j/data/transactions /var/lib/neo4j/data/dbms
+  chown -R neo4j:neo4j /var/lib/neo4j/data 2>/dev/null || true
+}
+
 reset_neo4j_data() {
   [ "${NUKARA_MEMORY_INFRA_ENABLED:-true}" = "true" ] || return 0
 
@@ -689,7 +707,10 @@ reset_neo4j_data() {
     return 0
   }
 
-  wait_for_neo4j_ready 30
+  wait_for_neo4j_ready 30 || {
+    reset_neo4j_auth_and_data
+    return 0
+  }
   cypher-shell \
     -a "bolt://127.0.0.1:${NUKARA_NEO4J_BOLT_PORT}" \
     -u "${NUKARA_NEO4J_USER}" \
