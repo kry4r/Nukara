@@ -129,6 +129,17 @@ func proactivePrompt(trigger string, systemContext map[string]any) string {
 	if since, ok := systemContext["time_since_last_user_message"].(string); ok && strings.TrimSpace(since) != "" {
 		hints = append(hints, fmt.Sprintf("距上次用户消息：%s", strings.TrimSpace(since)))
 	}
+	if localTime, ok := systemContext["local_time"].(string); ok && strings.TrimSpace(localTime) != "" {
+		localHint := fmt.Sprintf("角色当地时间：%s", strings.TrimSpace(localTime))
+		if timezone, ok := systemContext["local_timezone"].(string); ok && strings.TrimSpace(timezone) != "" {
+			localHint += "（" + strings.TrimSpace(timezone)
+			if dayPhase, ok := systemContext["day_phase"].(string); ok && strings.TrimSpace(dayPhase) != "" {
+				localHint += "，" + strings.TrimSpace(dayPhase)
+			}
+			localHint += "）"
+		}
+		hints = append(hints, localHint)
+	}
 
 	contextHint := ""
 	if len(hints) > 0 {
@@ -289,6 +300,11 @@ func BuildSystemContext(bot store.Bot, directives []store.Directive, userStatus 
 	if bot.Background != "" {
 		ctx["background"] = bot.Background
 	}
+	if strings.TrimSpace(bot.LifeContext) != "" {
+		ctx["life_context"] = strings.TrimSpace(bot.LifeContext)
+	} else if strings.TrimSpace(bot.Background) != "" {
+		ctx["life_context"] = strings.TrimSpace(bot.Background)
+	}
 	if bot.Gender != "" {
 		ctx["gender"] = bot.Gender
 	}
@@ -335,4 +351,10 @@ const chatStyleSkill = `【聊天风格规则 — 严格遵守】
    - 日常闲聊（天气、时间、新闻等）→ 用角色身份自然回答，不要调用任何工具
    - 例如用户问"今天天气怎么样" → 像朋友一样随口聊，比如"感觉今天还不错呢"，不要去查真实天气
    - 只有用户明确要求查找具体信息时才考虑使用工具
-   - 禁止：为了回答简单闲聊而调用天气、搜索等工具，这会导致回复极慢`
+   - 禁止：为了回答简单闲聊而调用天气、搜索等工具，这会导致回复极慢
+
+6. 微信分条规则：你先判断这一轮应该发一条还是多条。
+   - 一句就够时，直接输出一句，不要加任何额外标记
+   - 如果更像微信连续发两三条消息，请用 <<<MSG>>> 作为分隔符
+   - 例如：先去吃饭<<<MSG>>>吃完再和我说
+   - 禁止编号、禁止解释、禁止先说“我分成两条发给你”`

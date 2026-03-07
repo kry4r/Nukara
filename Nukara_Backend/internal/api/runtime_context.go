@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"sort"
 	"strings"
+	"time"
 
 	"nukara/backend/internal/agentx"
 	agentxmemory "nukara/backend/internal/agentx/memory"
@@ -18,14 +19,15 @@ const (
 )
 
 func (s *Server) newTurnRequest(userID, botID, conversationID, prompt string, userMessageIDs []string, systemContext map[string]any) agentx.TurnRequest {
-	systemPrompt, history := s.buildRuntimeContext(userID, botID, conversationID, prompt, userMessageIDs, systemContext)
+	enrichedContext := enrichLocaleSystemContext(systemContext, time.Now().UTC())
+	systemPrompt, history := s.buildRuntimeContext(userID, botID, conversationID, prompt, userMessageIDs, enrichedContext)
 	return agentx.TurnRequest{
 		UserID:         strings.TrimSpace(userID),
 		BotID:          strings.TrimSpace(botID),
 		ConversationID: strings.TrimSpace(conversationID),
 		AggregatedText: strings.TrimSpace(prompt),
 		UserMessageIDs: append([]string(nil), userMessageIDs...),
-		SystemContext:  systemContext,
+		SystemContext:  enrichedContext,
 		SystemPrompt:   systemPrompt,
 		History:        history,
 	}
@@ -110,6 +112,7 @@ func formatSystemPrompt(systemContext map[string]any, compactText, memoryText st
 	appendLine("【角色特质】", stringifySystemContextValue(systemContext["traits"]))
 	appendLine("【用户要求】", stringifySystemContextValue(systemContext["user_directives"]))
 	appendLine("【用户状态】", stringifySystemContextValue(systemContext["user_status"]))
+	appendLine("【本地时间】", formatLocaleContext(systemContext))
 	appendLine("【状态标签规则】", stringifySystemContextValue(systemContext["status_instruction"]))
 	appendLine("【工具策略】", stringifySystemContextValue(systemContext["tool_policy"]))
 	appendLine("【聊天风格规则】", stringifySystemContextValue(systemContext["chat_style_skill"]))

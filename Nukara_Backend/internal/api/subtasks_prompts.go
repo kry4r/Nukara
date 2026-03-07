@@ -57,7 +57,7 @@ func buildCompactPrompt(userText, botText string) string {
 func buildPersonaIteratePrompt(userText, botText string) string {
 	return fmt.Sprintf(`[system:persona_iterate_json]
 请输出角色可追加的人设补丁JSON：
-{"relationship":"","role":"","self_cognition_adds":[],"speaking_style_adds":[],"trait_adds":[],"gender":""}
+{"identity_adds":[],"personality_adds":[],"expression_style_adds":[],"life_context_adds":[],"taboos_and_preferences_adds":[]}
 用户：%s
 机器人：%s`, userText, botText)
 }

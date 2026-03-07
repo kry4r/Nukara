@@ -22,25 +22,19 @@ type proactiveScheduler struct {
 	stop     chan struct{}
 }
 
-// frequencyCooldown maps frequency setting to minimum time between proactive messages.
+// getProactiveCooldown resolves the effective proactive interval for a user.
 // Override all with NUKARA_PROACTIVE_COOLDOWN env var (e.g. "5m" for dev testing).
-var frequencyCooldown = map[string]time.Duration{
-	"high":   2 * time.Hour,
-	"normal": 4 * time.Hour,
-	"low":    8 * time.Hour,
-}
-
-func getFrequencyCooldown(freq string) time.Duration {
+func getProactiveCooldown(settings store.NotificationSettings) time.Duration {
 	if v := os.Getenv("NUKARA_PROACTIVE_COOLDOWN"); v != "" {
 		if d, err := time.ParseDuration(v); err == nil {
 			return d
 		}
 	}
-	cd := frequencyCooldown[freq]
-	if cd == 0 {
-		cd = frequencyCooldown["normal"]
+	minutes := settings.ProactiveIntervalMinutes
+	if minutes <= 0 {
+		minutes = store.DefaultProactiveIntervalMinutes
 	}
-	return cd
+	return time.Duration(minutes) * time.Minute
 }
 
 // triggerWindow defines a time-of-day window for a trigger type.
@@ -126,11 +120,27 @@ func (ps *proactiveScheduler) processUser(userID string, now time.Time) {
 	if !settings.ProactiveEnabled {
 		return
 	}
-	if isDND(settings, now) {
+
+	conversations := ps.server.store.ListConversations(userID)
+	if len(conversations) == 0 {
+		return
+	}
+	conv := conversations[0]
+	bot, found := ps.server.store.GetBot(userID, conv.BotID)
+	if !found {
 		return
 	}
 
-	cooldown := getFrequencyCooldown(settings.Frequency)
+	locale := InferLocaleContext(bot.LifeContext, now)
+	localNow := locale.LocalNow()
+	if localNow.IsZero() {
+		localNow = now
+	}
+	if isDND(settings, localNow) {
+		return
+	}
+
+	cooldown := getProactiveCooldown(settings)
 
 	// Check recent proactive logs to enforce cooldown.
 	recentLogs := ps.server.store.ListProactiveLogs(userID, 1)
@@ -138,16 +148,11 @@ func (ps *proactiveScheduler) processUser(userID string, now time.Time) {
 		return
 	}
 
-	conversations := ps.server.store.ListConversations(userID)
-	if len(conversations) == 0 {
-		return
-	}
 	online := ps.server.store.IsUserWSOnline(userID)
 	lastUserAt, _ := ps.server.store.GetLastUserMessageAt(userID)
 
 	// Back-off: if user hasn't responded since last proactive message, increase cooldown.
 	// Check the most recent conversation's messages to see if user replied.
-	conv := conversations[0]
 	if len(recentLogs) > 0 {
 		msgs, _ := ps.server.store.ListMessages(userID, conv.ID, 10)
 		unanswered := 0
@@ -173,7 +178,7 @@ func (ps *proactiveScheduler) processUser(userID string, now time.Time) {
 	}
 
 	// Determine trigger type based on current time.
-	triggerType := ps.detectTrigger(now, conversations, emotionTrend)
+	triggerType := ps.detectTrigger(localNow, conversations, emotionTrend)
 	if triggerType == "" {
 		return
 	}
@@ -189,11 +194,6 @@ func (ps *proactiveScheduler) processUser(userID string, now time.Time) {
 				return
 			}
 		}
-	}
-
-	bot, found := ps.server.store.GetBot(userID, conv.BotID)
-	if !found {
-		return
 	}
 
 	ps.server.sendProactiveMessage(userID, bot, conv, triggerType)

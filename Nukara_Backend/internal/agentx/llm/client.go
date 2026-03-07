@@ -4,7 +4,8 @@ import (
 	"context"
 	"errors"
 	"strings"
-	"unicode/utf8"
+
+	"nukara/backend/internal/agentx/postprocess"
 )
 
 type ChatMessage struct {
@@ -60,7 +61,7 @@ func (c *LegacyAgentClient) StreamChat(ctx context.Context, req ChatRequest) (<-
 			return
 		}
 
-		for _, chunk := range splitByRuneWindow(reply, 8) {
+		for _, chunk := range postprocess.SplitSegments(reply, 80) {
 			select {
 			case <-ctx.Done():
 				errCh <- ctx.Err()
@@ -73,34 +74,3 @@ func (c *LegacyAgentClient) StreamChat(ctx context.Context, req ChatRequest) (<-
 	return deltaCh, errCh, nil
 }
 
-func splitByRuneWindow(s string, window int) []string {
-	if strings.TrimSpace(s) == "" {
-		return nil
-	}
-	if window <= 0 {
-		return []string{s}
-	}
-
-	var out []string
-	var b strings.Builder
-	runes := 0
-	for len(s) > 0 {
-		r, size := utf8.DecodeRuneInString(s)
-		if r == utf8.RuneError && size == 1 {
-			s = s[size:]
-			continue
-		}
-		b.WriteRune(r)
-		runes++
-		s = s[size:]
-		if runes >= window {
-			out = append(out, b.String())
-			b.Reset()
-			runes = 0
-		}
-	}
-	if b.Len() > 0 {
-		out = append(out, b.String())
-	}
-	return out
-}

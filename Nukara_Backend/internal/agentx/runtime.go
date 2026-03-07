@@ -8,6 +8,7 @@ import (
 
 	"nukara/backend/internal/agent"
 	"nukara/backend/internal/agentx/llm"
+	"nukara/backend/internal/agentx/postprocess"
 	"nukara/backend/internal/agentx/provider"
 )
 
@@ -119,7 +120,7 @@ func (r *Runtime) StreamTurn(ctx context.Context, req TurnRequest) (<-chan Strea
 
 		clean, statusEmoji, statusText := agent.ExtractStatus(agent.SanitizeLLMReply(fullRaw), "")
 		clean, emotion := agent.ExtractEmotion(clean)
-		clean = strings.TrimSpace(clean)
+		clean = strings.TrimSpace(postprocess.StripSegmentProtocol(clean))
 		if clean == "" {
 			finalCh <- fallbackTurn()
 			return

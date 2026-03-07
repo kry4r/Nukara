@@ -2,6 +2,8 @@ package postprocess
 
 import "strings"
 
+const MessageBoundaryToken = "<<<MSG>>>"
+
 func SplitSegments(text string, maxRunes int) []string {
 	text = strings.TrimSpace(text)
 	if text == "" {
@@ -9,6 +11,9 @@ func SplitSegments(text string, maxRunes int) []string {
 	}
 	if maxRunes <= 0 {
 		maxRunes = 180
+	}
+	if explicit := splitByExplicitProtocol(text); len(explicit) > 0 {
+		return explicit
 	}
 
 	sentences := splitBySentence(text)
@@ -40,6 +45,22 @@ func SplitSegments(text string, maxRunes int) []string {
 		return []string{text}
 	}
 	return compactSegments(splitLongByMaxRunes(text, maxRunes))
+}
+
+func StripSegmentProtocol(text string) string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return ""
+	}
+	return strings.TrimSpace(strings.ReplaceAll(text, MessageBoundaryToken, "\n\n"))
+}
+
+func splitByExplicitProtocol(text string) []string {
+	if !strings.Contains(text, MessageBoundaryToken) {
+		return nil
+	}
+	parts := strings.Split(text, MessageBoundaryToken)
+	return compactSegments(parts)
 }
 
 func splitByPause(text string) []string {

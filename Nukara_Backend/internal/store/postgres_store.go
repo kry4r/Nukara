@@ -167,6 +167,11 @@ CREATE TABLE IF NOT EXISTS bots (
     name VARCHAR(100) NOT NULL,
     avatar_url TEXT,
     avatar_base64 TEXT,
+    identity TEXT NOT NULL DEFAULT '',
+    personality JSONB NOT NULL DEFAULT '[]'::jsonb,
+    expression_style TEXT NOT NULL DEFAULT '',
+    life_context TEXT NOT NULL DEFAULT '',
+    taboos_and_preferences TEXT NOT NULL DEFAULT '',
     summary TEXT NOT NULL,
     relationship TEXT NOT NULL DEFAULT '',
     role TEXT NOT NULL DEFAULT '',
@@ -286,6 +291,43 @@ DO $$ BEGIN
     ALTER TABLE bots ADD COLUMN persona_version INT NOT NULL DEFAULT 1;
 EXCEPTION WHEN duplicate_column THEN NULL;
 END $$;
+DO $$ BEGIN
+    ALTER TABLE bots ADD COLUMN identity TEXT NOT NULL DEFAULT '';
+EXCEPTION WHEN duplicate_column THEN NULL;
+END $$;
+DO $$ BEGIN
+    ALTER TABLE bots ADD COLUMN personality JSONB NOT NULL DEFAULT '[]'::jsonb;
+EXCEPTION WHEN duplicate_column THEN NULL;
+END $$;
+DO $$ BEGIN
+    ALTER TABLE bots ADD COLUMN expression_style TEXT NOT NULL DEFAULT '';
+EXCEPTION WHEN duplicate_column THEN NULL;
+END $$;
+DO $$ BEGIN
+    ALTER TABLE bots ADD COLUMN life_context TEXT NOT NULL DEFAULT '';
+EXCEPTION WHEN duplicate_column THEN NULL;
+END $$;
+DO $$ BEGIN
+    ALTER TABLE bots ADD COLUMN taboos_and_preferences TEXT NOT NULL DEFAULT '';
+EXCEPTION WHEN duplicate_column THEN NULL;
+END $$;
+UPDATE bots
+SET identity = COALESCE(NULLIF(identity, ''), NULLIF(summary, ''), relationship),
+    personality = CASE
+        WHEN personality = '[]'::jsonb OR personality IS NULL THEN COALESCE(traits, '[]'::jsonb)
+        ELSE personality
+    END,
+    expression_style = COALESCE(NULLIF(expression_style, ''), speaking_style),
+    life_context = COALESCE(NULLIF(life_context, ''), NULLIF(background, ''), role),
+    taboos_and_preferences = COALESCE(
+        NULLIF(taboos_and_preferences, ''),
+        NULLIF(array_to_string(ARRAY(SELECT jsonb_array_elements_text(self_cognition)), '；'), '')
+    )
+WHERE identity = ''
+   OR personality = '[]'::jsonb
+   OR expression_style = ''
+   OR life_context = ''
+   OR taboos_and_preferences = '';
 
 CREATE TABLE IF NOT EXISTS user_statuses (
     user_id UUID PRIMARY KEY,
@@ -627,9 +669,9 @@ func (p *PostgresStore) CreateUser(phone, nickname string) (User, error) {
 
 	_, _ = tx.ExecContext(ctx,
 		`INSERT INTO user_notification_settings(user_id, proactive_enabled, frequency, updated_at)
-		 VALUES($1, TRUE, 'normal', $2)
+		 VALUES($1, TRUE, $2, $3)
 		 ON CONFLICT (user_id) DO UPDATE SET updated_at = EXCLUDED.updated_at`,
-		id, now,
+		id, strconv.Itoa(DefaultProactiveIntervalMinutes), now,
 	)
 
 	if err := tx.Commit(); err != nil {
@@ -681,11 +723,9 @@ func (p *PostgresStore) UpdateNotificationSettings(userID string, input Notifica
 	ctx, cancel := p.withTimeout()
 	defer cancel()
 
-	if strings.TrimSpace(input.Frequency) == "" {
-		input.Frequency = "normal"
-	}
 	input.UserID = userID
 	input.UpdatedAt = time.Now().UTC()
+	input = normalizeNotificationSettings(input)
 
 	_, err := p.db.ExecContext(ctx,
 		`INSERT INTO user_notification_settings(user_id, proactive_enabled, dnd_start, dnd_end, frequency, updated_at)
@@ -717,31 +757,23 @@ func (p *PostgresStore) GetNotificationSettings(userID string) NotificationSetti
 	).Scan(&out.UserID, &out.ProactiveEnabled, &dndStart, &dndEnd, &out.Frequency, &out.UpdatedAt)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return NotificationSettings{UserID: userID, ProactiveEnabled: true, Frequency: "normal", UpdatedAt: time.Now().UTC()}
+			return normalizeNotificationSettings(NotificationSettings{UserID: userID, ProactiveEnabled: true, ProactiveIntervalMinutes: DefaultProactiveIntervalMinutes, UpdatedAt: time.Now().UTC()})
 		}
 		log.Printf("get notification settings failed: %v", err)
 		return p.Store.GetNotificationSettings(userID)
 	}
 	out.DNDStart = dndStart.String
 	out.DNDEnd = dndEnd.String
-	if strings.TrimSpace(out.Frequency) == "" {
-		out.Frequency = "normal"
-	}
-	return out
+	return normalizeNotificationSettings(out)
 }
 
 func (p *PostgresStore) CreateBot(userID string, bot Bot) Bot {
 	if bot.ChatBackgroundStyle == "" {
 		bot.ChatBackgroundStyle = "lightPaper"
 	}
+	bot = SyncLegacyPersonaFields(bot)
 	if bot.Gender == "" {
 		bot.Gender = "unknown"
-	}
-	if strings.TrimSpace(bot.Relationship) == "" {
-		bot.Relationship = strings.TrimSpace(bot.Summary)
-	}
-	if strings.TrimSpace(bot.Role) == "" {
-		bot.Role = strings.TrimSpace(bot.Background)
 	}
 	if bot.PersonaVersion <= 0 {
 		bot.PersonaVersion = 1
@@ -754,6 +786,7 @@ func (p *PostgresStore) CreateBot(userID string, bot Bot) Bot {
 	bot.UpdatedAt = now
 
 	traitsRaw, _ := json.Marshal(bot.Traits)
+	personalityRaw, _ := json.Marshal(bot.Personality)
 
 	ctx, cancel := p.withTimeout()
 	defer cancel()
@@ -765,10 +798,10 @@ func (p *PostgresStore) CreateBot(userID string, bot Bot) Bot {
 
 	selfCognitionRaw, _ := json.Marshal(bot.SelfCognition)
 	_, err = tx.ExecContext(ctx,
-		`INSERT INTO bots(id, user_id, name, avatar_url, avatar_base64, summary, relationship, role, self_cognition, persona_prompt, persona_version, speaking_style, background, traits, gender, chat_background_style, created_at, updated_at)
-		 VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$17)`,
-		bot.ID, userID, bot.Name, nullIfEmpty(bot.Avatar), nullIfEmpty(bot.AvatarBase64), bot.Summary, bot.Relationship, bot.Role,
-		selfCognitionRaw, bot.PersonaPrompt, bot.PersonaVersion, bot.SpeakingStyle, bot.Background, traitsRaw, bot.Gender, bot.ChatBackgroundStyle, now,
+		`INSERT INTO bots(id, user_id, name, avatar_url, avatar_base64, identity, personality, expression_style, life_context, taboos_and_preferences, summary, relationship, role, self_cognition, persona_prompt, persona_version, speaking_style, background, traits, gender, chat_background_style, created_at, updated_at)
+		 VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$22)`,
+		bot.ID, userID, bot.Name, nullIfEmpty(bot.Avatar), nullIfEmpty(bot.AvatarBase64), bot.Identity, personalityRaw, bot.ExpressionStyle, bot.LifeContext, bot.TaboosAndPreferences,
+		bot.Summary, bot.Relationship, bot.Role, selfCognitionRaw, bot.PersonaPrompt, bot.PersonaVersion, bot.SpeakingStyle, bot.Background, traitsRaw, bot.Gender, bot.ChatBackgroundStyle, now,
 	)
 	if err != nil {
 		log.Printf("insert bot failed: %v", err)
@@ -804,7 +837,7 @@ func (p *PostgresStore) ListBots(userID string) []Bot {
 	defer cancel()
 
 	rows, err := p.db.QueryContext(ctx,
-		`SELECT id, user_id, name, avatar_url, avatar_base64, summary, relationship, role, self_cognition, persona_prompt, persona_version, speaking_style, background, traits, gender, chat_background_style, created_at, updated_at
+		`SELECT id, user_id, name, avatar_url, avatar_base64, identity, personality, expression_style, life_context, taboos_and_preferences, summary, relationship, role, self_cognition, persona_prompt, persona_version, speaking_style, background, traits, gender, chat_background_style, created_at, updated_at
 		 FROM bots
 		 WHERE user_id=$1
 		 ORDER BY created_at DESC`, userID,
@@ -833,7 +866,7 @@ func (p *PostgresStore) GetBot(userID, botID string) (Bot, bool) {
 	defer cancel()
 
 	row := p.db.QueryRowContext(ctx,
-		`SELECT id, user_id, name, avatar_url, avatar_base64, summary, relationship, role, self_cognition, persona_prompt, persona_version, speaking_style, background, traits, gender, chat_background_style, created_at, updated_at
+		`SELECT id, user_id, name, avatar_url, avatar_base64, identity, personality, expression_style, life_context, taboos_and_preferences, summary, relationship, role, self_cognition, persona_prompt, persona_version, speaking_style, background, traits, gender, chat_background_style, created_at, updated_at
 		 FROM bots
 		 WHERE user_id=$1 AND id=$2`, userID, botID,
 	)
@@ -872,9 +905,23 @@ func (p *PostgresStore) UpdateBot(userID, botID string, patch Bot) (Bot, bool) {
 	if strings.TrimSpace(patch.Name) != "" {
 		bot.Name = strings.TrimSpace(patch.Name)
 	}
+	if strings.TrimSpace(patch.Identity) != "" {
+		bot.Identity = strings.TrimSpace(patch.Identity)
+	}
+	if len(patch.Personality) > 0 {
+		bot.Personality = append([]string(nil), patch.Personality...)
+	}
+	if strings.TrimSpace(patch.ExpressionStyle) != "" {
+		bot.ExpressionStyle = strings.TrimSpace(patch.ExpressionStyle)
+	}
+	if strings.TrimSpace(patch.LifeContext) != "" {
+		bot.LifeContext = strings.TrimSpace(patch.LifeContext)
+	}
+	if strings.TrimSpace(patch.TaboosAndPreferences) != "" {
+		bot.TaboosAndPreferences = strings.TrimSpace(patch.TaboosAndPreferences)
+	}
 	if patch.Summary != "" {
 		bot.Summary = strings.TrimSpace(patch.Summary)
-		bot.Relationship = strings.TrimSpace(patch.Summary)
 	}
 	if patch.Relationship != "" {
 		bot.Relationship = strings.TrimSpace(patch.Relationship)
@@ -884,7 +931,6 @@ func (p *PostgresStore) UpdateBot(userID, botID string, patch Bot) (Bot, bool) {
 	}
 	if patch.Background != "" {
 		bot.Background = strings.TrimSpace(patch.Background)
-		bot.Role = strings.TrimSpace(patch.Background)
 	}
 	if patch.Role != "" {
 		bot.Role = strings.TrimSpace(patch.Role)
@@ -893,20 +939,27 @@ func (p *PostgresStore) UpdateBot(userID, botID string, patch Bot) (Bot, bool) {
 		bot.Gender = patch.Gender
 	}
 	if len(patch.Traits) > 0 {
-		bot.Traits = patch.Traits
+		bot.Traits = append([]string(nil), patch.Traits...)
 	}
+	if len(patch.SelfCognition) > 0 {
+		bot.SelfCognition = append([]string(nil), patch.SelfCognition...)
+	}
+	bot = SyncLegacyPersonaFields(bot)
 	bot.UpdatedAt = time.Now().UTC()
 
 	traitsRaw, _ := json.Marshal(bot.Traits)
+	personalityRaw, _ := json.Marshal(bot.Personality)
 	selfCognitionRaw, _ := json.Marshal(bot.SelfCognition)
 	ctx, cancel := p.withTimeout()
 	defer cancel()
 	_, err := p.db.ExecContext(ctx,
 		`UPDATE bots
-		 SET name=$1, summary=$2, relationship=$3, role=$4, self_cognition=$5, persona_prompt=$6, persona_version=$7,
-		     speaking_style=$8, background=$9, traits=$10, gender=$11, updated_at=$12
-		 WHERE user_id=$13 AND id=$14`,
-		bot.Name, bot.Summary, bot.Relationship, bot.Role, selfCognitionRaw, bot.PersonaPrompt, bot.PersonaVersion,
+		 SET name=$1, identity=$2, personality=$3, expression_style=$4, life_context=$5, taboos_and_preferences=$6,
+		     summary=$7, relationship=$8, role=$9, self_cognition=$10, persona_prompt=$11, persona_version=$12,
+		     speaking_style=$13, background=$14, traits=$15, gender=$16, updated_at=$17
+		 WHERE user_id=$18 AND id=$19`,
+		bot.Name, bot.Identity, personalityRaw, bot.ExpressionStyle, bot.LifeContext, bot.TaboosAndPreferences,
+		bot.Summary, bot.Relationship, bot.Role, selfCognitionRaw, bot.PersonaPrompt, bot.PersonaVersion,
 		bot.SpeakingStyle, bot.Background, traitsRaw, bot.Gender, bot.UpdatedAt, userID, botID,
 	)
 	if err != nil {
@@ -929,16 +982,20 @@ func (p *PostgresStore) AppendBotPersona(userID, botID string, speakingAdds, bac
 	if gender != nil && strings.TrimSpace(*gender) != "" {
 		bot.Gender = strings.TrimSpace(*gender)
 	}
+	bot = SyncLegacyPersonaFields(bot)
 	bot.UpdatedAt = time.Now().UTC()
 
 	traitsRaw, _ := json.Marshal(bot.Traits)
+	personalityRaw, _ := json.Marshal(bot.Personality)
 	ctx, cancel := p.withTimeout()
 	defer cancel()
 	_, err := p.db.ExecContext(ctx,
 		`UPDATE bots
-		 SET speaking_style=$1, background=$2, role=$3, traits=$4, gender=$5, updated_at=$6
-		 WHERE user_id=$7 AND id=$8`,
-		bot.SpeakingStyle, bot.Background, bot.Role, traitsRaw, bot.Gender, bot.UpdatedAt, userID, botID,
+		 SET expression_style=$1, life_context=$2, taboos_and_preferences=$3,
+		     speaking_style=$4, background=$5, role=$6, traits=$7, personality=$8, gender=$9, updated_at=$10
+		 WHERE user_id=$11 AND id=$12`,
+		bot.ExpressionStyle, bot.LifeContext, bot.TaboosAndPreferences,
+		bot.SpeakingStyle, bot.Background, bot.Role, traitsRaw, personalityRaw, bot.Gender, bot.UpdatedAt, userID, botID,
 	)
 	if err != nil {
 		log.Printf("append bot persona update failed: %v", err)
@@ -953,16 +1010,20 @@ func (p *PostgresStore) ApplyBotPersonaPatch(userID, botID string, input Persona
 		return Bot{}, false
 	}
 
+	bot = SyncLegacyPersonaFields(bot)
 	selfCognitionRaw, _ := json.Marshal(bot.SelfCognition)
 	traitsRaw, _ := json.Marshal(bot.Traits)
+	personalityRaw, _ := json.Marshal(bot.Personality)
 	ctx, cancel := p.withTimeout()
 	defer cancel()
 	_, err := p.db.ExecContext(ctx, `
 		UPDATE bots
-		SET summary=$1, relationship=$2, role=$3, self_cognition=$4, persona_prompt=$5, persona_version=$6,
-		    speaking_style=$7, background=$8, traits=$9, gender=$10, updated_at=$11
-		WHERE user_id=$12 AND id=$13
-	`, bot.Summary, bot.Relationship, bot.Role, selfCognitionRaw, bot.PersonaPrompt, bot.PersonaVersion,
+		SET identity=$1, personality=$2, expression_style=$3, life_context=$4, taboos_and_preferences=$5,
+		    summary=$6, relationship=$7, role=$8, self_cognition=$9, persona_prompt=$10, persona_version=$11,
+		    speaking_style=$12, background=$13, traits=$14, gender=$15, updated_at=$16
+		WHERE user_id=$17 AND id=$18
+	`, bot.Identity, personalityRaw, bot.ExpressionStyle, bot.LifeContext, bot.TaboosAndPreferences,
+		bot.Summary, bot.Relationship, bot.Role, selfCognitionRaw, bot.PersonaPrompt, bot.PersonaVersion,
 		bot.SpeakingStyle, bot.Background, traitsRaw, bot.Gender, bot.UpdatedAt, userID, botID)
 	if err != nil {
 		log.Printf("apply bot persona patch failed: %v", err)
@@ -1384,13 +1445,18 @@ func (p *PostgresStore) bumpProactiveMetric() {
 func scanBotRow(rows *sql.Rows) (Bot, bool) {
 	var bot Bot
 	var avatarURL, avatarBase64 sql.NullString
-	var traitsRaw, selfCognitionRaw []byte
+	var traitsRaw, selfCognitionRaw, personalityRaw []byte
 	if err := rows.Scan(
 		&bot.ID,
 		&bot.UserID,
 		&bot.Name,
 		&avatarURL,
 		&avatarBase64,
+		&bot.Identity,
+		&personalityRaw,
+		&bot.ExpressionStyle,
+		&bot.LifeContext,
+		&bot.TaboosAndPreferences,
 		&bot.Summary,
 		&bot.Relationship,
 		&bot.Role,
@@ -1411,19 +1477,25 @@ func scanBotRow(rows *sql.Rows) (Bot, bool) {
 	bot.AvatarBase64 = avatarBase64.String
 	_ = json.Unmarshal(traitsRaw, &bot.Traits)
 	_ = json.Unmarshal(selfCognitionRaw, &bot.SelfCognition)
-	return bot, true
+	_ = json.Unmarshal(personalityRaw, &bot.Personality)
+	return SyncLegacyPersonaFields(bot), true
 }
 
 func scanBotSingleRow(row *sql.Row) (Bot, bool) {
 	var bot Bot
 	var avatarURL, avatarBase64 sql.NullString
-	var traitsRaw, selfCognitionRaw []byte
+	var traitsRaw, selfCognitionRaw, personalityRaw []byte
 	if err := row.Scan(
 		&bot.ID,
 		&bot.UserID,
 		&bot.Name,
 		&avatarURL,
 		&avatarBase64,
+		&bot.Identity,
+		&personalityRaw,
+		&bot.ExpressionStyle,
+		&bot.LifeContext,
+		&bot.TaboosAndPreferences,
 		&bot.Summary,
 		&bot.Relationship,
 		&bot.Role,
@@ -1444,7 +1516,8 @@ func scanBotSingleRow(row *sql.Row) (Bot, bool) {
 	bot.AvatarBase64 = avatarBase64.String
 	_ = json.Unmarshal(traitsRaw, &bot.Traits)
 	_ = json.Unmarshal(selfCognitionRaw, &bot.SelfCognition)
-	return bot, true
+	_ = json.Unmarshal(personalityRaw, &bot.Personality)
+	return SyncLegacyPersonaFields(bot), true
 }
 
 func scanConversationRow(rows *sql.Rows) (Conversation, bool) {

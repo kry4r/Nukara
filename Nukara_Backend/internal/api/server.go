@@ -17,8 +17,8 @@ import (
 
 	"nukara/backend/internal/agent"
 	"nukara/backend/internal/agentx"
-	agentxmemory "nukara/backend/internal/agentx/memory"
 	"nukara/backend/internal/agentx/llm"
+	agentxmemory "nukara/backend/internal/agentx/memory"
 	agentprovider "nukara/backend/internal/agentx/provider"
 	"nukara/backend/internal/agentx/subtasks"
 	"nukara/backend/internal/apns"
@@ -100,7 +100,7 @@ func (s *Server) initSubtasks() {
 		},
 		PersonaIterator: func(ctx context.Context, in subtasks.Input) (string, error) {
 			prompt := buildPersonaIteratePrompt(in.UserText, in.BotText)
-			return s.runSubtaskPrompt(ctx, in, prompt, `{"self_cognition_adds":[]}`)
+			return s.runSubtaskPrompt(ctx, in, prompt, `{"identity_adds":[],"personality_adds":[],"expression_style_adds":[],"life_context_adds":[],"taboos_and_preferences_adds":[]}`)
 		},
 	})
 }
@@ -292,17 +292,22 @@ func (s *Server) handleBots(w http.ResponseWriter, r *http.Request) {
 		respondJSON(w, http.StatusOK, bots)
 	case http.MethodPost:
 		var req struct {
-			Name          string   `json:"name"`
-			Description   string   `json:"description"`
-			Summary       string   `json:"summary"`
-			Relationship  string   `json:"relationship"`
-			Role          string   `json:"role"`
-			SelfCognition []string `json:"self_cognition"`
-			SpeakingStyle string   `json:"speaking_style"`
-			Background    string   `json:"background"`
-			Traits        []string `json:"traits"`
-			Gender        string   `json:"gender"`
-			AvatarBase64  string   `json:"avatar_base64"`
+			Name                 string   `json:"name"`
+			Description          string   `json:"description"`
+			Summary              string   `json:"summary"`
+			Relationship         string   `json:"relationship"`
+			Role                 string   `json:"role"`
+			SelfCognition        []string `json:"self_cognition"`
+			SpeakingStyle        string   `json:"speaking_style"`
+			Background           string   `json:"background"`
+			Traits               []string `json:"traits"`
+			Identity             string   `json:"identity"`
+			Personality          []string `json:"personality"`
+			ExpressionStyle      string   `json:"expression_style"`
+			LifeContext          string   `json:"life_context"`
+			TaboosAndPreferences string   `json:"taboos_and_preferences"`
+			Gender               string   `json:"gender"`
+			AvatarBase64         string   `json:"avatar_base64"`
 		}
 		if err := decodeJSON(r, &req); err != nil {
 			badRequest(w, err)
@@ -312,34 +317,41 @@ func (s *Server) handleBots(w http.ResponseWriter, r *http.Request) {
 			badRequest(w, errors.New("name required"))
 			return
 		}
-		summary := req.Description
-		if strings.TrimSpace(req.Summary) != "" {
-			summary = req.Summary
+		identity := strings.TrimSpace(req.Identity)
+		if identity == "" {
+			identity = firstNonEmpty(strings.TrimSpace(req.Summary), strings.TrimSpace(req.Description), strings.TrimSpace(req.Relationship))
 		}
-		relationship := strings.TrimSpace(req.Relationship)
-		if relationship == "" {
-			relationship = strings.TrimSpace(summary)
+		personality := append([]string(nil), req.Personality...)
+		if len(personality) == 0 {
+			personality = append([]string(nil), req.Traits...)
 		}
-		role := strings.TrimSpace(req.Role)
-		if role == "" {
-			role = strings.TrimSpace(req.Background)
+		expressionStyle := firstNonEmpty(strings.TrimSpace(req.ExpressionStyle), strings.TrimSpace(req.SpeakingStyle))
+		lifeContext := firstNonEmpty(strings.TrimSpace(req.LifeContext), strings.TrimSpace(req.Background), strings.TrimSpace(req.Role))
+		taboos := strings.TrimSpace(req.TaboosAndPreferences)
+		if taboos == "" && len(req.SelfCognition) > 0 {
+			taboos = strings.TrimSpace(strings.Join(req.SelfCognition, "；"))
 		}
 		if req.Gender == "" {
 			req.Gender = "unknown"
 		}
 
 		created := s.store.CreateBot(userID, store.Bot{
-			Name:                strings.TrimSpace(req.Name),
-			Summary:             strings.TrimSpace(summary),
-			Relationship:        relationship,
-			Role:                role,
-			SelfCognition:       req.SelfCognition,
-			SpeakingStyle:       strings.TrimSpace(req.SpeakingStyle),
-			Background:          strings.TrimSpace(req.Background),
-			Traits:              req.Traits,
-			Gender:              req.Gender,
-			AvatarBase64:        req.AvatarBase64,
-			ChatBackgroundStyle: "lightPaper",
+			Name:                 strings.TrimSpace(req.Name),
+			Identity:             identity,
+			Personality:          personality,
+			ExpressionStyle:      expressionStyle,
+			LifeContext:          lifeContext,
+			TaboosAndPreferences: taboos,
+			Summary:              strings.TrimSpace(req.Summary),
+			Relationship:         strings.TrimSpace(req.Relationship),
+			Role:                 strings.TrimSpace(req.Role),
+			SelfCognition:        req.SelfCognition,
+			SpeakingStyle:        strings.TrimSpace(req.SpeakingStyle),
+			Background:           strings.TrimSpace(req.Background),
+			Traits:               req.Traits,
+			Gender:               req.Gender,
+			AvatarBase64:         req.AvatarBase64,
+			ChatBackgroundStyle:  "lightPaper",
 		})
 
 		respondJSON(w, http.StatusCreated, created)
@@ -407,31 +419,55 @@ func (s *Server) handleBotByID(w http.ResponseWriter, r *http.Request) {
 		respondJSON(w, http.StatusOK, bot)
 	case http.MethodPut:
 		var req struct {
-			Name          string   `json:"name"`
-			Description   string   `json:"description"`
-			Relationship  string   `json:"relationship"`
-			Role          string   `json:"role"`
-			SelfCognition []string `json:"self_cognition"`
-			SpeakingStyle string   `json:"speaking_style"`
-			Background    string   `json:"background"`
-			Traits        []string `json:"traits"`
-			Gender        string   `json:"gender"`
+			Name                 string   `json:"name"`
+			Description          string   `json:"description"`
+			Summary              string   `json:"summary"`
+			Relationship         string   `json:"relationship"`
+			Role                 string   `json:"role"`
+			SelfCognition        []string `json:"self_cognition"`
+			SpeakingStyle        string   `json:"speaking_style"`
+			Background           string   `json:"background"`
+			Traits               []string `json:"traits"`
+			Identity             string   `json:"identity"`
+			Personality          []string `json:"personality"`
+			ExpressionStyle      string   `json:"expression_style"`
+			LifeContext          string   `json:"life_context"`
+			TaboosAndPreferences string   `json:"taboos_and_preferences"`
+			Gender               string   `json:"gender"`
 		}
 		if err := decodeJSON(r, &req); err != nil {
 			badRequest(w, err)
 			return
 		}
-		summary := strings.TrimSpace(req.Description)
+		identity := strings.TrimSpace(req.Identity)
+		if identity == "" {
+			identity = firstNonEmpty(strings.TrimSpace(req.Summary), strings.TrimSpace(req.Description), strings.TrimSpace(req.Relationship))
+		}
+		personality := append([]string(nil), req.Personality...)
+		if len(personality) == 0 {
+			personality = append([]string(nil), req.Traits...)
+		}
+		expressionStyle := firstNonEmpty(strings.TrimSpace(req.ExpressionStyle), strings.TrimSpace(req.SpeakingStyle))
+		lifeContext := firstNonEmpty(strings.TrimSpace(req.LifeContext), strings.TrimSpace(req.Background), strings.TrimSpace(req.Role))
+		taboos := strings.TrimSpace(req.TaboosAndPreferences)
+		if taboos == "" && len(req.SelfCognition) > 0 {
+			taboos = strings.TrimSpace(strings.Join(req.SelfCognition, "；"))
+		}
 		updated, found := s.store.UpdateBot(userID, botID, store.Bot{
-			Name:          req.Name,
-			Summary:       summary,
-			Relationship:  strings.TrimSpace(req.Relationship),
-			Role:          strings.TrimSpace(req.Role),
-			SelfCognition: req.SelfCognition,
-			SpeakingStyle: req.SpeakingStyle,
-			Background:    req.Background,
-			Traits:        req.Traits,
-			Gender:        req.Gender,
+			Name:                 req.Name,
+			Identity:             identity,
+			Personality:          personality,
+			ExpressionStyle:      expressionStyle,
+			LifeContext:          lifeContext,
+			TaboosAndPreferences: taboos,
+			Summary:              strings.TrimSpace(req.Summary),
+			Relationship:         strings.TrimSpace(req.Relationship),
+			Role:                 strings.TrimSpace(req.Role),
+			SelfCognition:        req.SelfCognition,
+			SpeakingStyle:        req.SpeakingStyle,
+			Background:           req.Background,
+			Traits:               req.Traits,
+			Gender:               req.Gender,
 		})
 		if !found {
 			respondJSON(w, http.StatusNotFound, map[string]any{"error": "bot not found"})
@@ -673,20 +709,22 @@ func (s *Server) handleNotificationSettings(w http.ResponseWriter, r *http.Reque
 		respondJSON(w, http.StatusOK, s.store.GetNotificationSettings(userID))
 	case http.MethodPut:
 		var req struct {
-			ProactiveEnabled bool   `json:"proactive_enabled"`
-			DNDStart         string `json:"dnd_start"`
-			DNDEnd           string `json:"dnd_end"`
-			Frequency        string `json:"frequency"`
+			ProactiveEnabled         bool   `json:"proactive_enabled"`
+			DNDStart                 string `json:"dnd_start"`
+			DNDEnd                   string `json:"dnd_end"`
+			ProactiveIntervalMinutes int    `json:"proactive_interval_minutes"`
+			Frequency                string `json:"frequency"`
 		}
 		if err := decodeJSON(r, &req); err != nil {
 			badRequest(w, err)
 			return
 		}
 		saved := s.store.UpdateNotificationSettings(userID, store.NotificationSettings{
-			ProactiveEnabled: req.ProactiveEnabled,
-			DNDStart:         strings.TrimSpace(req.DNDStart),
-			DNDEnd:           strings.TrimSpace(req.DNDEnd),
-			Frequency:        strings.TrimSpace(req.Frequency),
+			ProactiveEnabled:         req.ProactiveEnabled,
+			DNDStart:                 strings.TrimSpace(req.DNDStart),
+			DNDEnd:                   strings.TrimSpace(req.DNDEnd),
+			ProactiveIntervalMinutes: req.ProactiveIntervalMinutes,
+			Frequency:                strings.TrimSpace(req.Frequency),
 		})
 		respondJSON(w, http.StatusOK, saved)
 	default:
@@ -919,6 +957,14 @@ func (s *Server) handleGatewayTestProactive(w http.ResponseWriter, r *http.Reque
 	settings := s.store.GetNotificationSettings(userID)
 	if !settings.ProactiveEnabled {
 		respondJSON(w, http.StatusOK, map[string]any{"should_send": false, "reason": "proactive_disabled"})
+		return
+	}
+	localNow := InferLocaleContext(bot.LifeContext, time.Now().UTC()).LocalNow()
+	if localNow.IsZero() {
+		localNow = time.Now().UTC()
+	}
+	if isDND(settings, localNow) {
+		respondJSON(w, http.StatusOK, map[string]any{"should_send": false, "reason": "dnd_active"})
 		return
 	}
 

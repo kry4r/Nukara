@@ -2,22 +2,27 @@ import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { useApi } from '../composables/useApi'
 
+function normalizeNotifications(data = {}) {
+  const interval = Number(data.proactive_interval_minutes)
+  return {
+    proactive_enabled: data.proactive_enabled !== false,
+    proactive_interval_minutes: Number.isFinite(interval) && interval > 0 ? interval : 240,
+    dnd_start: data.dnd_start || '23:00',
+    dnd_end: data.dnd_end || '08:00',
+  }
+}
+
 export const useSettingsStore = defineStore('settings', () => {
   const api = useApi()
-  const notifications = ref({
-    proactive_enabled: true,
-    dnd_start: '23:00',
-    dnd_end: '08:00',
-    frequency: 'normal',
-  })
+  const notifications = ref(normalizeNotifications())
   const userStatus = ref({ emoji: '', text: '' })
   const isLoading = ref(false)
 
   async function fetchNotifications() {
     try {
       const data = await api.get('/api/v1/users/notification-settings')
-      if (data.user_id || data.proactive_enabled !== undefined) {
-        notifications.value = data
+      if (data?.user_id || data?.proactive_enabled !== undefined) {
+        notifications.value = normalizeNotifications(data)
       }
     } catch (_) {}
   }
@@ -26,7 +31,7 @@ export const useSettingsStore = defineStore('settings', () => {
     isLoading.value = true
     try {
       const data = await api.put('/api/v1/users/notification-settings', settings)
-      notifications.value = data
+      notifications.value = normalizeNotifications(data)
     } catch (_) {}
     isLoading.value = false
   }
@@ -46,8 +51,12 @@ export const useSettingsStore = defineStore('settings', () => {
   }
 
   return {
-    notifications, userStatus, isLoading,
-    fetchNotifications, saveNotifications,
-    fetchUserStatus, saveUserStatus,
+    notifications,
+    userStatus,
+    isLoading,
+    fetchNotifications,
+    saveNotifications,
+    fetchUserStatus,
+    saveUserStatus,
   }
 })

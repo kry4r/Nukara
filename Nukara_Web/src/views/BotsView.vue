@@ -11,6 +11,10 @@ function avatarText(name) {
   return chars[0].toUpperCase()
 }
 
+function botSubtitle(bot) {
+  return bot.identity || bot.summary || '暂无身份设定'
+}
+
 onMounted(() => {
   bots.fetchList()
 })
@@ -39,7 +43,7 @@ onMounted(() => {
         <span class="bot-avatar">{{ avatarText(bot.name) }}</span>
         <div class="bot-info">
           <span class="bot-name">{{ bot.name }}</span>
-          <span class="bot-desc">{{ bot.description || bot.summary || '暂无描述' }}</span>
+          <span class="bot-desc">{{ botSubtitle(bot) }}</span>
         </div>
         <span class="arrow">›</span>
       </router-link>
@@ -59,7 +63,7 @@ onMounted(() => {
 .add-btn {
   color: var(--accent-primary); text-decoration: none; font-size: 15px; font-weight: 600;
 }
-.bot-list { flex: 1; overflow-y: auto; }
+.bot-list { flex: 1; overflow-y: auto; padding-bottom: 76px; }
 .empty {
   text-align: center; padding: 60px 20px; color: var(--text-muted); font-size: 15px;
 }
@@ -88,8 +92,15 @@ onMounted(() => {
   background: radial-gradient(circle at 30% 20%, #f5f8ef 0%, #e6efdc 100%);
   border: 1px solid #d0dcc2;
 }
-.bot-info { flex: 1; display: flex; flex-direction: column; gap: 2px; }
+.bot-info { flex: 1; display: flex; flex-direction: column; gap: 4px; }
 .bot-name { font-size: 16px; font-weight: 600; color: var(--text-primary); }
-.bot-desc { font-size: 13px; color: var(--text-muted); }
+.bot-desc {
+  font-size: 13px;
+  color: var(--text-muted);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
 .arrow { color: #b5beaa; font-size: 20px; }
 </style>

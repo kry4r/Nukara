@@ -2,7 +2,9 @@
 
 infer_qdrant_vector_size() {
   local model="${1:-}"
-  case "${model,,}" in
+  local normalized
+  normalized="$(printf '%s' "$model" | /usr/bin/tr '[:upper:]' '[:lower:]')"
+  case "$normalized" in
     text-embedding-3-large)
       printf '3072\n'
       ;;

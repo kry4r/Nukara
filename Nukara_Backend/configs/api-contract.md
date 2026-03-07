@@ -18,9 +18,9 @@
 ```json
 {
   "proactive_enabled": true,
+  "proactive_interval_minutes": 10,
   "dnd_start": "22:00",
-  "dnd_end": "08:00",
-  "frequency": "normal"
+  "dnd_end": "08:00"
 }
 ```
 
@@ -33,6 +33,13 @@
   "bot_id": "bot_xxx",
   "conversation_id": "conv_xxx",
   "trigger_type": "manual"
+}
+```
+- If blocked, returns:
+```json
+{
+  "should_send": false,
+  "reason": "dnd_active"
 }
 ```
 

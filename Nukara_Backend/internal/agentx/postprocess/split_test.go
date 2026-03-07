@@ -1,6 +1,9 @@
 package postprocess
 
-import "testing"
+import (
+	"reflect"
+	"testing"
+)
 
 func TestSplitSegmentsSplitBySentenceEvenWhenShort(t *testing.T) {
 	text := "第一句。第二句！第三句？"
@@ -34,6 +37,33 @@ func TestSplitSegmentsPrefersChatLikePausesForLongSentence(t *testing.T) {
 	}
 	if got[0] != "今晚就别想事儿了，" {
 		t.Fatalf("first segment mismatch: %#v", got)
+	}
+}
+
+func TestSplitSegmentsPreservesNaturalWechatChunks(t *testing.T) {
+	text := "我刚下班。好累，不过想到你又好一点。"
+	want := []string{"我刚下班。", "好累，不过想到你又好一点。"}
+	got := SplitSegments(text, 80)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("SplitSegments() = %#v, want %#v", got, want)
+	}
+}
+
+func TestSplitSegmentsPreservesExplicitProtocolBoundaries(t *testing.T) {
+	text := "先去吃饭<<<MSG>>>吃完再和我说"
+	want := []string{"先去吃饭", "吃完再和我说"}
+	got := SplitSegments(text, 80)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("SplitSegments() = %#v, want %#v", got, want)
+	}
+}
+
+func TestSplitSegmentsKeepsShortReplySingleMessage(t *testing.T) {
+	text := "嗯，那你先去吃饭"
+	want := []string{"嗯，那你先去吃饭"}
+	got := SplitSegments(text, 80)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("SplitSegments() = %#v, want %#v", got, want)
 	}
 }
 

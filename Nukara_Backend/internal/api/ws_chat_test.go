@@ -3,6 +3,7 @@ package api
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
@@ -12,6 +13,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -23,6 +25,14 @@ import (
 	"nukara/backend/internal/apns"
 	"nukara/backend/internal/store"
 )
+
+type stubSyncChatClient struct {
+	reply string
+}
+
+func (c stubSyncChatClient) Chat(_ context.Context, _, _, _ string, _ map[string]any) (string, error) {
+	return c.reply, nil
+}
 
 func TestWSChatMessageFlow(t *testing.T) {
 	server, token, botID, convID, closeFn := setupTestServer(t)
@@ -115,6 +125,53 @@ func TestWSChatMessageFlow(t *testing.T) {
 	}
 
 	_ = botID
+}
+
+func TestWSChatSemanticChunksWithLegacyRuntime(t *testing.T) {
+	server, token, _, convID, closeFn := setupTestServerWithInjectedRuntime(t, agentx.NewRuntime(agentx.RuntimeDeps{
+		ProviderClient: llm.NewLegacyAgentClient(stubSyncChatClient{reply: "我刚下班。好累，不过想到你又好一点。"}),
+	}))
+	defer closeFn()
+
+	ws := mustDialWS(t, server.URL, token)
+	defer ws.Close()
+
+	ws.SendJSON(t, map[string]any{
+		"type":            "message",
+		"conversation_id": convID,
+		"client_msg_id":   "semantic-legacy-runtime",
+		"content": map[string]any{
+			"type": "text",
+			"text": "你现在在干嘛",
+		},
+	})
+
+	var chunks []string
+	deadline := time.Now().Add(8 * time.Second)
+	for time.Now().Before(deadline) {
+		event := ws.ReadJSON(t, 2*time.Second)
+		if event == nil {
+			continue
+		}
+		switch event["type"] {
+		case "stream_chunk":
+			delta, _ := event["delta"].(string)
+			if strings.TrimSpace(delta) != "" {
+				chunks = append(chunks, delta)
+			}
+		case "stream_end":
+			if len(chunks) == 0 {
+				t.Fatalf("expected semantic stream chunks before stream_end")
+			}
+			want := []string{"我刚下班。", "好累，不过想到你又好一点。"}
+			if !reflect.DeepEqual(chunks, want) {
+				t.Fatalf("stream chunks = %#v, want %#v", chunks, want)
+			}
+			return
+		}
+	}
+
+	t.Fatalf("timed out waiting for semantic chunks, got %#v", chunks)
 }
 
 func TestWSChatQueueingWaitsForFinalMessageBeforeNextStreamStart(t *testing.T) {

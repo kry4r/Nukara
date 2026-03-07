@@ -2,17 +2,18 @@ package subtasks
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"nukara/backend/internal/store"
 )
 
 type testStore struct {
-	memoryItems   []store.MemoryItem
-	compacts      []store.ConversationCompact
-	personaCalls  []personaApplyInput
-	updatedBot    store.Bot
-	turnCount     int
+	memoryItems  []store.MemoryItem
+	compacts     []store.ConversationCompact
+	personaCalls []personaApplyInput
+	updatedBot   store.Bot
+	turnCount    int
 }
 
 func (s *testStore) UpsertMemoryItem(item store.MemoryItem) (store.MemoryItem, error) {
@@ -46,9 +47,20 @@ func (s *testStore) GetBot(userID, botID string) (store.Bot, bool) {
 
 func (s *testStore) ApplyBotPersonaPatch(userID, botID string, input personaApplyInput) (store.Bot, bool) {
 	s.personaCalls = append(s.personaCalls, input)
-	s.updatedBot.SelfCognition = append(s.updatedBot.SelfCognition, input.SelfCognitionAdds...)
-	if input.Relationship != "" {
-		s.updatedBot.Relationship = input.Relationship
+	if len(input.IdentityAdds) > 0 {
+		s.updatedBot.Identity += strings.Join(input.IdentityAdds, "；")
+	}
+	if len(input.PersonalityAdds) > 0 {
+		s.updatedBot.Personality = append(s.updatedBot.Personality, input.PersonalityAdds...)
+	}
+	if len(input.ExpressionStyleAdds) > 0 {
+		s.updatedBot.ExpressionStyle += strings.Join(input.ExpressionStyleAdds, "；")
+	}
+	if len(input.LifeContextAdds) > 0 {
+		s.updatedBot.LifeContext += strings.Join(input.LifeContextAdds, "；")
+	}
+	if len(input.TaboosAndPreferencesAdds) > 0 {
+		s.updatedBot.TaboosAndPreferences += strings.Join(input.TaboosAndPreferencesAdds, "；")
 	}
 	return s.updatedBot, true
 }
@@ -61,10 +73,10 @@ func (s *testStore) IncrementTurnCount(userID, botID string) int {
 func TestRunnerAppliesValidatedPatchAndPersistsOutputs(t *testing.T) {
 	st := &testStore{
 		updatedBot: store.Bot{
-			ID:           "bot-1",
-			UserID:       "user-1",
-			Name:         "bot",
-			Relationship: "朋友",
+			ID:       "bot-1",
+			UserID:   "user-1",
+			Name:     "bot",
+			Identity: "朋友",
 		},
 		turnCount: 2,
 	}
@@ -77,7 +89,7 @@ func TestRunnerAppliesValidatedPatchAndPersistsOutputs(t *testing.T) {
 			return `{"summary":"最近在聊喝茶","facts":["用户喜欢喝茶"]}`, nil
 		},
 		PersonaIterator: func(context.Context, Input) (string, error) {
-			return `{"relationship":"更亲近的朋友","self_cognition_adds":["我会记得用户偏好"],"speaking_style_adds":["更自然"],"trait_adds":["细致"],"gender":"female"}`, nil
+			return `{"identity_adds":["会认真接住情绪"],"personality_adds":["细致"],"expression_style_adds":["更自然"],"life_context_adds":["最近在学摄影"],"taboos_and_preferences_adds":["不喜欢被敷衍"]}`, nil
 		},
 	})
 
@@ -107,6 +119,12 @@ func TestRunnerAppliesValidatedPatchAndPersistsOutputs(t *testing.T) {
 	if result.PatchSummary == "" {
 		t.Fatalf("expected patch summary")
 	}
+	if !strings.Contains(st.updatedBot.Identity, "会认真接住情绪") {
+		t.Fatalf("expected identity updated, got %q", st.updatedBot.Identity)
+	}
+	if len(st.updatedBot.Personality) == 0 {
+		t.Fatalf("expected personality updated")
+	}
 }
 
 func TestRunnerRejectsInvalidPersonaPatch(t *testing.T) {
@@ -114,7 +132,7 @@ func TestRunnerRejectsInvalidPersonaPatch(t *testing.T) {
 	runner := NewRunner(RunnerDeps{
 		Store: st,
 		PersonaIterator: func(context.Context, Input) (string, error) {
-			return `{"gender":"invalid","self_cognition_adds":["x"]}`, nil
+			return `{"identity_adds":[""]}`, nil
 		},
 	})
 
@@ -140,7 +158,7 @@ func TestRunnerOnlyIteratesPersonaEveryThreeTurns(t *testing.T) {
 	runner := NewRunner(RunnerDeps{
 		Store: st,
 		PersonaIterator: func(context.Context, Input) (string, error) {
-			return `{"self_cognition_adds":["我会慢慢更懂用户"]}`, nil
+			return `{"identity_adds":["我会慢慢更懂你"]}`, nil
 		},
 	})
 
@@ -165,4 +183,3 @@ func TestRunnerOnlyIteratesPersonaEveryThreeTurns(t *testing.T) {
 		t.Fatalf("persona calls = %d, want 1", len(st.personaCalls))
 	}
 }
-
