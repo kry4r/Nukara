@@ -20,6 +20,8 @@ sudo bash deploy/deploy-local.sh --force-clean
 ```bash
 export LLM_API_KEY=your-key
 export NUKARA_ADMIN_PASSWORD=your-admin-password
+export NUKARA_SMTP_FROM_EMAIL=your-qq-or-foxmail@example.com
+export NUKARA_SMTP_PASSWORD=your-smtp-auth-code
 sudo bash deploy/deploy-local.sh --force-clean --non-interactive
 
 # 清空原有 Nukara 数据后重建
@@ -103,6 +105,8 @@ sudo bash deploy/deploy-local.sh --reset-data
 
 - `NUKARA_ADMIN_USERNAME`
 - `NUKARA_ADMIN_PASSWORD`
+- `NUKARA_SMTP_FROM_EMAIL`
+- `NUKARA_SMTP_PASSWORD`
 - 默认 Provider 的 `name/base_url/api_key/models/priority/api_mode`
 - 本地记忆基础设施：`NUKARA_MEMORY_INFRA_ENABLED / NUKARA_QDRANT_VERSION / NUKARA_QDRANT_HTTP_PORT / NUKARA_QDRANT_GRPC_PORT / NUKARA_QDRANT_COLLECTION / NUKARA_QDRANT_VECTOR_SIZE / NUKARA_NEO4J_HTTP_PORT / NUKARA_NEO4J_BOLT_PORT / NUKARA_NEO4J_ADAPTER_PORT / NUKARA_NEO4J_DATABASE / NUKARA_NEO4J_USER / NUKARA_NEO4J_PASSWORD / NUKARA_EMBEDDING_MODEL`
 
@@ -111,6 +115,7 @@ sudo bash deploy/deploy-local.sh --reset-data
 1. 若默认 Provider 不存在，则 `POST /api/admin/providers` 创建
 2. 若默认 Provider 已存在，则 `PUT /api/admin/providers/{id}` 更新
 3. `POST /api/admin/providers/{id}/switch` 切换为激活 Provider
+4. 若提供了 `NUKARA_SMTP_FROM_EMAIL / NUKARA_SMTP_PASSWORD`，则 `PUT /api/admin/settings/email-auth` 自动写入 SMTP 配置（默认 `smtp.qq.com:465`，用户名默认为发件邮箱，验证码有效期默认 900 秒）
 
 如果默认 Provider 参数不完整，会跳过初始化并打印告警。
 

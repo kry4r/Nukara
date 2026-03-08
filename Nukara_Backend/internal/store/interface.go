@@ -13,11 +13,11 @@ type DataStore interface {
 	SetLastUserMessageAt(userID string, at time.Time)
 	GetLastUserMessageAt(userID string) (time.Time, bool)
 
-	SaveSMSCode(phone, purpose, code string, ttl time.Duration)
-	ValidateSMSCode(phone, purpose, code string) bool
-	FindUserByPhone(phone string) (User, bool)
+	SaveEmailCode(email, purpose, code string, ttl time.Duration)
+	ValidateEmailCode(email, purpose, code string) bool
+	FindUserByEmail(email string) (User, bool)
 	FindUserByID(id string) (User, bool)
-	CreateUser(phone, nickname string) (User, error)
+	CreateUser(email, nickname string) (User, error)
 
 	UpsertDeviceToken(userID, token, platform string)
 	GetDeviceToken(userID string) (DeviceToken, bool)

@@ -219,6 +219,13 @@ apply_config_defaults() {
   JWT_SECRET="${JWT_SECRET:-$(generate_secret)}"
   POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-nukara123}"
   NUKARA_ADMIN_USERNAME="${NUKARA_ADMIN_USERNAME:-admin}"
+  NUKARA_SMTP_HOST="${NUKARA_SMTP_HOST:-smtp.qq.com}"
+  NUKARA_SMTP_PORT="${NUKARA_SMTP_PORT:-465}"
+  NUKARA_SMTP_FROM_NAME="${NUKARA_SMTP_FROM_NAME:-Nukara}"
+  NUKARA_EMAIL_CODE_TTL_SECONDS="${NUKARA_EMAIL_CODE_TTL_SECONDS:-900}"
+  if [ -z "${NUKARA_SMTP_USERNAME:-}" ] && [ -n "${NUKARA_SMTP_FROM_EMAIL:-}" ]; then
+    NUKARA_SMTP_USERNAME="$NUKARA_SMTP_FROM_EMAIL"
+  fi
   PROACTIVE_INTERVAL="${PROACTIVE_INTERVAL:-5m}"
   INACTIVITY_THRESHOLD="${INACTIVITY_THRESHOLD:-30m}"
   PROACTIVE_COOLDOWN="${PROACTIVE_COOLDOWN:-60m}"
@@ -250,6 +257,11 @@ apply_config_defaults() {
 validate_config() {
   [ -n "${LLM_API_KEY:-}" ] || err "LLM API Key is required (set LLM_API_KEY or deploy/.env)"
   [ -n "${NUKARA_ADMIN_PASSWORD:-}" ] || err "Admin password is required (set NUKARA_ADMIN_PASSWORD or deploy/.env)"
+  if [ -n "${NUKARA_SMTP_FROM_EMAIL:-}" ] || [ -n "${NUKARA_SMTP_PASSWORD:-}" ]; then
+    [ -n "${NUKARA_SMTP_FROM_EMAIL:-}" ] || err "SMTP from email is required when SMTP auth code is set"
+    [ -n "${NUKARA_SMTP_PASSWORD:-}" ] || err "SMTP auth code is required when SMTP from email is set"
+    NUKARA_SMTP_USERNAME="${NUKARA_SMTP_USERNAME:-$NUKARA_SMTP_FROM_EMAIL}"
+  fi
   case "${NUKARA_QDRANT_VECTOR_SIZE:-}" in
     ''|*[!0-9]*) err "NUKARA_QDRANT_VECTOR_SIZE must be a positive integer" ;;
   esac
@@ -274,6 +286,13 @@ persist_config() {
   append_env_var ADMIN_API_PORT "$ADMIN_API_PORT"
   append_env_var NUKARA_ADMIN_USERNAME "$NUKARA_ADMIN_USERNAME"
   append_env_var NUKARA_ADMIN_PASSWORD "$NUKARA_ADMIN_PASSWORD"
+  append_env_var NUKARA_SMTP_FROM_EMAIL "${NUKARA_SMTP_FROM_EMAIL:-}"
+  append_env_var NUKARA_SMTP_PASSWORD "${NUKARA_SMTP_PASSWORD:-}"
+  append_env_var NUKARA_SMTP_USERNAME "${NUKARA_SMTP_USERNAME:-}"
+  append_env_var NUKARA_SMTP_HOST "$NUKARA_SMTP_HOST"
+  append_env_var NUKARA_SMTP_PORT "$NUKARA_SMTP_PORT"
+  append_env_var NUKARA_SMTP_FROM_NAME "$NUKARA_SMTP_FROM_NAME"
+  append_env_var NUKARA_EMAIL_CODE_TTL_SECONDS "$NUKARA_EMAIL_CODE_TTL_SECONDS"
   append_env_var DEFAULT_PROVIDER_NAME "$DEFAULT_PROVIDER_NAME"
   append_env_var DEFAULT_PROVIDER_BASE_URL "$DEFAULT_PROVIDER_BASE_URL"
   append_env_var DEFAULT_PROVIDER_API_KEY "$DEFAULT_PROVIDER_API_KEY"
@@ -500,7 +519,19 @@ collect_config() {
   [ -z "$NUKARA_ADMIN_PASSWORD" ] && err "Admin password is required"
 
   echo ""
-  echo -e "${CYAN}[5/6] Proactive + Default Provider${NC}"
+  echo -e "${CYAN}[5/7] Email Auth / SMTP${NC}"
+  read -rp "  SMTP from email [${NUKARA_SMTP_FROM_EMAIL:-}]: " input
+  NUKARA_SMTP_FROM_EMAIL="${input:-${NUKARA_SMTP_FROM_EMAIL:-}}"
+  NUKARA_SMTP_USERNAME="${NUKARA_SMTP_USERNAME:-$NUKARA_SMTP_FROM_EMAIL}"
+
+  read -rsp "  SMTP auth code [leave unchanged if already set]: " input
+  echo ""
+  if [ -n "$input" ]; then
+    NUKARA_SMTP_PASSWORD="$input"
+  fi
+
+  echo ""
+  echo -e "${CYAN}[6/7] Proactive + Default Provider${NC}"
   read -rp "  Check interval [${PROACTIVE_INTERVAL:-5m}]: " input
   PROACTIVE_INTERVAL="${input:-${PROACTIVE_INTERVAL:-5m}}"
   read -rp "  Inactivity threshold [${INACTIVITY_THRESHOLD:-30m}]: " input
@@ -522,7 +553,7 @@ collect_config() {
   DEFAULT_PROVIDER_API_MODE="${input:-${DEFAULT_PROVIDER_API_MODE:-${LLM_API_MODE:-chat_completions}}}"
 
   echo ""
-  echo -e "${CYAN}[6/6] Memory Infra${NC}"
+  echo -e "${CYAN}[7/7] Memory Infra${NC}"
   read -rp "  Enable local Qdrant/Neo4j install [${NUKARA_MEMORY_INFRA_ENABLED:-true}] (true/false): " input
   NUKARA_MEMORY_INFRA_ENABLED="${input:-${NUKARA_MEMORY_INFRA_ENABLED:-true}}"
   read -rp "  Qdrant version [${NUKARA_QDRANT_VERSION:-1.16.3}]: " input
@@ -1274,6 +1305,7 @@ main() {
   configure_nginx
   start_services
   bootstrap_default_provider
+  bootstrap_email_auth_settings
 
   echo -e "${GREEN}${BOLD}Nukara deployed successfully!${NC}"
   echo ""

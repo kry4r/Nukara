@@ -3,8 +3,8 @@ POST http://localhost:8080/api/v1/auth/register
 Content-Type: application/json
 
 {
-  "phone": "13800138000",
-  "sms_code": "123456",
+  "email": "tester@example.com",
+  "email_code": "123456",
   "nickname": "NukaraUser"
 }
 
@@ -13,8 +13,8 @@ POST http://localhost:8080/api/v1/auth/login
 Content-Type: application/json
 
 {
-  "phone": "13800138000",
-  "sms_code": "123456"
+  "email": "tester@example.com",
+  "email_code": "123456"
 }
 
 ### Health

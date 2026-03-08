@@ -3,15 +3,16 @@ set -euo pipefail
 
 BASE_URL="${1:-http://localhost:8080}"
 NICKNAME="smoke_user"
+EMAIL_DOMAIN="${NUKARA_TEST_EMAIL_DOMAIN:-nukara.local}"
 
-generate_phone() {
+generate_email() {
   local epoch rand
   epoch="$(date +%s)"
   rand="$(printf "%04d" $((RANDOM % 10000)))"
-  printf "13%09d" "$(((epoch + 10#$rand) % 1000000000))"
+  printf "smoke_%s_%s@%s" "$epoch" "$rand" "$EMAIL_DOMAIN"
 }
 
-PHONE="${2:-$(generate_phone)}"
+EMAIL="${2:-$(generate_email)}"
 
 extract_json_value() {
   local key="$1"
@@ -40,11 +41,18 @@ curl_json() {
   fi
 }
 
-echo "[1/8] send sms"
-_=$(curl_json POST "$BASE_URL/api/v1/auth/sms/send" "{\"phone\":\"$PHONE\",\"purpose\":\"register\"}")
+echo "[1/8] send email code"
+_=$(curl_json POST "$BASE_URL/api/v1/auth/email/send" "{\"email\":\"$EMAIL\",\"purpose\":\"register\"}")
+
+sleep 0.5
+EMAIL_CODE=$(docker logs configs-gateway-1 --tail 20 2>&1 | grep "\[EMAIL\].*email=$EMAIL" | tail -1 | sed 's/.*code=//')
+if [[ -z "$EMAIL_CODE" ]]; then
+  echo "failed to read email code from logs; make sure SMTP is configured and gateway logs are reachable"
+  exit 1
+fi
 
 echo "[2/8] register"
-register_resp=$(curl_json POST "$BASE_URL/api/v1/auth/register" "{\"phone\":\"$PHONE\",\"sms_code\":\"123456\",\"nickname\":\"$NICKNAME\"}")
+register_resp=$(curl_json POST "$BASE_URL/api/v1/auth/register" "{\"email\":\"$EMAIL\",\"email_code\":\"$EMAIL_CODE\",\"nickname\":\"$NICKNAME\"}")
 token=$(extract_json_value "access_token" "$register_resp")
 if [[ -z "$token" ]]; then
   echo "register failed: $register_resp"

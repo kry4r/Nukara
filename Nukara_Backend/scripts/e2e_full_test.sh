@@ -34,8 +34,10 @@ curl_json() {
   curl "${args[@]}" 2>/dev/null
 }
 
-generate_phone() {
-  printf "139%08d" "$((RANDOM * RANDOM % 100000000))"
+EMAIL_DOMAIN="${NUKARA_TEST_EMAIL_DOMAIN:-nukara.local}"
+
+generate_email() {
+  printf "e2e_%s_%s@%s" "$(date +%s)" "$((RANDOM * RANDOM % 100000000))" "$EMAIL_DOMAIN"
 }
 
 # --- Init report ---
@@ -52,28 +54,28 @@ echo "" >> "$REPORT_FILE"
 section "Phase 1: 用户注册与机器人创建"
 # ============================================================
 
-PHONE=$(generate_phone)
-info "测试手机号: $PHONE"
+EMAIL=$(generate_email)
+info "测试邮箱: $EMAIL"
 
 # 1.1 发送验证码
-sms_resp=$(curl_json POST "$BASE_URL/api/v1/auth/sms/send" "{\"phone\":\"$PHONE\",\"purpose\":\"register\"}")
-if echo "$sms_resp" | grep -q "ok\|success\|code"; then
-  pass "发送短信验证码"
+email_resp=$(curl_json POST "$BASE_URL/api/v1/auth/email/send" "{\"email\":\"$EMAIL\",\"purpose\":\"register\"}")
+if echo "$email_resp" | grep -q "ok\|success\|code"; then
+  pass "发送邮箱验证码"
 else
-  fail "发送短信验证码: $sms_resp"
+  fail "发送邮箱验证码: $email_resp"
 fi
 
-# Extract SMS code from gateway Docker logs
+# Extract email code from gateway Docker logs
 sleep 0.5
-SMS_CODE=$(docker logs configs-gateway-1 --tail 20 2>&1 | grep "\[SMS\].*phone=$PHONE" | tail -1 | sed 's/.*code=//')
-if [[ -z "$SMS_CODE" ]]; then
-  SMS_CODE="123456"
-  warn "无法从日志提取验证码，使用默认值"
+EMAIL_CODE=$(docker logs configs-gateway-1 --tail 20 2>&1 | grep "\[EMAIL\].*email=$EMAIL" | tail -1 | sed 's/.*code=//')
+if [[ -z "$EMAIL_CODE" ]]; then
+  fail "无法从日志提取邮箱验证码，请确认 SMTP 已配置且 gateway 日志可访问"
+  exit 1
 fi
-info "验证码: $SMS_CODE"
+info "验证码: $EMAIL_CODE"
 
 # 1.2 注册
-reg_resp=$(curl_json POST "$BASE_URL/api/v1/auth/register" "{\"phone\":\"$PHONE\",\"sms_code\":\"$SMS_CODE\",\"nickname\":\"e2e_tester\"}")
+reg_resp=$(curl_json POST "$BASE_URL/api/v1/auth/register" "{\"email\":\"$EMAIL\",\"email_code\":\"$EMAIL_CODE\",\"nickname\":\"e2e_tester\"}")
 TOKEN=$(jval access_token "$reg_resp")
 if [[ -n "$TOKEN" ]]; then
   pass "用户注册 (token获取成功)"

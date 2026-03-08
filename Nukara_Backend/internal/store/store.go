@@ -13,14 +13,14 @@ import (
 
 type User struct {
 	ID        string    `json:"id"`
-	Phone     string    `json:"phone"`
+	Email     string    `json:"email"`
 	Nickname  string    `json:"nickname"`
 	Avatar    string    `json:"avatar,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
 }
 
-type SMSCode struct {
-	Phone     string
+type EmailCode struct {
+	Email     string
 	Purpose   string
 	Code      string
 	ExpiresAt time.Time
@@ -254,9 +254,9 @@ type presenceState struct {
 type Store struct {
 	mu sync.RWMutex
 
-	usersByPhone map[string]User
+	usersByEmail map[string]User
 	usersByID    map[string]User
-	smsCodes     map[string]SMSCode
+	emailCodes   map[string]EmailCode
 
 	botsByID       map[string]Bot
 	botsByUser     map[string][]string
@@ -287,9 +287,9 @@ type Store struct {
 
 func NewStore() *Store {
 	s := &Store{
-		usersByPhone:         map[string]User{},
+		usersByEmail:         map[string]User{},
 		usersByID:            map[string]User{},
-		smsCodes:             map[string]SMSCode{},
+		emailCodes:           map[string]EmailCode{},
 		botsByID:             map[string]Bot{},
 		botsByUser:           map[string][]string{},
 		botStatesByKey:       map[string]BotState{},
@@ -312,14 +312,14 @@ func NewStore() *Store {
 		memoryItemsByID:      map[string]MemoryItem{},
 	}
 
-	// seed dev user so the preset phone 13800138000 works for login
+	// seed dev user for local auth flows
 	devUser := User{
 		ID:        NewID(),
-		Phone:     "13800138000",
+		Email:     "tester@nukara.local",
 		Nickname:  "测试用户",
 		CreatedAt: time.Now().UTC(),
 	}
-	s.usersByPhone[devUser.Phone] = devUser
+	s.usersByEmail[devUser.Email] = devUser
 	s.usersByID[devUser.ID] = devUser
 	s.notifByUser[devUser.ID] = normalizeNotificationSettings(NotificationSettings{
 		UserID:                   devUser.ID,
@@ -435,26 +435,34 @@ func (s *Store) GetLastUserMessageAt(userID string) (time.Time, bool) {
 	return st.lastUserMsgAt, true
 }
 
-func (s *Store) SaveSMSCode(phone, purpose, code string, ttl time.Duration) {
+func (s *Store) SaveEmailCode(email, purpose, code string, ttl time.Duration) {
+	email = strings.TrimSpace(email)
+	purpose = strings.TrimSpace(purpose)
+	if ttl <= 0 {
+		ttl = 15 * time.Minute
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.smsCodes[phone+":"+purpose] = SMSCode{Phone: phone, Purpose: purpose, Code: code, ExpiresAt: time.Now().Add(ttl)}
+	s.emailCodes[email+":"+purpose] = EmailCode{Email: email, Purpose: purpose, Code: code, ExpiresAt: time.Now().Add(ttl)}
 }
 
-func (s *Store) ValidateSMSCode(phone, purpose, code string) bool {
+func (s *Store) ValidateEmailCode(email, purpose, code string) bool {
+	email = strings.TrimSpace(email)
+	purpose = strings.TrimSpace(purpose)
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	entry, ok := s.smsCodes[phone+":"+purpose]
+	entry, ok := s.emailCodes[email+":"+purpose]
 	if !ok || time.Now().After(entry.ExpiresAt) {
 		return false
 	}
 	return entry.Code == code
 }
 
-func (s *Store) FindUserByPhone(phone string) (User, bool) {
+func (s *Store) FindUserByEmail(email string) (User, bool) {
+	email = strings.TrimSpace(email)
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	user, ok := s.usersByPhone[phone]
+	user, ok := s.usersByEmail[email]
 	return user, ok
 }
 
@@ -465,15 +473,17 @@ func (s *Store) FindUserByID(id string) (User, bool) {
 	return user, ok
 }
 
-func (s *Store) CreateUser(phone, nickname string) (User, error) {
+func (s *Store) CreateUser(email, nickname string) (User, error) {
+	email = strings.TrimSpace(email)
+	nickname = strings.TrimSpace(nickname)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, exists := s.usersByPhone[phone]; exists {
-		return User{}, errors.New("phone already registered")
+	if _, exists := s.usersByEmail[email]; exists {
+		return User{}, errors.New("email already registered")
 	}
 	id := NewID()
-	user := User{ID: id, Phone: phone, Nickname: nickname, CreatedAt: time.Now().UTC()}
-	s.usersByPhone[phone] = user
+	user := User{ID: id, Email: email, Nickname: nickname, CreatedAt: time.Now().UTC()}
+	s.usersByEmail[email] = user
 	s.usersByID[id] = user
 	s.notifByUser[id] = normalizeNotificationSettings(NotificationSettings{UserID: id, ProactiveEnabled: true, ProactiveIntervalMinutes: DefaultProactiveIntervalMinutes, UpdatedAt: time.Now().UTC()})
 	return user, nil

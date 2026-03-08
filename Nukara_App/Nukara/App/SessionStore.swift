@@ -20,12 +20,12 @@ final class SessionStore: ObservableObject {
         session = await authRepository.restoreSession()
     }
 
-    func login(phone: String, smsCode: String) async {
+    func login(email: String, emailCode: String) async {
         isLoading = true
         defer { isLoading = false }
 
         do {
-            session = try await authRepository.login(phone: phone, smsCode: smsCode)
+            session = try await authRepository.login(email: email, emailCode: emailCode)
             errorMessage = nil
             tipsMessage = nil
         } catch {
@@ -33,12 +33,12 @@ final class SessionStore: ObservableObject {
         }
     }
 
-    func register(phone: String, smsCode: String, nickname: String) async {
+    func register(email: String, emailCode: String, nickname: String) async {
         isLoading = true
         defer { isLoading = false }
 
         do {
-            session = try await authRepository.register(phone: phone, smsCode: smsCode, nickname: nickname)
+            session = try await authRepository.register(email: email, emailCode: emailCode, nickname: nickname)
             errorMessage = nil
             tipsMessage = nil
         } catch {
@@ -46,14 +46,14 @@ final class SessionStore: ObservableObject {
         }
     }
 
-    func requestSMSCode(phone: String, purpose: AuthCodePurpose) async {
+    func requestEmailCode(email: String, purpose: AuthCodePurpose) async {
         isRequestingCode = true
         defer { isRequestingCode = false }
 
         do {
-            try await authRepository.requestSMSCode(phone: phone, purpose: purpose)
+            try await authRepository.requestEmailCode(email: email, purpose: purpose)
             errorMessage = nil
-            tipsMessage = "验证码已发送"
+            tipsMessage = "邮箱验证码已发送"
         } catch {
             errorMessage = error.localizedDescription
         }

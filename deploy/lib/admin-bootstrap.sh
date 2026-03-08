@@ -145,3 +145,65 @@ bootstrap_default_provider() {
 
   log "Default provider bootstrapped and switched active: $existing_id (mode=$provider_api_mode)"
 }
+
+bootstrap_email_auth_settings() {
+  local admin_port="${ADMIN_API_PORT:-19527}"
+  local admin_base_url="http://127.0.0.1:${admin_port}"
+  local admin_username="${NUKARA_ADMIN_USERNAME:-}"
+  local admin_password="${NUKARA_ADMIN_PASSWORD:-}"
+  local smtp_from_email="${NUKARA_SMTP_FROM_EMAIL:-}"
+  local smtp_password="${NUKARA_SMTP_PASSWORD:-}"
+  local smtp_username="${NUKARA_SMTP_USERNAME:-${NUKARA_SMTP_FROM_EMAIL:-}}"
+  local smtp_host="${NUKARA_SMTP_HOST:-smtp.qq.com}"
+  local smtp_port="${NUKARA_SMTP_PORT:-465}"
+  local smtp_from_name="${NUKARA_SMTP_FROM_NAME:-Nukara}"
+  local code_ttl_seconds="${NUKARA_EMAIL_CODE_TTL_SECONDS:-900}"
+
+  if [ -z "$admin_username" ] || [ -z "$admin_password" ]; then
+    warn "Skipping email auth bootstrap: admin credentials are empty"
+    return 0
+  fi
+  if [ -z "$smtp_from_email" ] && [ -z "$smtp_password" ]; then
+    warn "Skipping email auth bootstrap: SMTP email/auth code are empty"
+    return 0
+  fi
+  if [ -z "$smtp_from_email" ] || [ -z "$smtp_password" ]; then
+    warn "Skipping email auth bootstrap: SMTP email/auth code are incomplete"
+    return 0
+  fi
+  if [ -z "$smtp_username" ]; then
+    smtp_username="$smtp_from_email"
+  fi
+
+  wait_for_admin_provider_api "$admin_username" "$admin_password" "$admin_base_url" 45
+
+  local payload
+  payload=$(jq -nc \
+    --arg smtp_host "$smtp_host" \
+    --arg smtp_port "$smtp_port" \
+    --arg smtp_username "$smtp_username" \
+    --arg smtp_password "$smtp_password" \
+    --arg from_email "$smtp_from_email" \
+    --arg from_name "$smtp_from_name" \
+    --argjson code_ttl_seconds "$code_ttl_seconds" \
+    '{
+      smtp_host: $smtp_host,
+      smtp_port: $smtp_port,
+      smtp_username: $smtp_username,
+      smtp_password: $smtp_password,
+      from_email: $from_email,
+      from_name: $from_name,
+      code_ttl_seconds: $code_ttl_seconds
+    }')
+
+  admin_api_request "$admin_username" "$admin_password" PUT "$admin_base_url/api/admin/settings/email-auth" "$payload" || \
+    err "Email auth bootstrap request failed: ${ADMIN_HTTP_BODY:-curl error}"
+  case "$ADMIN_HTTP_STATUS" in
+    200|201)
+      log "Email auth SMTP settings bootstrapped: ${smtp_from_email} -> ${smtp_host}:${smtp_port}"
+      ;;
+    *)
+      err "Email auth bootstrap failed: status=$ADMIN_HTTP_STATUS body=$ADMIN_HTTP_BODY"
+      ;;
+  esac
+}

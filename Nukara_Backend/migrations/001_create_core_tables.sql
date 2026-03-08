@@ -3,16 +3,16 @@
 
 CREATE TABLE IF NOT EXISTS users (
     id UUID PRIMARY KEY,
-    phone VARCHAR(20) UNIQUE NOT NULL,
+    email VARCHAR(255) UNIQUE NOT NULL,
     nickname VARCHAR(50) NOT NULL,
     avatar_url TEXT,
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
 
-CREATE TABLE IF NOT EXISTS sms_codes (
+CREATE TABLE IF NOT EXISTS email_codes (
     id UUID PRIMARY KEY,
-    phone VARCHAR(20) NOT NULL,
+    email VARCHAR(255) NOT NULL,
     purpose VARCHAR(20) NOT NULL,
     code VARCHAR(10) NOT NULL,
     expires_at TIMESTAMP NOT NULL,
