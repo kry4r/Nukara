@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -164,6 +165,75 @@ func buildMemoryGraphResponse(items []store.MemoryItem, ctx memoryGraphContext) 
 			MemoryCount:  len(items),
 			TopicCount:   len(topicSet),
 			GraphSource:  "store",
+			KindFilter:   strings.TrimSpace(ctx.KindFilter),
+			StatusFilter: strings.TrimSpace(ctx.StatusFilter),
+		},
+		RecentImpressions:     buildMemoryGraphMemoryItems(ctx.RecentImpressions),
+		RecentChanges:         buildMemoryGraphPersonaChanges(ctx.RecentChanges),
+		PendingPersonaChanges: buildMemoryGraphPersonaChanges(ctx.PendingPersonaChanges),
+	}
+	if ctx.RuntimeState != nil {
+		response.RuntimeState = &memoryGraphRuntimeState{
+			ActivityText:    strings.TrimSpace(ctx.RuntimeState.ActivityText),
+			BasisTags:       append([]string(nil), ctx.RuntimeState.BasisTags...),
+			SourceMemoryIDs: append([]string(nil), ctx.RuntimeState.SourceMemoryIDs...),
+			UpdatedAt:       ctx.RuntimeState.UpdatedAt,
+		}
+	}
+	return response
+}
+
+func buildTemporalMemoryGraphResponse(nodesInput []store.TemporalMemoryNode, edgesInput []store.TemporalMemoryEdge, ctx memoryGraphContext) memoryGraphResponse {
+	nodes := make([]memoryGraphNode, 0, len(nodesInput))
+	edges := make([]memoryGraphEdge, 0, len(edgesInput))
+	for _, node := range nodesInput {
+		label := strings.TrimSpace(node.Title)
+		if label == "" {
+			label = strings.TrimSpace(node.Summary)
+		}
+		if len([]rune(label)) > 24 {
+			runes := []rune(label)
+			label = string(runes[:24]) + "…"
+		}
+		importance := int(node.Salience * 100)
+		if importance <= 0 {
+			importance = int(node.Confidence * 100)
+		}
+		if importance <= 0 {
+			importance = int(node.Stability * 100)
+		}
+		nodes = append(nodes, memoryGraphNode{
+			ID:         strings.TrimSpace(node.ID),
+			Type:       "memory",
+			Label:      label,
+			Kind:       strings.TrimSpace(node.NodeType),
+			Status:     strings.TrimSpace(node.Status),
+			Content:    strings.TrimSpace(node.Summary),
+			Importance: importance,
+			OccurredAt: node.OccurredAt,
+		})
+	}
+	for _, edge := range edgesInput {
+		edges = append(edges, memoryGraphEdge{
+			ID:     strings.TrimSpace(edge.ID),
+			Source: strings.TrimSpace(edge.SourceID),
+			Target: strings.TrimSpace(edge.TargetID),
+			Type:   strings.TrimSpace(edge.EdgeType),
+		})
+	}
+	sort.Slice(nodes, func(i, j int) bool {
+		if nodes[i].OccurredAt.Equal(nodes[j].OccurredAt) {
+			return nodes[i].ID < nodes[j].ID
+		}
+		return nodes[i].OccurredAt.After(nodes[j].OccurredAt)
+	})
+	response := memoryGraphResponse{
+		Nodes: nodes,
+		Edges: edges,
+		Summary: memoryGraphSummary{
+			MemoryCount:  len(nodes),
+			TopicCount:   0,
+			GraphSource:  "temporal_memory_graph",
 			KindFilter:   strings.TrimSpace(ctx.KindFilter),
 			StatusFilter: strings.TrimSpace(ctx.StatusFilter),
 		},
@@ -382,11 +452,7 @@ func (s *Server) handleAdminMemoryGraph(w http.ResponseWriter, r *http.Request, 
 		statusFilter = "active"
 	}
 
-	items, err := s.loadAdminMemoryItems(userID, botID, kindFilter, statusFilter, 200)
-	if err != nil {
-		http.Error(w, "Failed to load memory graph: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
+	temporalNodes, temporalEdges, temporalErr := s.loadAdminTemporalMemoryGraph(userID, botID, kindFilter, statusFilter, 200)
 	runtimeState, err := s.loadAdminRuntimeState(userID, botID)
 	if err != nil {
 		http.Error(w, "Failed to load runtime state: "+err.Error(), http.StatusInternalServerError)
@@ -408,15 +474,161 @@ func (s *Server) handleAdminMemoryGraph(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(buildMemoryGraphResponse(items, memoryGraphContext{
+	ctx := memoryGraphContext{
 		KindFilter:            kindFilter,
 		StatusFilter:          statusFilter,
 		RuntimeState:          runtimeState,
 		RecentImpressions:     recentImpressions,
 		RecentChanges:         recentChanges,
 		PendingPersonaChanges: pendingChanges,
-	}))
+	}
+	response := memoryGraphResponse{}
+	if temporalErr == nil && len(temporalNodes) > 0 {
+		response = buildTemporalMemoryGraphResponse(temporalNodes, temporalEdges, ctx)
+	} else {
+		items, fallbackErr := s.loadAdminMemoryItems(userID, botID, kindFilter, statusFilter, 200)
+		if fallbackErr != nil {
+			if temporalErr != nil {
+				http.Error(w, "Failed to load memory graph: "+temporalErr.Error()+"; fallback failed: "+fallbackErr.Error(), http.StatusInternalServerError)
+				return
+			}
+			http.Error(w, "Failed to load memory graph: "+fallbackErr.Error(), http.StatusInternalServerError)
+			return
+		}
+		response = buildMemoryGraphResponse(items, ctx)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(response)
+}
+
+func temporalNodeTypesForKind(kind string) []string {
+	switch strings.TrimSpace(kind) {
+	case "promise":
+		return []string{"promise"}
+	case "event":
+		return []string{"episode"}
+	case "self_fact":
+		return []string{"self_model", "state_snapshot"}
+	case "user_fact":
+		return []string{"user_fact"}
+	case "habit":
+		return []string{"habit"}
+	default:
+		return nil
+	}
+}
+
+func (s *Server) loadAdminTemporalMemoryGraph(userID, botID, kind, status string, limit int) ([]store.TemporalMemoryNode, []store.TemporalMemoryEdge, error) {
+	nodes, err := s.loadAdminTemporalMemoryNodes(userID, botID, kind, status, limit)
+	if err != nil || len(nodes) == 0 {
+		return nodes, nil, err
+	}
+	nodeIDs := make([]string, 0, len(nodes))
+	for _, node := range nodes {
+		if id := strings.TrimSpace(node.ID); id != "" {
+			nodeIDs = append(nodeIDs, id)
+		}
+	}
+	edges, err := s.loadAdminTemporalMemoryEdges(nodeIDs, status, limit*3)
+	return nodes, edges, err
+}
+
+func (s *Server) loadAdminTemporalMemoryNodes(userID, botID, kind, status string, limit int) ([]store.TemporalMemoryNode, error) {
+	if limit <= 0 {
+		limit = 200
+	}
+	query := `
+		SELECT id::text, user_id::text, bot_id::text, COALESCE(session_id::text, ''), node_type, title, summary, body_json,
+			salience, affect_weight, confidence, stability, status, occurred_at, observed_at,
+			valid_from, valid_to, last_accessed_at, COALESCE(source_turn_id::text, ''), created_at, updated_at
+		FROM memory_nodes
+		WHERE user_id = $1 AND bot_id = $2`
+	args := []any{strings.TrimSpace(userID), strings.TrimSpace(botID)}
+	if status = strings.TrimSpace(status); status != "" {
+		query += fmt.Sprintf(" AND status = $%d", len(args)+1)
+		args = append(args, status)
+	}
+	nodeTypes := temporalNodeTypesForKind(kind)
+	if len(nodeTypes) > 0 {
+		placeholders := make([]string, 0, len(nodeTypes))
+		for _, nodeType := range nodeTypes {
+			args = append(args, nodeType)
+			placeholders = append(placeholders, fmt.Sprintf("$%d", len(args)))
+		}
+		query += " AND node_type IN (" + strings.Join(placeholders, ", ") + ")"
+	}
+	query += fmt.Sprintf(" ORDER BY occurred_at DESC, updated_at DESC LIMIT $%d", len(args)+1)
+	args = append(args, limit)
+
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	items := make([]store.TemporalMemoryNode, 0, limit)
+	for rows.Next() {
+		var item store.TemporalMemoryNode
+		var bodyRaw []byte
+		var validTo sql.NullTime
+		if err := rows.Scan(&item.ID, &item.UserID, &item.BotID, &item.SessionID, &item.NodeType, &item.Title, &item.Summary, &bodyRaw, &item.Salience, &item.AffectWeight, &item.Confidence, &item.Stability, &item.Status, &item.OccurredAt, &item.ObservedAt, &item.ValidFrom, &validTo, &item.LastAccessedAt, &item.SourceTurnID, &item.CreatedAt, &item.UpdatedAt); err != nil {
+			return nil, err
+		}
+		item.BodyJSON = strings.TrimSpace(string(bodyRaw))
+		if validTo.Valid {
+			value := validTo.Time.UTC()
+			item.ValidTo = &value
+		}
+		items = append(items, item)
+	}
+	return items, nil
+}
+
+func (s *Server) loadAdminTemporalMemoryEdges(nodeIDs []string, status string, limit int) ([]store.TemporalMemoryEdge, error) {
+	if len(nodeIDs) == 0 {
+		return nil, nil
+	}
+	if limit <= 0 {
+		limit = 600
+	}
+	args := make([]any, 0, len(nodeIDs)*2+2)
+	placeholdersLeft := make([]string, 0, len(nodeIDs))
+	placeholdersRight := make([]string, 0, len(nodeIDs))
+	for _, nodeID := range nodeIDs {
+		args = append(args, nodeID)
+		placeholdersLeft = append(placeholdersLeft, fmt.Sprintf("$%d", len(args)))
+	}
+	for _, nodeID := range nodeIDs {
+		args = append(args, nodeID)
+		placeholdersRight = append(placeholdersRight, fmt.Sprintf("$%d", len(args)))
+	}
+	query := `
+		SELECT id::text, source_id::text, target_id::text, edge_type, weight, evidence_count, status, created_at, updated_at
+		FROM memory_edges
+		WHERE (source_id::text IN (` + strings.Join(placeholdersLeft, ", ") + `) OR target_id::text IN (` + strings.Join(placeholdersRight, ", ") + `))`
+	if status = strings.TrimSpace(status); status != "" {
+		args = append(args, status)
+		query += fmt.Sprintf(" AND status = $%d", len(args))
+	}
+	args = append(args, limit)
+	query += fmt.Sprintf(" ORDER BY updated_at DESC LIMIT $%d", len(args))
+
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	items := make([]store.TemporalMemoryEdge, 0, limit)
+	for rows.Next() {
+		var item store.TemporalMemoryEdge
+		if err := rows.Scan(&item.ID, &item.SourceID, &item.TargetID, &item.EdgeType, &item.Weight, &item.EvidenceCount, &item.Status, &item.CreatedAt, &item.UpdatedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, nil
 }
 
 func (s *Server) loadAdminRecentImpressions(userID, botID string, limit int) ([]store.MemoryItem, error) {

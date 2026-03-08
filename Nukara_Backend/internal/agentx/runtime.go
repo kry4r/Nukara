@@ -54,8 +54,12 @@ func (r *Runtime) StreamTurn(ctx context.Context, req TurnRequest) (<-chan Strea
 	client := r.providerClient
 	providerMode := "default"
 	providerBaseURL := ""
+	providerConversationID := strings.TrimSpace(req.ProviderConversationID)
+	if providerConversationID == "" {
+		providerConversationID = strings.TrimSpace(req.ConversationID)
+	}
 	request := llm.ChatRequest{
-		ConversationID: req.ConversationID,
+		ConversationID: providerConversationID,
 		RobotID:        req.BotID,
 		Prompt:         req.AggregatedText,
 		SystemContext:  req.SystemContext,

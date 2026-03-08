@@ -14,6 +14,7 @@ import (
 	stdmail "net/mail"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"nukara/backend/internal/agent"
@@ -26,6 +27,8 @@ import (
 	internalmail "nukara/backend/internal/mail"
 	"nukara/backend/internal/store"
 )
+
+const defaultEmailSendCooldown = 60 * time.Second
 
 type wsChatRuntime interface {
 	StreamTurn(ctx context.Context, req agentx.TurnRequest) (<-chan agentx.StreamDelta, <-chan agentx.FinalTurn, error)
@@ -60,11 +63,13 @@ type Server struct {
 	subtasks       interface {
 		Run(ctx context.Context, in subtasks.Input) (subtasks.Result, error)
 	}
-	apns        *apns.Client
-	wsHub       *wsHub
-	emailSender verificationEmailSender
-	tokenKey    []byte
-	tokenTTL    time.Duration
+	apns              *apns.Client
+	wsHub             *wsHub
+	emailSender       verificationEmailSender
+	emailSendMu       sync.Mutex
+	emailSendCooldown time.Duration
+	tokenKey          []byte
+	tokenTTL          time.Duration
 }
 
 func NewServer(st store.DataStore, agentClient *agent.Agent, apnsClient *apns.Client, tokenSecret string, redisAddr string) *Server {
@@ -72,14 +77,15 @@ func NewServer(st store.DataStore, agentClient *agent.Agent, apnsClient *apns.Cl
 		tokenSecret = "nukara-dev-secret"
 	}
 	s := &Server{
-		store:          st,
-		agent:          agentClient,
-		apns:           apnsClient,
-		wsHub:          newWSHub(st, redisAddr),
-		emailSender:    internalmail.NewSMTPSender(st),
-		tokenKey:       []byte(tokenSecret),
-		tokenTTL:       30 * 24 * time.Hour,
-		temporalRecall: memorygraph.NewService(memorygraph.ServiceDeps{Store: st}),
+		store:             st,
+		agent:             agentClient,
+		apns:              apnsClient,
+		wsHub:             newWSHub(st, redisAddr),
+		emailSender:       internalmail.NewSMTPSender(st),
+		emailSendCooldown: defaultEmailSendCooldown,
+		tokenKey:          []byte(tokenSecret),
+		tokenTTL:          30 * 24 * time.Hour,
+		temporalRecall:    memorygraph.NewService(memorygraph.ServiceDeps{Store: st}),
 	}
 	if agentClient != nil {
 		deps := agentx.RuntimeDeps{
@@ -198,7 +204,6 @@ func (s *Server) handleEmailSend(w http.ResponseWriter, r *http.Request) {
 		badRequest(w, errors.New("invalid email or purpose"))
 		return
 	}
-	code := fmt.Sprintf("%06d", rand.Intn(1000000))
 	if s.emailSender == nil {
 		badRequest(w, errors.New("smtp not configured"))
 		return
@@ -207,6 +212,18 @@ func (s *Server) handleEmailSend(w http.ResponseWriter, r *http.Request) {
 	if cfg, err := internalmail.LoadSMTPConfig(s.store); err == nil && cfg.CodeTTL > 0 {
 		ttl = cfg.CodeTTL
 	}
+
+	s.emailSendMu.Lock()
+	defer s.emailSendMu.Unlock()
+	if existing, ok := s.store.GetLatestEmailCode(email, req.Purpose); ok {
+		now := time.Now().UTC()
+		if !existing.ExpiresAt.IsZero() && existing.ExpiresAt.After(now) && !existing.CreatedAt.IsZero() && now.Sub(existing.CreatedAt.UTC()) < s.emailSendCooldown {
+			respondJSON(w, http.StatusOK, map[string]any{"success": true, "message": "验证码已发送到邮箱"})
+			return
+		}
+	}
+
+	code := fmt.Sprintf("%06d", rand.Intn(1000000))
 	if err := s.emailSender.SendVerificationCode(r.Context(), email, code, ttl); err != nil {
 		status := http.StatusBadRequest
 		if !strings.Contains(strings.ToLower(err.Error()), "smtp not configured") && !strings.Contains(strings.ToLower(err.Error()), "invalid smtp") {
@@ -926,9 +943,9 @@ func (s *Server) handleGatewayTestChat(w http.ResponseWriter, r *http.Request) {
 		Content:        store.MessageContent{Type: "text", Text: strings.TrimSpace(req.Message)},
 	})
 
-	convID := agent.NanobotConvID(userID, bot.ID, conv.ID)
+	providerConversationID := agent.NanobotConvID(userID, bot.ID, conv.ID)
 	sysCtx := agent.BuildSystemContext(bot, nil)
-	reply, emotion, _, _, chatErr := s.runRuntimeChatText(context.Background(), userID, bot.ID, convID, req.Message, sysCtx)
+	reply, emotion, _, _, chatErr := s.runRuntimeChatTextWithProviderConversation(context.Background(), userID, bot.ID, conv.ID, providerConversationID, req.Message, sysCtx)
 	if chatErr != nil {
 		log.Printf("[server] runtime chat failed: %v", chatErr)
 		reply = fmt.Sprintf("%s：我记住了你说的。要不要继续聊聊？", bot.Name)
@@ -991,9 +1008,9 @@ func (s *Server) handleGatewayTestChatStream(w http.ResponseWriter, r *http.Requ
 		Content:        store.MessageContent{Type: "text", Text: strings.TrimSpace(req.Message)},
 	})
 
-	convID := agent.NanobotConvID(userID, bot.ID, conv.ID)
+	providerConversationID := agent.NanobotConvID(userID, bot.ID, conv.ID)
 	sysCtx := agent.BuildSystemContext(bot, nil)
-	reply, emotion, _, _, chatErr := s.runRuntimeChatText(context.Background(), userID, bot.ID, convID, req.Message, sysCtx)
+	reply, emotion, _, _, chatErr := s.runRuntimeChatTextWithProviderConversation(context.Background(), userID, bot.ID, conv.ID, providerConversationID, req.Message, sysCtx)
 	if chatErr != nil {
 		log.Printf("[server] runtime chat(stream) failed: %v", chatErr)
 		reply = fmt.Sprintf("%s：我记住了你说的。要不要继续聊聊？", bot.Name)
@@ -1082,9 +1099,9 @@ func (s *Server) handleGatewayTestProactive(w http.ResponseWriter, r *http.Reque
 		req.TriggerType = "manual"
 	}
 
-	convID := agent.NanobotConvID(userID, bot.ID, conv.ID)
+	localConversationID := conv.ID
 	sysCtx := agent.BuildSystemContext(bot, nil)
-	message, _, _, _, proactiveErr := s.runRuntimeProactive(context.Background(), userID, bot.ID, convID, req.TriggerType, sysCtx)
+	message, _, _, _, proactiveErr := s.runRuntimeProactive(context.Background(), userID, bot.ID, localConversationID, req.TriggerType, sysCtx)
 	if proactiveErr != nil {
 		log.Printf("[server] runtime proactive failed: %v", proactiveErr)
 		message = fmt.Sprintf("%s：刚想到你了，最近怎么样？", bot.Name)

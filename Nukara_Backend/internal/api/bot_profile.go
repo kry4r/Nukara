@@ -137,8 +137,8 @@ func (s *Server) handleBotImpression(w http.ResponseWriter, r *http.Request, use
 2) 80字以内，语气自然。
 3) 包含对方沟通风格/兴趣或情绪倾向中的1-2点。`
 
-	convID := agent.NanobotConvID(userID, bot.ID, conv.ID)
-	raw, _, _, _, err := s.runRuntimeChatText(context.Background(), userID, bot.ID, convID, prompt, sysCtx)
+	providerConversationID := agent.NanobotConvID(userID, bot.ID, conv.ID)
+	raw, _, _, _, err := s.runRuntimeChatTextWithProviderConversation(context.Background(), userID, bot.ID, conv.ID, providerConversationID, prompt, sysCtx)
 	if err != nil {
 		respondJSON(w, http.StatusBadGateway, map[string]any{"error": "impression generation failed"})
 		return
@@ -211,8 +211,8 @@ func (s *Server) handleBotIterate(w http.ResponseWriter, r *http.Request, userID
 	sysCtx := agent.BuildSystemContext(bot, directives)
 	prompt := buildIteratePrompt(messages)
 
-	convID := agent.NanobotConvID(userID, bot.ID, conv.ID)
-	raw, _, _, _, err := s.runRuntimeChatText(context.Background(), userID, bot.ID, convID, prompt, sysCtx)
+	providerConversationID := agent.NanobotConvID(userID, bot.ID, conv.ID)
+	raw, _, _, _, err := s.runRuntimeChatTextWithProviderConversation(context.Background(), userID, bot.ID, conv.ID, providerConversationID, prompt, sysCtx)
 	if err != nil {
 		respondJSON(w, http.StatusBadGateway, map[string]any{"error": "iterate generation failed"})
 		return

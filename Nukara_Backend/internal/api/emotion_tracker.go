@@ -50,9 +50,9 @@ func (s *Server) runEmotionAnalysis(userID string, bot store.Bot, conv store.Con
 	defer cancel()
 
 	prompt := buildEmotionPrompt(messages)
-	convID := agent.NanobotConvID(userID, bot.ID, conv.ID)
+	providerConversationID := agent.NanobotConvID(userID, bot.ID, conv.ID)
 	sysCtx := agent.BuildSystemContext(bot, nil)
-	reply, _, _, _, err := s.runRuntimeChatText(ctx, userID, bot.ID, convID, prompt, sysCtx)
+	reply, _, _, _, err := s.runRuntimeChatTextWithProviderConversation(ctx, userID, bot.ID, conv.ID, providerConversationID, prompt, sysCtx)
 	if err != nil {
 		log.Printf("[emotion] runtime analysis failed: user=%s bot=%s err=%v", userID, bot.ID, err)
 		return

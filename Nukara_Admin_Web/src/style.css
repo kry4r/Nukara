@@ -218,8 +218,7 @@ select {
   background: #f7f9f3;
   padding: 10px 12px;
   display: grid;
-  gap: 8px;
-  cursor: pointer;
+  gap: 10px;
 }
 
 .provider-item-card.selected {
@@ -227,11 +226,50 @@ select {
   background: rgba(123, 160, 91, 0.12);
 }
 
+.provider-item-card.expanded {
+  background: #fbfdf8;
+}
+
+.provider-card-toggle {
+  border: none;
+  background: transparent;
+  padding: 0;
+  width: 100%;
+  text-align: left;
+  display: grid;
+  gap: 8px;
+  cursor: pointer;
+}
+
 .provider-item-top {
   display: flex;
   justify-content: space-between;
   align-items: center;
   gap: 8px;
+}
+
+.provider-summary-grid {
+  display: grid;
+  gap: 4px;
+}
+
+.provider-inline-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.provider-expander {
+  display: grid;
+  gap: 10px;
+  padding-top: 6px;
+  border-top: 1px solid #e3e8d8;
+}
+
+.provider-expander-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .provider-state {
@@ -588,6 +626,15 @@ select {
   }
 
   .create-actions {
+    flex-direction: column;
+  }
+
+  .provider-expander-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .provider-inline-actions,
+  .provider-item-actions {
     flex-direction: column;
   }
 }

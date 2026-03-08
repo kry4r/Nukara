@@ -53,9 +53,13 @@ func (s *Server) runRuntimeChat(ctx context.Context, req agentx.TurnRequest) (te
 }
 
 func (s *Server) runRuntimeChatText(ctx context.Context, userID, botID, conversationID, prompt string, systemContext map[string]any) (string, string, string, string, error) {
+	return s.runRuntimeChatTextWithProviderConversation(ctx, userID, botID, conversationID, conversationID, prompt, systemContext)
+}
+
+func (s *Server) runRuntimeChatTextWithProviderConversation(ctx context.Context, userID, botID, conversationID, providerConversationID, prompt string, systemContext map[string]any) (string, string, string, string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 90*time.Second)
 	defer cancel()
-	return s.runRuntimeChat(ctx, s.newTurnRequest(userID, botID, conversationID, prompt, nil, systemContext))
+	return s.runRuntimeChat(ctx, s.newTurnRequestWithProviderConversation(userID, botID, conversationID, providerConversationID, prompt, nil, systemContext))
 }
 
 func (s *Server) runRuntimeProactive(ctx context.Context, userID, botID, conversationID, trigger string, systemContext map[string]any) (string, string, string, string, error) {

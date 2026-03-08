@@ -21,10 +21,10 @@ BEGIN
 END $$;
 
 CREATE TABLE IF NOT EXISTS memory_nodes (
-    id UUID PRIMARY KEY,
+    id TEXT PRIMARY KEY,
     user_id UUID NOT NULL,
     bot_id UUID NOT NULL,
-    session_id UUID,
+    session_id TEXT,
     node_type VARCHAR(40) NOT NULL,
     title TEXT NOT NULL DEFAULT '',
     summary TEXT NOT NULL DEFAULT '',
@@ -39,18 +39,31 @@ CREATE TABLE IF NOT EXISTS memory_nodes (
     valid_from TIMESTAMP NOT NULL DEFAULT NOW(),
     valid_to TIMESTAMP,
     last_accessed_at TIMESTAMP NOT NULL DEFAULT NOW(),
-    source_turn_id UUID,
+    source_turn_id TEXT,
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
+DO $$
+BEGIN
+    BEGIN
+        ALTER TABLE IF EXISTS memory_embeddings DROP CONSTRAINT IF EXISTS memory_embeddings_node_id_fkey;
+        ALTER TABLE IF EXISTS memory_edges DROP CONSTRAINT IF EXISTS memory_edges_source_id_fkey;
+        ALTER TABLE IF EXISTS memory_edges DROP CONSTRAINT IF EXISTS memory_edges_target_id_fkey;
+        ALTER TABLE IF EXISTS memory_nodes ALTER COLUMN id TYPE TEXT USING id::text;
+        ALTER TABLE IF EXISTS memory_nodes ALTER COLUMN session_id TYPE TEXT USING session_id::text;
+        ALTER TABLE IF EXISTS memory_nodes ALTER COLUMN source_turn_id TYPE TEXT USING source_turn_id::text;
+    EXCEPTION WHEN OTHERS THEN
+        NULL;
+    END;
+END $$;
 CREATE INDEX IF NOT EXISTS idx_memory_nodes_user_bot ON memory_nodes(user_id, bot_id, status, occurred_at DESC);
 CREATE INDEX IF NOT EXISTS idx_memory_nodes_type ON memory_nodes(user_id, bot_id, node_type, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_memory_nodes_session ON memory_nodes(user_id, bot_id, session_id, updated_at DESC);
 
 CREATE TABLE IF NOT EXISTS memory_edges (
     id UUID PRIMARY KEY,
-    source_id UUID NOT NULL REFERENCES memory_nodes(id) ON DELETE CASCADE,
-    target_id UUID NOT NULL REFERENCES memory_nodes(id) ON DELETE CASCADE,
+    source_id TEXT NOT NULL REFERENCES memory_nodes(id) ON DELETE CASCADE,
+    target_id TEXT NOT NULL REFERENCES memory_nodes(id) ON DELETE CASCADE,
     edge_type VARCHAR(40) NOT NULL,
     weight DOUBLE PRECISION NOT NULL DEFAULT 1,
     evidence_count INT NOT NULL DEFAULT 1,
@@ -58,12 +71,31 @@ CREATE TABLE IF NOT EXISTS memory_edges (
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
+DO $$
+BEGIN
+    BEGIN
+        ALTER TABLE IF EXISTS memory_edges ALTER COLUMN source_id TYPE TEXT USING source_id::text;
+        ALTER TABLE IF EXISTS memory_edges ALTER COLUMN target_id TYPE TEXT USING target_id::text;
+    EXCEPTION WHEN OTHERS THEN
+        NULL;
+    END;
+    BEGIN
+        ALTER TABLE memory_edges ADD CONSTRAINT memory_edges_source_id_fkey FOREIGN KEY (source_id) REFERENCES memory_nodes(id) ON DELETE CASCADE;
+    EXCEPTION WHEN duplicate_object THEN
+        NULL;
+    END;
+    BEGIN
+        ALTER TABLE memory_edges ADD CONSTRAINT memory_edges_target_id_fkey FOREIGN KEY (target_id) REFERENCES memory_nodes(id) ON DELETE CASCADE;
+    EXCEPTION WHEN duplicate_object THEN
+        NULL;
+    END;
+END $$;
 CREATE INDEX IF NOT EXISTS idx_memory_edges_source ON memory_edges(source_id, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_memory_edges_target ON memory_edges(target_id, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_memory_edges_type ON memory_edges(edge_type, updated_at DESC);
 
 CREATE TABLE IF NOT EXISTS memory_embeddings (
-    node_id UUID PRIMARY KEY REFERENCES memory_nodes(id) ON DELETE CASCADE,
+    node_id TEXT PRIMARY KEY REFERENCES memory_nodes(id) ON DELETE CASCADE,
     embedding_model TEXT NOT NULL DEFAULT '',
     embedding_json JSONB NOT NULL DEFAULT '[]'::jsonb,
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
@@ -71,6 +103,16 @@ CREATE TABLE IF NOT EXISTS memory_embeddings (
 );
 DO $$
 BEGIN
+    BEGIN
+        ALTER TABLE IF EXISTS memory_embeddings ALTER COLUMN node_id TYPE TEXT USING node_id::text;
+    EXCEPTION WHEN OTHERS THEN
+        NULL;
+    END;
+    BEGIN
+        ALTER TABLE memory_embeddings ADD CONSTRAINT memory_embeddings_node_id_fkey FOREIGN KEY (node_id) REFERENCES memory_nodes(id) ON DELETE CASCADE;
+    EXCEPTION WHEN duplicate_object THEN
+        NULL;
+    END;
     IF EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'vector') THEN
         BEGIN
             ALTER TABLE memory_embeddings ADD COLUMN IF NOT EXISTS embedding vector(1536);
@@ -98,8 +140,8 @@ CREATE TABLE IF NOT EXISTS activation_traces (
     id UUID PRIMARY KEY,
     user_id UUID NOT NULL,
     bot_id UUID NOT NULL,
-    conversation_id UUID,
-    turn_id UUID,
+    conversation_id TEXT,
+    turn_id TEXT,
     cue_json JSONB NOT NULL DEFAULT '{}'::jsonb,
     seed_node_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
     activated_node_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
@@ -107,6 +149,15 @@ CREATE TABLE IF NOT EXISTS activation_traces (
     response_excerpt TEXT NOT NULL DEFAULT '',
     created_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
+DO $$
+BEGIN
+    BEGIN
+        ALTER TABLE IF EXISTS activation_traces ALTER COLUMN conversation_id TYPE TEXT USING conversation_id::text;
+        ALTER TABLE IF EXISTS activation_traces ALTER COLUMN turn_id TYPE TEXT USING turn_id::text;
+    EXCEPTION WHEN OTHERS THEN
+        NULL;
+    END;
+END $$;
 CREATE INDEX IF NOT EXISTS idx_activation_traces_user_bot ON activation_traces(user_id, bot_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_activation_traces_conversation ON activation_traces(conversation_id, created_at DESC);
 `

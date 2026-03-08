@@ -76,14 +76,14 @@ func (s *Server) processChatMessage(userID string, req chatMessageRequest) (chat
 	}
 	s.store.SetLastUserMessageAt(userID, userMessage.CreatedAt)
 
-	convID := agent.NanobotConvID(userID, bot.ID, conv.ID)
+	providerConversationID := agent.NanobotConvID(userID, bot.ID, conv.ID)
 	var userStatusStr string
 	if us, ok := s.store.GetUserStatus(userID); ok && (us.Emoji != "" || us.Text != "") {
 		userStatusStr = us.Emoji + " " + us.Text
 	}
 	directives := s.store.ListDirectives(userID, bot.ID, "active")
 	sysCtx := agent.BuildSystemContext(bot, directives, userStatusStr)
-	reply, emotion, statusEmoji, statusText, err := s.runRuntimeChatText(context.Background(), userID, bot.ID, convID, prompt, sysCtx)
+	reply, emotion, statusEmoji, statusText, err := s.runRuntimeChatTextWithProviderConversation(context.Background(), userID, bot.ID, conv.ID, providerConversationID, prompt, sysCtx)
 	if err != nil {
 		log.Printf("[chat_flow] runtime chat failed: %v", err)
 		reply = fmt.Sprintf("%s：我记住了你说的。要不要继续聊聊？", bot.Name)
@@ -226,13 +226,14 @@ func selectBotStatus(emotion, conversationID string) botStatusValue {
 }
 
 func (s *Server) generateStarterMessage(userID string, bot store.Bot, convID string) string {
-	nbConvID := agent.NanobotConvID(userID, bot.ID, convID)
+	providerConversationID := agent.NanobotConvID(userID, bot.ID, convID)
 	sysCtx := agent.BuildSystemContext(bot, nil)
-	reply, _, _, _, err := s.runRuntimeChatText(
+	reply, _, _, _, err := s.runRuntimeChatTextWithProviderConversation(
 		context.Background(),
 		userID,
 		bot.ID,
-		nbConvID,
+		convID,
+		providerConversationID,
 		"现在直接向用户说一句简短的开场问候。直接输出你要说的话，不要使用工具，不要解释，只输出对话内容。",
 		sysCtx,
 	)

@@ -74,3 +74,41 @@ func TestRuntimeContextIncludesRuntimeStateAndPromises(t *testing.T) {
 		t.Fatalf("expected promise block in prompt, got=%s", prompt)
 	}
 }
+
+func TestNewTurnRequestSeparatesProviderConversationIDFromLocalConversationID(t *testing.T) {
+	st := store.NewStore()
+	user, err := st.CreateUser("13900139004", "runtime-conversation-id")
+	if err != nil {
+		t.Fatalf("create user failed: %v", err)
+	}
+	bot := st.CreateBot(user.ID, store.Bot{Name: "苏子衿", Identity: "温柔的人"})
+	conv, found := st.FindConversationByBot(user.ID, bot.ID)
+	if !found {
+		t.Fatalf("conversation not found")
+	}
+	if err := st.UpsertCompact(conv.ID, `{"summary":"这是一段本地会话摘要"}`, "turn-1"); err != nil {
+		t.Fatalf("upsert compact failed: %v", err)
+	}
+
+	server := NewServer(st, nil, apns.NewClient("com.nukara.app"), "test-secret", "")
+	providerConversationID := agent.NanobotConvID(user.ID, bot.ID, conv.ID)
+	request := server.newTurnRequestWithProviderConversation(
+		user.ID,
+		bot.ID,
+		conv.ID,
+		providerConversationID,
+		"你还记得我们刚才聊什么吗",
+		nil,
+		agent.BuildSystemContext(bot, nil),
+	)
+
+	if request.ConversationID != conv.ID {
+		t.Fatalf("local conversation id = %q, want %q", request.ConversationID, conv.ID)
+	}
+	if request.ProviderConversationID != providerConversationID {
+		t.Fatalf("provider conversation id = %q, want %q", request.ProviderConversationID, providerConversationID)
+	}
+	if !strings.Contains(request.SystemPrompt, "这是一段本地会话摘要") {
+		t.Fatalf("expected compact from local conversation id, got=%s", request.SystemPrompt)
+	}
+}

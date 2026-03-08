@@ -405,11 +405,19 @@ CREATE TABLE IF NOT EXISTS agent_turns (
 );
 
 CREATE TABLE IF NOT EXISTS conversation_compacts (
-    conversation_id UUID PRIMARY KEY,
+    conversation_id TEXT PRIMARY KEY,
     compact_json JSONB NOT NULL DEFAULT '{}'::jsonb,
-    until_turn_id UUID,
+    until_turn_id TEXT,
     updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
+DO $$ BEGIN
+    BEGIN
+        ALTER TABLE IF EXISTS conversation_compacts ALTER COLUMN conversation_id TYPE TEXT USING conversation_id::text;
+        ALTER TABLE IF EXISTS conversation_compacts ALTER COLUMN until_turn_id TYPE TEXT USING until_turn_id::text;
+    EXCEPTION WHEN OTHERS THEN
+        NULL;
+    END;
+END $$;
 
 CREATE TABLE IF NOT EXISTS memory_items (
     id UUID PRIMARY KEY,
@@ -444,13 +452,20 @@ CREATE TABLE IF NOT EXISTS persona_change_events (
     field VARCHAR(40) NOT NULL,
     change_type VARCHAR(20) NOT NULL DEFAULT 'append',
     proposed_value TEXT NOT NULL,
-    source_turn_id UUID,
+    source_turn_id TEXT,
     risk VARCHAR(20) NOT NULL DEFAULT 'low',
     status VARCHAR(20) NOT NULL DEFAULT 'pending',
     reviewer_note TEXT,
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
+DO $$ BEGIN
+    BEGIN
+        ALTER TABLE IF EXISTS persona_change_events ALTER COLUMN source_turn_id TYPE TEXT USING source_turn_id::text;
+    EXCEPTION WHEN OTHERS THEN
+        NULL;
+    END;
+END $$;
 CREATE INDEX IF NOT EXISTS idx_persona_change_events_user_bot ON persona_change_events(user_id, bot_id, status, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS agent_traces (
@@ -626,6 +641,29 @@ func (p *PostgresStore) SaveEmailCode(email, purpose, code string, ttl time.Dura
 	if err != nil {
 		log.Printf("save email code to postgres failed: %v", err)
 	}
+}
+
+func (p *PostgresStore) GetLatestEmailCode(email, purpose string) (EmailCode, bool) {
+	ctx, cancel := p.withTimeout()
+	defer cancel()
+
+	var entry EmailCode
+	err := p.db.QueryRowContext(ctx,
+		`SELECT email, purpose, code, created_at, expires_at
+		 FROM email_codes
+		 WHERE email=$1 AND purpose=$2 AND used=FALSE
+		 ORDER BY created_at DESC
+		 LIMIT 1`,
+		email, purpose,
+	).Scan(&entry.Email, &entry.Purpose, &entry.Code, &entry.CreatedAt, &entry.ExpiresAt)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return p.Store.GetLatestEmailCode(email, purpose)
+		}
+		log.Printf("get latest email code query failed: %v", err)
+		return p.Store.GetLatestEmailCode(email, purpose)
+	}
+	return entry, true
 }
 
 func (p *PostgresStore) ValidateEmailCode(email, purpose, code string) bool {
