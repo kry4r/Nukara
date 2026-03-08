@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"nukara/backend/internal/agentx/memory"
+	"nukara/backend/internal/agentx/memorygraph"
 	"nukara/backend/internal/agentx/persona"
 	"nukara/backend/internal/store"
 )
@@ -29,6 +29,10 @@ type Result struct {
 type MemoryExtractor func(ctx context.Context, in Input) (string, error)
 type CompactUpdater func(ctx context.Context, in Input) (string, error)
 type PersonaIterator func(ctx context.Context, in Input) (string, error)
+type SelfCognitionUpdater func(ctx context.Context, in Input, bot store.Bot, changes []store.PersonaChangeEvent) (store.Bot, error)
+type MemoryGraphService interface {
+	IngestTurn(ctx context.Context, in memorygraph.IngestTurnInput) (memorygraph.IngestTurnResult, error)
+}
 
 type personaApplyInput = store.PersonaPatchInput
 
@@ -39,14 +43,18 @@ type RunnerDeps struct {
 		UpsertCompact(conversationID, compactJSON, untilTurnID string) error
 		GetBot(userID, botID string) (store.Bot, bool)
 		ApplyBotPersonaPatch(userID, botID string, input store.PersonaPatchInput) (store.Bot, bool)
+		UpsertBotRuntimeState(state store.BotRuntimeState) (store.BotRuntimeState, error)
+		CreatePersonaChangeEvent(event store.PersonaChangeEvent) (store.PersonaChangeEvent, error)
 		IncrementTurnCount(userID, botID string) int
 	}
 	MemoryTool interface {
 		Save(ctx context.Context, item store.MemoryItem) (store.MemoryItem, error)
 	}
-	MemoryExtractor MemoryExtractor
-	CompactUpdater  CompactUpdater
-	PersonaIterator PersonaIterator
+	MemoryGraph          MemoryGraphService
+	MemoryExtractor      MemoryExtractor
+	CompactUpdater       CompactUpdater
+	PersonaIterator      PersonaIterator
+	SelfCognitionUpdater SelfCognitionUpdater
 }
 
 type Runner struct {
@@ -54,22 +62,22 @@ type Runner struct {
 	memoryTool interface {
 		Save(ctx context.Context, item store.MemoryItem) (store.MemoryItem, error)
 	}
-	memoryExtractor MemoryExtractor
-	compactUpdater  CompactUpdater
-	personaIterator PersonaIterator
+	memoryExtractor      MemoryExtractor
+	compactUpdater       CompactUpdater
+	personaIterator      PersonaIterator
+	selfCognitionUpdater SelfCognitionUpdater
+	memoryGraph          MemoryGraphService
 }
 
 func NewRunner(deps RunnerDeps) *Runner {
-	memoryTool := deps.MemoryTool
-	if memoryTool == nil {
-		memoryTool = memory.NewStore(deps.Store)
-	}
 	return &Runner{
-		store:           deps,
-		memoryTool:      memoryTool,
-		memoryExtractor: deps.MemoryExtractor,
-		compactUpdater:  deps.CompactUpdater,
-		personaIterator: deps.PersonaIterator,
+		store:                deps,
+		memoryTool:           deps.MemoryTool,
+		memoryExtractor:      deps.MemoryExtractor,
+		compactUpdater:       deps.CompactUpdater,
+		personaIterator:      deps.PersonaIterator,
+		selfCognitionUpdater: deps.SelfCognitionUpdater,
+		memoryGraph:          deps.MemoryGraph,
 	}
 }
 
@@ -79,21 +87,39 @@ func (r *Runner) Run(ctx context.Context, in Input) (Result, error) {
 		return result, nil
 	}
 
+	savedItems := []store.MemoryItem(nil)
 	if r.memoryExtractor != nil {
 		if raw, err := r.memoryExtractor(ctx, in); err == nil {
-			_ = r.applyMemory(raw, in)
+			if items, applyErr := r.applyMemory(raw, in); applyErr == nil {
+				savedItems = items
+				r.updateRuntimeState(items, in)
+			}
 		}
 	}
 
+	compactJSON := ""
 	if r.compactUpdater != nil {
 		if compact, err := r.compactUpdater(ctx, in); err == nil && strings.TrimSpace(compact) != "" {
+			compactJSON = compact
 			_ = r.store.Store.UpsertCompact(in.ConversationID, compact, in.TurnID)
 		}
 	}
 
+	if r.memoryGraph != nil && (len(savedItems) > 0 || strings.TrimSpace(compactJSON) != "") {
+		_, _ = r.memoryGraph.IngestTurn(ctx, memorygraph.IngestTurnInput{
+			UserID:         in.UserID,
+			BotID:          in.BotID,
+			ConversationID: in.ConversationID,
+			TurnID:         in.TurnID,
+			Items:          append([]store.MemoryItem(nil), savedItems...),
+			CompactJSON:    compactJSON,
+			Now:            time.Now().UTC(),
+		})
+	}
+
 	if r.personaIterator != nil {
 		turnCount := r.store.Store.IncrementTurnCount(in.UserID, in.BotID)
-		if turnCount%3 == 0 {
+		if turnCount%3 == 0 || len(savedItems) > 0 {
 			raw, err := r.personaIterator(ctx, in)
 			if err != nil {
 				return result, nil
@@ -111,24 +137,24 @@ func (r *Runner) Run(ctx context.Context, in Input) (Result, error) {
 			if !found {
 				return result, nil
 			}
-			prompt := persona.CompilePrompt(store.Bot{
-				Name:                 bot.Name,
-				Identity:             appendTextAdds(bot.Identity, patch.IdentityAdds),
-				Personality:          append(append([]string(nil), bot.Personality...), patch.PersonalityAdds...),
-				ExpressionStyle:      appendTextAdds(bot.ExpressionStyle, patch.ExpressionStyleAdds),
-				LifeContext:          appendTextAdds(bot.LifeContext, patch.LifeContextAdds),
-				TaboosAndPreferences: appendTextAdds(bot.TaboosAndPreferences, patch.TaboosAndPreferencesAdds),
-			}, 420)
 
-			_, ok := r.store.Store.ApplyBotPersonaPatch(in.UserID, in.BotID, store.PersonaPatchInput{
-				IdentityAdds:             patch.IdentityAdds,
-				PersonalityAdds:          patch.PersonalityAdds,
-				ExpressionStyleAdds:      patch.ExpressionStyleAdds,
-				LifeContextAdds:          patch.LifeContextAdds,
-				TaboosAndPreferencesAdds: patch.TaboosAndPreferencesAdds,
-				PersonaPrompt:            prompt,
-			})
-			if ok {
+			risk := persona.ClassifyPatchRisk(patch)
+			if risk.Route == persona.RoutePendingConfirm {
+				_, _ = r.createPendingPersonaChanges(patch, in)
+				result.Patch = patch
+				result.PatchSummary = summarizePatch(patch)
+				return result, nil
+			}
+			acceptedChanges, createErr := r.createAcceptedPersonaChanges(patch, in, risk.Risk)
+			if createErr != nil {
+				return result, nil
+			}
+			if r.selfCognitionUpdater != nil && len(acceptedChanges) > 0 {
+				if updatedBot, updateErr := r.selfCognitionUpdater(ctx, in, bot, acceptedChanges); updateErr == nil {
+					bot = updatedBot
+				}
+			}
+			if len(acceptedChanges) > 0 {
 				result.PersonaUpdated = true
 				result.Patch = patch
 				result.PatchSummary = summarizePatch(patch)
@@ -139,11 +165,12 @@ func (r *Runner) Run(ctx context.Context, in Input) (Result, error) {
 	return result, nil
 }
 
-func (r *Runner) applyMemory(raw string, in Input) error {
+func (r *Runner) applyMemory(raw string, in Input) ([]store.MemoryItem, error) {
 	items, err := ParseMemoryItems(raw)
 	if err != nil {
-		return err
+		return nil, err
 	}
+	savedItems := make([]store.MemoryItem, 0, len(items))
 	for _, item := range items {
 		if strings.TrimSpace(item.Content) == "" {
 			continue
@@ -160,16 +187,96 @@ func (r *Runner) applyMemory(raw string, in Input) error {
 			item.Status = "active"
 		}
 		if r.memoryTool != nil {
-			if _, err := r.memoryTool.Save(context.Background(), item); err != nil {
-				return err
+			saved, saveErr := r.memoryTool.Save(context.Background(), item)
+			if saveErr != nil {
+				return nil, saveErr
 			}
+			savedItems = append(savedItems, saved)
 			continue
 		}
-		if _, err := r.store.Store.UpsertMemoryItem(item); err != nil {
-			return err
+		saved, saveErr := r.store.Store.UpsertMemoryItem(item)
+		if saveErr != nil {
+			return nil, saveErr
 		}
+		savedItems = append(savedItems, saved)
 	}
-	return nil
+	return savedItems, nil
+}
+
+func (r *Runner) updateRuntimeState(items []store.MemoryItem, in Input) {
+	if len(items) == 0 {
+		return
+	}
+	for i := len(items) - 1; i >= 0; i-- {
+		item := items[i]
+		if !shouldUseForRuntimeState(item) {
+			continue
+		}
+		_, _ = r.store.Store.UpsertBotRuntimeState(store.BotRuntimeState{
+			UserID:          in.UserID,
+			BotID:           in.BotID,
+			ActivityText:    strings.TrimSpace(item.Content),
+			BasisTags:       []string{item.Kind},
+			SourceMemoryIDs: []string{item.ID},
+			UpdatedAt:       item.OccurredAt,
+		})
+		return
+	}
+}
+
+func shouldUseForRuntimeState(item store.MemoryItem) bool {
+	kind := strings.TrimSpace(item.Kind)
+	if kind != "self_fact" && kind != "state_basis" && kind != "event" && kind != "habit" {
+		return false
+	}
+	return strings.TrimSpace(item.Content) != ""
+}
+
+type personaChangeCandidate struct {
+	field string
+	adds  []string
+}
+
+func (r *Runner) createPendingPersonaChanges(patch persona.Patch, in Input) ([]store.PersonaChangeEvent, error) {
+	return r.createPersonaChanges(patch, in, string(persona.RiskHigh), "pending")
+}
+
+func (r *Runner) createAcceptedPersonaChanges(patch persona.Patch, in Input, risk persona.RiskLevel) ([]store.PersonaChangeEvent, error) {
+	return r.createPersonaChanges(patch, in, string(risk), "accepted")
+}
+
+func (r *Runner) createPersonaChanges(patch persona.Patch, in Input, risk, status string) ([]store.PersonaChangeEvent, error) {
+	created := make([]store.PersonaChangeEvent, 0, 5)
+	for _, candidate := range personaChangeCandidates(patch) {
+		if len(candidate.adds) == 0 {
+			continue
+		}
+		event, err := r.store.Store.CreatePersonaChangeEvent(store.PersonaChangeEvent{
+			UserID:        in.UserID,
+			BotID:         in.BotID,
+			Field:         candidate.field,
+			ChangeType:    "append",
+			ProposedValue: strings.Join(candidate.adds, "；"),
+			SourceTurnID:  in.TurnID,
+			Risk:          strings.TrimSpace(risk),
+			Status:        strings.TrimSpace(status),
+		})
+		if err != nil {
+			return nil, err
+		}
+		created = append(created, event)
+	}
+	return created, nil
+}
+
+func personaChangeCandidates(patch persona.Patch) []personaChangeCandidate {
+	return []personaChangeCandidate{
+		{field: "identity", adds: patch.IdentityAdds},
+		{field: "personality", adds: patch.PersonalityAdds},
+		{field: "expression_style", adds: patch.ExpressionStyleAdds},
+		{field: "life_context", adds: patch.LifeContextAdds},
+		{field: "taboos_and_preferences", adds: patch.TaboosAndPreferencesAdds},
+	}
 }
 
 func summarizePatch(p persona.Patch) string {

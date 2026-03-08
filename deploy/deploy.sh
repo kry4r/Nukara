@@ -3,7 +3,7 @@ set -euo pipefail
 
 # ============================================================
 # Nukara — One-Click Full Stack Deploy
-# Deploys: Postgres + Redis + Gateway + Proactive + Web
+# Deploys: Postgres + Redis + Gateway + Proactive + Web + Admin API + Admin Web
 # Supports: Ubuntu/Debian, CentOS/RHEL/Fedora, Arch, Alpine
 # ============================================================
 
@@ -170,7 +170,7 @@ collect_config() {
 
   # --- Domain & Ports ---
   echo ""
-  echo -e "${CYAN}[2/5] Domain & Ports${NC}"
+  echo -e "${CYAN}[2/6] Domain & Ports${NC}"
   read -rp "  Domain [${DOMAIN:-localhost}]: " input
   DOMAIN="${input:-${DOMAIN:-localhost}}"
 
@@ -180,9 +180,15 @@ collect_config() {
   read -rp "  Gateway API port [${GATEWAY_PORT:-8080}]: " input
   GATEWAY_PORT="${input:-${GATEWAY_PORT:-8080}}"
 
+  read -rp "  Admin Web port [${ADMIN_WEB_PORT:-9527}]: " input
+  ADMIN_WEB_PORT="${input:-${ADMIN_WEB_PORT:-9527}}"
+
+  read -rp "  Admin API port [${ADMIN_API_PORT:-19527}]: " input
+  ADMIN_API_PORT="${input:-${ADMIN_API_PORT:-19527}}"
+
   # --- Security ---
   echo ""
-  echo -e "${CYAN}[3/5] Security${NC}"
+  echo -e "${CYAN}[3/6] Security${NC}"
   DEFAULT_JWT=$(openssl rand -hex 16 2>/dev/null || head -c 32 /dev/urandom | xxd -p | head -c 32)
   read -rp "  JWT Secret [auto-generated]: " input
   JWT_SECRET="${input:-${JWT_SECRET:-$DEFAULT_JWT}}"
@@ -190,9 +196,17 @@ collect_config() {
   read -rp "  Postgres password [${POSTGRES_PASSWORD:-postgres}]: " input
   POSTGRES_PASSWORD="${input:-${POSTGRES_PASSWORD:-postgres}}"
 
+  read -rp "  Admin username [${NUKARA_ADMIN_USERNAME:-admin}]: " input
+  NUKARA_ADMIN_USERNAME="${input:-${NUKARA_ADMIN_USERNAME:-admin}}"
+
+  read -rsp "  Admin password [${NUKARA_ADMIN_PASSWORD:-admin123}]: " input
+  echo ""
+  NUKARA_ADMIN_PASSWORD="${input:-${NUKARA_ADMIN_PASSWORD:-admin123}}"
+  [ -z "$NUKARA_ADMIN_PASSWORD" ] && err "Admin password is required"
+
   # --- APNs (optional) ---
   echo ""
-  echo -e "${CYAN}[4/5] APNs Push Notifications (optional, press Enter to skip)${NC}"
+  echo -e "${CYAN}[4/6] APNs Push Notifications (optional, press Enter to skip)${NC}"
   read -rp "  APNs Key ID [${APNS_KEY_ID:-}]: " input
   APNS_KEY_ID="${input:-${APNS_KEY_ID:-}}"
   read -rp "  APNs Team ID [${APNS_TEAM_ID:-}]: " input
@@ -204,7 +218,7 @@ collect_config() {
 
   # --- Proactive messaging ---
   echo ""
-  echo -e "${CYAN}[5/5] Proactive Messaging${NC}"
+  echo -e "${CYAN}[5/6] Proactive Messaging${NC}"
   read -rp "  Check interval [${PROACTIVE_INTERVAL:-5m}]: " input
   PROACTIVE_INTERVAL="${input:-${PROACTIVE_INTERVAL:-5m}}"
   read -rp "  Inactivity threshold [${INACTIVITY_THRESHOLD:-30m}]: " input
@@ -212,18 +226,31 @@ collect_config() {
   read -rp "  Cooldown [${PROACTIVE_COOLDOWN:-60m}]: " input
   PROACTIVE_COOLDOWN="${input:-${PROACTIVE_COOLDOWN:-60m}}"
 
+  echo ""
+  echo -e "${CYAN}[6/6] Embedding / Runtime Defaults${NC}"
+  read -rp "  Embedding model [${NUKARA_EMBEDDING_MODEL:-text-embedding-3-small}]: " input
+  NUKARA_EMBEDDING_MODEL="${input:-${NUKARA_EMBEDDING_MODEL:-text-embedding-3-small}}"
+
   # --- Write .env ---
   cat > "$ENV_FILE" <<EOF
 # Nukara Deploy Config — generated $(date +%Y-%m-%d)
 LLM_API_KEY=$LLM_API_KEY
 LLM_API_BASE=$LLM_API_BASE
 LLM_MODEL=$LLM_MODEL
+NUKARA_ASTRON_API_KEY=$LLM_API_KEY
+NUKARA_ASTRON_BASE_URL=$LLM_API_BASE
+NUKARA_ASTRON_CHAT_MODEL=$LLM_MODEL
 DOMAIN=$DOMAIN
 HTTP_PORT=$HTTP_PORT
 GATEWAY_PORT=$GATEWAY_PORT
+ADMIN_WEB_PORT=$ADMIN_WEB_PORT
+ADMIN_API_PORT=$ADMIN_API_PORT
 JWT_SECRET=$JWT_SECRET
 POSTGRES_USER=nukara
 POSTGRES_PASSWORD=$POSTGRES_PASSWORD
+NUKARA_ADMIN_USERNAME=$NUKARA_ADMIN_USERNAME
+NUKARA_ADMIN_PASSWORD=$NUKARA_ADMIN_PASSWORD
+NUKARA_EMBEDDING_MODEL=$NUKARA_EMBEDDING_MODEL
 APNS_KEY_ID=$APNS_KEY_ID
 APNS_TEAM_ID=$APNS_TEAM_ID
 APNS_P8_BASE64=$APNS_P8_BASE64
@@ -266,6 +293,19 @@ prepare_sources() {
     mv _tmp_nukara2/Nukara_Web ./Nukara_Web
     rm -rf _tmp_nukara2
   fi
+
+  # Admin frontend
+  if [ -d "./Nukara_Admin_Web" ]; then
+    log "Nukara_Admin_Web found locally"
+  elif [ -d "../Nukara_Admin_Web" ]; then
+    ln -sf ../Nukara_Admin_Web ./Nukara_Admin_Web
+    log "Linked Nukara_Admin_Web from parent dir"
+  else
+    log "Cloning Nukara_Admin_Web..."
+    git clone --depth 1 https://github.com/kry4r/Nukara.git _tmp_nukara3
+    mv _tmp_nukara3/Nukara_Admin_Web ./Nukara_Admin_Web
+    rm -rf _tmp_nukara3
+  fi
 }
 
 # --- Generate nginx config from template ---
@@ -306,11 +346,20 @@ deploy() {
     warn "Gateway not yet responding at $gw_url (may still be starting)"
   fi
 
+  local admin_url="http://localhost:${ADMIN_API_PORT:-19527}/health"
+  if curl -sf "$admin_url" &>/dev/null; then
+    log "Admin health check: ${GREEN}OK${NC}"
+  else
+    warn "Admin not yet responding at $admin_url (may still be starting)"
+  fi
+
   echo ""
   echo -e "${GREEN}${BOLD}Nukara deployed successfully!${NC}"
   echo ""
   info "Web UI:     http://${DOMAIN}:${HTTP_PORT}"
   info "Gateway:    http://${DOMAIN}:${GATEWAY_PORT}"
+  info "Admin UI:   http://${DOMAIN}:${ADMIN_WEB_PORT}"
+  info "Admin API:  http://${DOMAIN}:${ADMIN_API_PORT}"
   echo ""
   info "Useful commands:"
   info "  $COMPOSE --env-file $ENV_FILE logs -f        # follow logs"

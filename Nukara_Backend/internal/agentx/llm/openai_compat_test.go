@@ -2,10 +2,12 @@ package llm
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
@@ -157,6 +159,91 @@ func TestOpenAICompatClientUsesChatCompletionsEndpoint(t *testing.T) {
 
 	if got.String() != "completion-ok" {
 		t.Fatalf("reply = %q, want %q", got.String(), "completion-ok")
+	}
+}
+
+func TestOpenAICompatClientRetriesTooManyRequests(t *testing.T) {
+	previousDelay := openAICompatRetryBaseDelay
+	openAICompatRetryBaseDelay = time.Millisecond
+	defer func() { openAICompatRetryBaseDelay = previousDelay }()
+
+	attempts := 0
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		attempts++
+		if attempts < 3 {
+			return &http.Response{
+				StatusCode: http.StatusTooManyRequests,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(`{"error":"Concurrency limit exceeded"}`)),
+			}, nil
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"choices":[{"message":{"content":"retry-ok"}}]}`)),
+		}, nil
+	})}
+
+	compat := NewOpenAICompatClient("https://api.openai.com/v1", "sk-test", "gpt-4o-mini", "chat_completions", client)
+	deltaCh, errCh, err := compat.StreamChat(context.Background(), ChatRequest{Prompt: "hello"})
+	if err != nil {
+		t.Fatalf("StreamChat failed: %v", err)
+	}
+
+	var got strings.Builder
+	for deltaCh != nil || errCh != nil {
+		select {
+		case delta, ok := <-deltaCh:
+			if !ok {
+				deltaCh = nil
+				continue
+			}
+			got.WriteString(delta)
+		case streamErr, ok := <-errCh:
+			if !ok {
+				errCh = nil
+				continue
+			}
+			if streamErr != nil {
+				t.Fatalf("stream error: %v", streamErr)
+			}
+		}
+	}
+
+	if attempts != 3 {
+		t.Fatalf("attempts = %d, want 3", attempts)
+	}
+	if got.String() != "retry-ok" {
+		t.Fatalf("reply = %q, want %q", got.String(), "retry-ok")
+	}
+}
+
+func TestOpenAICompatClientReturnsLastTooManyRequestsError(t *testing.T) {
+	previousDelay := openAICompatRetryBaseDelay
+	openAICompatRetryBaseDelay = time.Millisecond
+	defer func() { openAICompatRetryBaseDelay = previousDelay }()
+
+	attempts := 0
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		attempts++
+		return &http.Response{
+			StatusCode: http.StatusTooManyRequests,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"error":"Concurrency limit exceeded"}`)),
+		}, nil
+	})}
+
+	compat := NewOpenAICompatClient("https://api.openai.com/v1", "sk-test", "gpt-4o-mini", "chat_completions", client)
+	_, _, err := compat.StreamChat(context.Background(), ChatRequest{Prompt: "hello"})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if attempts != openAICompatMaxRetryAttempts {
+		t.Fatalf("attempts = %d, want %d", attempts, openAICompatMaxRetryAttempts)
+	}
+	want := fmt.Sprintf("chat_completions status=%d body=%s", http.StatusTooManyRequests, `{"error":"Concurrency limit exceeded"}`)
+	if err.Error() != want {
+		t.Fatalf("error = %q, want %q", err.Error(), want)
 	}
 }
 

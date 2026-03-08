@@ -24,17 +24,6 @@ wait_for_health() {
 restart_backend_services() {
   log "Restarting backend services..."
 
-  if [ "${NUKARA_MEMORY_INFRA_ENABLED:-true}" = "true" ]; then
-    systemctl enable qdrant neo4j nukara-neo4j-adapter 2>/dev/null || true
-    systemctl restart qdrant
-    systemctl restart neo4j
-    systemctl restart nukara-neo4j-adapter
-    wait_for_health "http://127.0.0.1:${NUKARA_QDRANT_HTTP_PORT:-6333}/readyz" 45 || \
-      err "Service health check failed: http://127.0.0.1:${NUKARA_QDRANT_HTTP_PORT:-6333}/readyz (timeout after 45s)"
-    wait_for_health "http://127.0.0.1:${NUKARA_NEO4J_ADAPTER_PORT:-17687}/health" 45 || \
-      err "Service health check failed: http://127.0.0.1:${NUKARA_NEO4J_ADAPTER_PORT:-17687}/health (timeout after 45s)"
-  fi
-
   systemctl enable nukara-gateway nukara-proactive nukara-admin 2>/dev/null || true
   systemctl restart nukara-gateway
   systemctl restart nukara-proactive

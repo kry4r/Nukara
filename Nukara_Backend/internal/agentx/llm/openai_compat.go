@@ -14,10 +14,14 @@ import (
 )
 
 const (
-	APIModeChatCompletions = "chat_completions"
-	APIModeResponses       = "responses"
-	APIModeAuto            = "auto"
+	APIModeChatCompletions       = "chat_completions"
+	APIModeResponses             = "responses"
+	APIModeAuto                  = "auto"
+	openAICompatMaxRetryAttempts = 3
+	openAICompatRetryMaxDelay    = 2 * time.Second
 )
+
+var openAICompatRetryBaseDelay = 200 * time.Millisecond
 
 type OpenAICompatClient struct {
 	baseURL      string
@@ -94,23 +98,37 @@ func (c *OpenAICompatClient) streamWithMode(ctx context.Context, req ChatRequest
 		return nil, nil, fmt.Errorf("marshal %s request: %w", mode, err)
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+endpoint, bytes.NewReader(raw))
-	if err != nil {
-		return nil, nil, fmt.Errorf("create %s request: %w", mode, err)
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	if c.apiKey != "" {
-		httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
-	}
+	var resp *http.Response
+	for attempt := 0; attempt < openAICompatMaxRetryAttempts; attempt++ {
+		httpReq, reqErr := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+endpoint, bytes.NewReader(raw))
+		if reqErr != nil {
+			return nil, nil, fmt.Errorf("create %s request: %w", mode, reqErr)
+		}
+		httpReq.Header.Set("Content-Type", "application/json")
+		if c.apiKey != "" {
+			httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
+		}
 
-	resp, err := c.httpClient.Do(httpReq)
-	if err != nil {
-		return nil, nil, fmt.Errorf("request %s: %w", mode, err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		defer resp.Body.Close()
+		resp, err = c.httpClient.Do(httpReq)
+		if err != nil {
+			return nil, nil, fmt.Errorf("request %s: %w", mode, err)
+		}
+		if resp.StatusCode == http.StatusOK {
+			break
+		}
+
 		body, _ := io.ReadAll(resp.Body)
-		return nil, nil, fmt.Errorf("%s status=%d body=%s", mode, resp.StatusCode, strings.TrimSpace(string(body)))
+		_ = resp.Body.Close()
+		bodyText := strings.TrimSpace(string(body))
+		if !shouldRetryOpenAICompatStatus(resp.StatusCode) || attempt == openAICompatMaxRetryAttempts-1 {
+			return nil, nil, fmt.Errorf("%s status=%d body=%s", mode, resp.StatusCode, bodyText)
+		}
+		if err := waitOpenAICompatRetry(ctx, attempt, resp.Header.Get("Retry-After")); err != nil {
+			return nil, nil, err
+		}
+	}
+	if resp == nil {
+		return nil, nil, fmt.Errorf("request %s: empty response", mode)
 	}
 
 	deltaCh := make(chan string, 16)
@@ -134,6 +152,45 @@ func (c *OpenAICompatClient) streamWithMode(ctx context.Context, req ChatRequest
 	}()
 
 	return deltaCh, errCh, nil
+}
+
+func shouldRetryOpenAICompatStatus(statusCode int) bool {
+	return statusCode == http.StatusTooManyRequests
+}
+
+func waitOpenAICompatRetry(ctx context.Context, attempt int, retryAfter string) error {
+	delay := parseRetryAfterDelay(retryAfter)
+	if delay <= 0 {
+		delay = openAICompatRetryBaseDelay << attempt
+	}
+	if delay > openAICompatRetryMaxDelay {
+		delay = openAICompatRetryMaxDelay
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func parseRetryAfterDelay(raw string) time.Duration {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0
+	}
+	if seconds, err := time.ParseDuration(raw + "s"); err == nil && seconds > 0 {
+		return seconds
+	}
+	if retryAt, err := http.ParseTime(raw); err == nil {
+		delay := time.Until(retryAt)
+		if delay > 0 {
+			return delay
+		}
+	}
+	return 0
 }
 
 func buildOpenAICompatRequest(req ChatRequest, model, mode string) (map[string]any, string, error) {

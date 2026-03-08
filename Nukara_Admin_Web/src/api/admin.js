@@ -153,8 +153,34 @@ export function buildListUserBotsPath(userId) {
   return `/users/${userId}/bots`
 }
 
-export function buildMemoryGraphPath(userId, botId) {
-  return `/users/${userId}/bots/${botId}/memory-graph`
+export function buildMemoryGraphPath(userId, botId, filters = {}) {
+  const search = new URLSearchParams()
+  if (filters.kind) search.set('kind', String(filters.kind).trim())
+  if (filters.status) search.set('status', String(filters.status).trim())
+  const query = search.toString()
+  return `/users/${userId}/bots/${botId}/memory-graph${query ? `?${query}` : ''}`
+}
+
+export function buildPostTurnModelPath() {
+  return '/settings/post-turn-model'
+}
+
+export function buildSelfCognitionSummaryModelPath() {
+  return '/settings/self-cognition-summary-model'
+}
+
+export function normalizePostTurnModelPayload(input = {}) {
+  return {
+    provider_id: input.provider_id?.trim() || '',
+    model: input.model?.trim() || '',
+  }
+}
+
+export function normalizeSelfCognitionSummaryModelPayload(input = {}) {
+  return {
+    provider_id: input.provider_id?.trim() || '',
+    model: input.model?.trim() || '',
+  }
 }
 
 export function normalizeEmailAuthSettingsPayload(input = {}) {
@@ -177,8 +203,30 @@ export function listUserBots(userId) {
   return request(buildListUserBotsPath(userId))
 }
 
-export function getMemoryGraph(userId, botId) {
-  return request(buildMemoryGraphPath(userId, botId))
+export function getMemoryGraph(userId, botId, filters = {}) {
+  return request(buildMemoryGraphPath(userId, botId, filters))
+}
+
+export function getPostTurnModelConfig() {
+  return request(buildPostTurnModelPath())
+}
+
+export function updatePostTurnModelConfig(payload) {
+  return request(buildPostTurnModelPath(), {
+    method: 'PUT',
+    body: normalizePostTurnModelPayload(payload),
+  })
+}
+
+export function getSelfCognitionSummaryModelConfig() {
+  return request(buildSelfCognitionSummaryModelPath())
+}
+
+export function updateSelfCognitionSummaryModelConfig(payload) {
+  return request(buildSelfCognitionSummaryModelPath(), {
+    method: 'PUT',
+    body: normalizeSelfCognitionSummaryModelPayload(payload),
+  })
 }
 
 export function getEmbeddingConfig() {

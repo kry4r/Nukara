@@ -35,8 +35,10 @@ test('persona proactive refactor flow stays consistent end-to-end', async ({ pag
       status_emoji: '💭',
       status_text: '在想你',
     },
-    directives: [],
     conversation_id: 'conv-1',
+    recent_impressions: [
+      { id: 'imp-1', kind: 'impression', content: '你给我的感觉是理性又温柔。' },
+    ],
   }
 
   let notifications = {
@@ -57,33 +59,6 @@ test('persona proactive refactor flow stays consistent end-to-end', async ({ pag
     })
   })
 
-  await page.route('**/api/v1/bots/bot-1/impression', async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify({ impression: '你给我的感觉是理性又温柔。' }),
-    })
-  })
-
-  await page.route('**/api/v1/bots/bot-1/iterate', async (route) => {
-    profile.bot = {
-      ...profile.bot,
-      personality: [...profile.bot.personality, '观察细致'],
-      expression_style: `${profile.bot.expression_style}，会顺着情绪接话`,
-    }
-    await route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify({
-        identity_adds: ['会认真接住情绪'],
-        personality_adds: ['观察细致'],
-        expression_style_adds: ['会顺着情绪接话'],
-        life_context_adds: ['最近在学摄影'],
-        taboos_and_preferences_adds: ['不喜欢被敷衍'],
-        bot: profile.bot,
-      }),
-    })
-  })
 
   await page.route('**/api/v1/users/notification-settings', async (route, request) => {
     if (request.method() === 'PUT') {
@@ -151,9 +126,9 @@ test('persona proactive refactor flow stays consistent end-to-end', async ({ pag
 
   await page.goto(`${WEB_URL}/bots/bot-1`)
   await expect(page.getByTestId('bot-detail-page')).toBeVisible()
-  await page.getByRole('button', { name: '运行迭代' }).click()
-  await expect(page.getByText('性格特征新增')).toBeVisible()
-  await expect(page.locator('.iterate-list')).toContainText('观察细致')
+  await expect(page.getByTestId('bot-detail-impression')).toContainText('理性又温柔')
+  await expect(page.getByRole('button', { name: '运行迭代' })).toHaveCount(0)
+  await expect(page.getByText('行为指令')).toHaveCount(0)
   await expect(page.locator('body')).not.toContainText('bot not found')
 
   await page.goto(`${WEB_URL}/settings`)

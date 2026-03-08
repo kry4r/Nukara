@@ -63,6 +63,21 @@ type DataStore interface {
 	UpsertMemoryItem(item MemoryItem) (MemoryItem, error)
 	GetMemoryItem(memoryID string) (MemoryItem, bool)
 	ListMemoryItems(userID, botID string, limit int) []MemoryItem
+	CreateMemoryNode(node TemporalMemoryNode) (TemporalMemoryNode, error)
+	UpdateMemoryNode(node TemporalMemoryNode) (TemporalMemoryNode, error)
+	GetMemoryNode(nodeID string) (TemporalMemoryNode, bool)
+	ListMemoryNodes(userID, botID string, filter TemporalMemoryNodeFilter) []TemporalMemoryNode
+	CreateMemoryEdge(edge TemporalMemoryEdge) (TemporalMemoryEdge, error)
+	ListMemoryEdges(nodeIDs []string, filter TemporalMemoryEdgeFilter) []TemporalMemoryEdge
+	UpsertMemoryCard(card MemoryCard) (MemoryCard, error)
+	ListMemoryCards(userID, botID string, filter MemoryCardFilter) []MemoryCard
+	SaveActivationTrace(trace ActivationTrace) (ActivationTrace, error)
+	ListActivationTraces(userID, botID string, filter ActivationTraceFilter) []ActivationTrace
+	UpsertBotRuntimeState(state BotRuntimeState) (BotRuntimeState, error)
+	GetBotRuntimeState(userID, botID string) (BotRuntimeState, bool)
+	CreatePersonaChangeEvent(event PersonaChangeEvent) (PersonaChangeEvent, error)
+	ListPersonaChangeEvents(userID, botID, status string, limit int) []PersonaChangeEvent
+	UpdatePersonaChangeEventStatus(changeID, status, reviewerNote string) (PersonaChangeEvent, bool)
 
 	// Emotion tracking
 	AppendEmotionBuffer(userID, botID, text string) int // returns buffer length

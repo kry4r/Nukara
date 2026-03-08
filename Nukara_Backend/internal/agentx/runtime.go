@@ -28,6 +28,14 @@ type Runtime struct {
 	clientFactory func(route provider.Route) llm.StreamClient
 }
 
+type subtaskRouteResolver interface {
+	ResolveSubtaskRoute(userID, botID string) (provider.Route, error)
+}
+
+type selfCognitionSummaryRouteResolver interface {
+	ResolveSelfCognitionSummaryRoute(userID, botID string) (provider.Route, error)
+}
+
 func NewRuntime(deps RuntimeDeps) *Runtime {
 	factory := deps.ClientFactory
 	if factory == nil {
@@ -55,7 +63,20 @@ func (r *Runtime) StreamTurn(ctx context.Context, req TurnRequest) (<-chan Strea
 		History:        append([]llm.ChatMessage(nil), req.History...),
 	}
 	if r.routeResolver != nil && r.clientFactory != nil {
-		if route, routeErr := r.routeResolver.ResolveChatRoute(req.UserID, req.BotID); routeErr == nil && strings.TrimSpace(route.BaseURL) != "" {
+		resolveRoute := func() (provider.Route, error) {
+			switch req.Purpose {
+			case "subtask":
+				if resolver, ok := r.routeResolver.(subtaskRouteResolver); ok {
+					return resolver.ResolveSubtaskRoute(req.UserID, req.BotID)
+				}
+			case "self_cognition_summary":
+				if resolver, ok := r.routeResolver.(selfCognitionSummaryRouteResolver); ok {
+					return resolver.ResolveSelfCognitionSummaryRoute(req.UserID, req.BotID)
+				}
+			}
+			return r.routeResolver.ResolveChatRoute(req.UserID, req.BotID)
+		}
+		if route, routeErr := resolveRoute(); routeErr == nil && strings.TrimSpace(route.BaseURL) != "" {
 			client = r.clientFactory(route)
 			request.Model = route.Model
 			providerMode = "route:" + strings.TrimSpace(route.ProviderID)

@@ -17,12 +17,19 @@ This folder contains the backend implementation aligned with:
 ## Key API coverage
 - Auth: `/api/v1/auth/email/send`, `/api/v1/auth/login`, `/api/v1/auth/register`
 - Bot: `/api/v1/bots`, `/api/v1/bots/{id}`, `/api/v1/bots/{id}/persona`
+  - Runtime portrait: `GET /api/v1/bots/{id}/profile`
+  - Cached impression: `POST /api/v1/bots/{id}/impression`
+  - Manual iterate fallback: `POST /api/v1/bots/{id}/iterate`
+  - Persona change review: `POST /api/v1/bots/{id}/persona-changes/{changeID}/accept|reject`
 - Conversation: `/api/v1/conversations`, `/api/v1/conversations/{id}/messages`, `/mark-read`, `/read`
 - Proactive/APNs surfaces:
   - `POST /api/v1/users/device-token`
   - `GET|PUT /api/v1/users/notification-settings`
   - `GET /api/v1/proactive/logs`
   - `POST /api/v1/gateway/test/proactive`
+- Admin surfaces:
+  - `GET /api/admin/users/{userID}/bots/{botID}/memory-graph` now includes runtime state, recent impressions, recent changes and pending persona changes
+  - `GET|PUT /api/admin/settings/post-turn-model` configures the cheaper dedicated post-turn model route
 - Test APIs:
   - `POST /api/v1/gateway/test/chat`
   - `POST /api/v1/gateway/test/chat/stream` (SSE)
@@ -40,6 +47,7 @@ This folder contains the backend implementation aligned with:
 - Dify integration supports blocking + streaming workflow invocation (with fallback to local stub).
 - Dify integration supports blocking + streaming workflow invocation. If Dify is unavailable, it falls back to Astron MaaS (OpenAI-compatible API).
 - APNs client supports production p8 token auth; missing credentials automatically fallback to stub.
+- Bot profile payload now carries runtime portrait data (`runtime_state`, `recent_impressions`, `key_memories`, `recent_changes`, `pending_persona_changes`) so the web detail page and admin memory graph can render the same post-turn state.
 
 ## Environment variables
 - `NUKARA_POSTGRES_DSN`: enable persistent Postgres store.
@@ -51,17 +59,9 @@ This folder contains the backend implementation aligned with:
 - `NUKARA_ASTRON_API_KEY`: Astron MaaS API key.
 - `NUKARA_ASTRON_CHAT_MODEL`: chat model id (e.g. `xopglm47blth2` / `xopglm5` / `xopkimik25` / `xminimaxm2`).
 - `NUKARA_ASTRON_PROACTIVE_MODEL`: proactive message generation model id.
-- `NUKARA_ASTRON_EMBEDDING_MODEL`: embedding model id for RAG vectorization.
-- `NUKARA_QDRANT_URL`: Qdrant endpoint (default `http://localhost:6333`).
-- `NUKARA_QDRANT_API_KEY`: optional Qdrant API key.
-- `NUKARA_QDRANT_COLLECTION`: collection name for memory retrieval.
-- `NUKARA_QDRANT_VECTOR_SIZE`: vector dimension used when auto-creating the collection.
-- `NUKARA_NEO4J_URL`: Neo4j HTTP adapter endpoint for topic expansion / graph writes, not the raw Neo4j browser/Bolt endpoint.
-- `NUKARA_NEO4J_BOLT_URL`: raw Neo4j Bolt endpoint used by `cmd/neo4j_adapter`.
-- `NUKARA_NEO4J_DATABASE`: Neo4j database name for memory graph storage.
-- `NUKARA_NEO4J_USER`: Neo4j username; the adapter also reuses it for optional HTTP basic auth.
-- `NUKARA_NEO4J_PASSWORD`: Neo4j password; the adapter also reuses it for optional HTTP basic auth.
-- `NUKARA_EMBEDDING_MODEL`: OpenAI-compatible embedding model used for semantic memory recall / upsert.
+- `NUKARA_ASTRON_EMBEDDING_MODEL`: embedding model id for embedding-related subtasks.
+- `NUKARA_EMBEDDING_MODEL`: OpenAI-compatible embedding model used by the temporal memory graph embedding path.
+- Temporal memory now uses PostgreSQL as the single persistence source; `pgvector` is optional and enabled opportunistically when the Postgres instance has the extension installed.
 - `NUKARA_APNS_TOPIC`: APNs topic / bundle id.
 - `NUKARA_APNS_KEY_ID`: APNs key id.
 - `NUKARA_APNS_TEAM_ID`: Apple team id.

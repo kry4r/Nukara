@@ -24,21 +24,6 @@ services:
       retries: 10
     restart: unless-stopped
 
-  neo4j:
-    image: neo4j:5.26
-    environment:
-      NEO4J_AUTH: ${NUKARA_NEO4J_USER:-neo4j}/${NUKARA_NEO4J_PASS:-nukara123}
-    ports:
-      - "${NEO4J_HTTP_PORT:-7474}:7474"
-      - "${NEO4J_BOLT_PORT:-7687}:7687"
-    restart: unless-stopped
-
-  qdrant:
-    image: qdrant/qdrant:v1.13.4
-    ports:
-      - "${QDRANT_PORT:-6333}:6333"
-    restart: unless-stopped
-
   # --- Go Backend Gateway ---
   gateway:
     build:
@@ -60,11 +45,6 @@ services:
       NUKARA_PROACTIVE_INTERVAL: ${PROACTIVE_INTERVAL:-5m}
       NUKARA_INACTIVITY_THRESHOLD: ${INACTIVITY_THRESHOLD:-30m}
       NUKARA_PROACTIVE_COOLDOWN: ${PROACTIVE_COOLDOWN:-60m}
-      NUKARA_NEO4J_URI: ${NUKARA_NEO4J_URI:-http://neo4j:7474}
-      NUKARA_NEO4J_USER: ${NUKARA_NEO4J_USER:-neo4j}
-      NUKARA_NEO4J_PASS: ${NUKARA_NEO4J_PASS:-nukara123}
-      NUKARA_QDRANT_URL: ${NUKARA_QDRANT_URL:-http://qdrant:6333}
-      NUKARA_QDRANT_API_KEY: ${NUKARA_QDRANT_API_KEY:-}
       NUKARA_EMBEDDING_PROVIDER_ID: ${NUKARA_EMBEDDING_PROVIDER_ID:-minimax_m2_5}
       NUKARA_EMBEDDING_MODEL: ${NUKARA_EMBEDDING_MODEL:-MiniMax-M2.5}
     ports:
@@ -74,10 +54,6 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-      neo4j:
-        condition: service_started
-      qdrant:
-        condition: service_started
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8080/api/v1/gateway/health"]
       interval: 5s
@@ -110,11 +86,49 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  # --- Admin API ---
+  admin:
+    build:
+      context: ./Nukara_Backend
+      args:
+        SERVICE: admin
+    environment:
+      NUKARA_ADMIN_PORT: 8080
+      NUKARA_ADMIN_USERNAME: ${NUKARA_ADMIN_USERNAME:-admin}
+      NUKARA_ADMIN_PASSWORD: ${NUKARA_ADMIN_PASSWORD:-admin123}
+      NUKARA_POSTGRES_DSN: postgres://${POSTGRES_USER:-nukara}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/nukara?sslmode=disable
+    ports:
+      - "${ADMIN_API_PORT:-19527}:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      gateway:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+
   # --- Web Frontend ---
   frontend:
     build:
       context: ./Nukara_Web
       dockerfile: deploy/Dockerfile.frontend
+    restart: unless-stopped
+
+  # --- Admin Frontend ---
+  admin_frontend:
+    build:
+      context: ./Nukara_Admin_Web
+      dockerfile: deploy/Dockerfile.frontend
+    ports:
+      - "${ADMIN_WEB_PORT:-9527}:80"
+    depends_on:
+      admin:
+        condition: service_healthy
     restart: unless-stopped
 
   # --- Nginx Reverse Proxy ---

@@ -1,10 +1,14 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import {
   getMemoryGraph,
   listAdminUsers,
   listUserBots,
 } from '../api/admin.js'
+import {
+  buildGraphNeighborSet,
+  buildMemoryGraphLayout,
+} from '../utils/memory-graph-layout.js'
 
 const searchQuery = ref('')
 const loadingUsers = ref(false)
@@ -14,39 +18,66 @@ const statusMessage = ref('')
 const errorMessage = ref('')
 const users = ref([])
 const bots = ref([])
-const graph = ref({ nodes: [], edges: [], summary: { memory_count: 0, topic_count: 0, graph_source: 'store' } })
+const filters = reactive({
+  kind: '',
+  status: 'active',
+})
+
+function emptyGraph() {
+  return {
+    nodes: [],
+    edges: [],
+    summary: { memory_count: 0, topic_count: 0, graph_source: 'store', kind_filter: '', status_filter: 'active' },
+    runtime_state: null,
+    recent_impressions: [],
+    recent_changes: [],
+    pending_persona_changes: [],
+  }
+}
+
+const graph = ref(emptyGraph())
 const selectedUserId = ref('')
 const selectedBotId = ref('')
 const selectedNodeId = ref('')
 
 const selectedNode = computed(() => graph.value.nodes.find((node) => node.id === selectedNodeId.value) || null)
+const runtimeState = computed(() => graph.value.runtime_state || null)
+const recentImpressions = computed(() => Array.isArray(graph.value.recent_impressions) ? graph.value.recent_impressions : [])
+const recentChanges = computed(() => Array.isArray(graph.value.recent_changes) ? graph.value.recent_changes : [])
+const pendingPersonaChanges = computed(() => Array.isArray(graph.value.pending_persona_changes) ? graph.value.pending_persona_changes : [])
+
+const memoryKindOptions = [
+  { value: '', label: '全部类型' },
+  { value: 'promise', label: 'Promise' },
+  { value: 'event', label: 'Event' },
+  { value: 'self_fact', label: 'Self Fact' },
+  { value: 'user_fact', label: 'User Fact' },
+  { value: 'habit', label: 'Habit' },
+]
+const statusOptions = [
+  { value: 'active', label: 'Active' },
+  { value: 'fulfilled', label: 'Fulfilled' },
+  { value: 'pending', label: 'Pending' },
+  { value: 'accepted', label: 'Accepted' },
+  { value: 'all', label: 'All' },
+]
+
 const canvasWidth = 920
 const canvasHeight = 620
 
-const graphLayout = computed(() => {
-  const memoryNodes = graph.value.nodes.filter((node) => node.type === 'memory')
-  const topicNodes = graph.value.nodes.filter((node) => node.type === 'topic')
-  const centerX = canvasWidth / 2
-  const centerY = canvasHeight / 2
-  const positioned = []
-  const topicRadius = 180
-  const memoryRadius = 300
-
-  topicNodes.forEach((node, index) => {
-    const angle = (Math.PI * 2 * index) / Math.max(topicNodes.length, 1)
-    positioned.push({ ...node, x: centerX + Math.cos(angle) * topicRadius, y: centerY + Math.sin(angle) * topicRadius })
-  })
-  memoryNodes.forEach((node, index) => {
-    const angle = (Math.PI * 2 * index) / Math.max(memoryNodes.length, 1)
-    positioned.push({ ...node, x: centerX + Math.cos(angle) * memoryRadius, y: centerY + Math.sin(angle) * memoryRadius })
-  })
-
-  const nodeMap = new Map(positioned.map((node) => [node.id, node]))
-  const edges = graph.value.edges
-    .map((edge) => ({ edge, source: nodeMap.get(edge.source), target: nodeMap.get(edge.target) }))
-    .filter((item) => item.source && item.target)
-
-  return { nodes: positioned, edges }
+const graphLayout = computed(() => buildMemoryGraphLayout(graph.value.nodes, graph.value.edges, {
+  width: canvasWidth,
+  height: canvasHeight,
+}))
+const relatedNodeIds = computed(() => buildGraphNeighborSet(graph.value.edges, selectedNodeId.value))
+const hasRelatedSelection = computed(() => relatedNodeIds.value.size > 0)
+const selectedNodeNeighbors = computed(() => {
+  if (!selectedNode.value) {
+    return []
+  }
+  const ids = buildGraphNeighborSet(graph.value.edges, selectedNode.value.id)
+  ids.delete(selectedNode.value.id)
+  return graph.value.nodes.filter((node) => ids.has(node.id)).slice(0, 12)
 })
 
 async function refreshUsers() {
@@ -59,7 +90,7 @@ async function refreshUsers() {
       selectedUserId.value = ''
       selectedBotId.value = ''
       bots.value = []
-      graph.value = { nodes: [], edges: [], summary: { memory_count: 0, topic_count: 0, graph_source: 'store' } }
+      graph.value = emptyGraph()
     }
     statusMessage.value = `已加载 ${users.value.length} 位用户。`
   } catch (error) {
@@ -70,13 +101,11 @@ async function refreshUsers() {
 }
 
 async function selectUser(user) {
-  if (!user?.user_id) {
-    return
-  }
+  if (!user?.user_id) return
   selectedUserId.value = user.user_id
   selectedBotId.value = ''
   selectedNodeId.value = ''
-  graph.value = { nodes: [], edges: [], summary: { memory_count: 0, topic_count: 0, graph_source: 'store' } }
+  graph.value = emptyGraph()
   loadingBots.value = true
   errorMessage.value = ''
   try {
@@ -90,16 +119,15 @@ async function selectUser(user) {
   }
 }
 
-async function selectBot(bot) {
-  if (!selectedUserId.value || !bot?.bot_id) {
-    return
-  }
-  selectedBotId.value = bot.bot_id
-  selectedNodeId.value = ''
+async function loadSelectedBotGraph() {
+  if (!selectedUserId.value || !selectedBotId.value) return
   loadingGraph.value = true
   errorMessage.value = ''
   try {
-    graph.value = await getMemoryGraph(selectedUserId.value, bot.bot_id)
+    graph.value = await getMemoryGraph(selectedUserId.value, selectedBotId.value, {
+      kind: filters.kind,
+      status: filters.status,
+    })
     if (graph.value.nodes?.length) {
       selectedNodeId.value = graph.value.nodes[0].id
     }
@@ -111,10 +139,48 @@ async function selectBot(bot) {
   }
 }
 
-function nodeRect(node) {
-  return node.type === 'memory'
-    ? { width: 150, height: 64, rx: 18 }
-    : { width: 96, height: 44, rx: 22 }
+async function selectBot(bot) {
+  if (!selectedUserId.value || !bot?.bot_id) return
+  selectedBotId.value = bot.bot_id
+  selectedNodeId.value = ''
+  await loadSelectedBotGraph()
+}
+
+function edgePath(item) {
+  const source = item.source
+  const target = item.target
+  const dx = target.x - source.x
+  const dy = target.y - source.y
+  const distance = Math.hypot(dx, dy) || 1
+  const curve = item.type === 'topic' ? 22 : 14
+  const controlX = (source.x + target.x) / 2 - (dy / distance) * curve
+  const controlY = (source.y + target.y) / 2 + (dx / distance) * curve
+  return `M ${source.x} ${source.y} Q ${controlX} ${controlY} ${target.x} ${target.y}`
+}
+
+function topicDiamondPath(node) {
+  const radius = node.radius || 24
+  return [
+    `M ${node.x} ${node.y - radius}`,
+    `L ${node.x + radius} ${node.y}`,
+    `L ${node.x} ${node.y + radius}`,
+    `L ${node.x - radius} ${node.y}`,
+    'Z',
+  ].join(' ')
+}
+
+function isNodeDimmed(node) {
+  return hasRelatedSelection.value && !relatedNodeIds.value.has(node.id)
+}
+
+function isEdgeDimmed(item) {
+  return hasRelatedSelection.value
+    && !(relatedNodeIds.value.has(item.source.id) && relatedNodeIds.value.has(item.target.id))
+}
+
+function formatDateTime(value) {
+  if (!value) return '-'
+  return new Date(value).toLocaleString()
 }
 
 onMounted(() => {
@@ -139,7 +205,19 @@ onMounted(() => {
         <span>搜索用户</span>
         <input v-model.trim="searchQuery" placeholder="按邮箱 / 昵称 / 用户 ID 搜索" @keyup.enter="refreshUsers" />
       </label>
-      <button type="button" class="ghost" :disabled="loadingUsers" @click="refreshUsers">搜索</button>
+      <label class="mini-filter">
+        <span>Kind</span>
+        <select v-model="filters.kind">
+          <option v-for="item in memoryKindOptions" :key="item.value || 'all'" :value="item.value">{{ item.label }}</option>
+        </select>
+      </label>
+      <label class="mini-filter">
+        <span>Status</span>
+        <select v-model="filters.status">
+          <option v-for="item in statusOptions" :key="item.value" :value="item.value">{{ item.label }}</option>
+        </select>
+      </label>
+      <button type="button" class="ghost" :disabled="loadingGraph || !selectedBotId" @click="loadSelectedBotGraph">应用筛选</button>
     </div>
 
     <div class="graph-layout">
@@ -182,59 +260,121 @@ onMounted(() => {
 
       <section class="graph-stage-card">
         <div class="graph-summary">
-          <span>Memory：{{ graph.summary?.memory_count || 0 }}</span>
-          <span>Topic：{{ graph.summary?.topic_count || 0 }}</span>
-          <span>Source：{{ graph.summary?.graph_source || 'store' }}</span>
+          <span class="summary-pill">Memory：{{ graph.summary?.memory_count || 0 }}</span>
+          <span class="summary-pill">Topic：{{ graph.summary?.topic_count || 0 }}</span>
+          <span class="summary-pill">Source：{{ graph.summary?.graph_source || 'store' }}</span>
         </div>
 
         <div v-if="loadingGraph" class="graph-empty">图谱加载中...</div>
         <div v-else-if="!selectedBotId" class="graph-empty">先选择一个 Robot 查看图谱</div>
         <div v-else-if="!graph.nodes?.length" class="graph-empty">当前 Robot 暂无记忆图数据</div>
         <div v-else class="graph-stage">
-          <svg :viewBox="`0 0 ${canvasWidth} ${canvasHeight}`" class="graph-svg">
-            <line
+          <div class="graph-stage-toolbar">
+            <div class="legend-group">
+              <span class="legend-item"><i class="legend-dot topic"></i>主题节点</span>
+              <span class="legend-item"><i class="legend-dot memory"></i>记忆节点</span>
+              <span class="legend-item"><i class="legend-line"></i>关联边</span>
+            </div>
+            <span class="legend-note">点击节点查看详情，并高亮直接关联节点</span>
+          </div>
+
+          <svg :viewBox="`0 0 ${graphLayout.width} ${graphLayout.height}`" class="graph-svg" role="img" aria-label="memory graph">
+            <path
               v-for="item in graphLayout.edges"
-              :key="item.edge.id"
-              :x1="item.source.x"
-              :y1="item.source.y"
-              :x2="item.target.x"
-              :y2="item.target.y"
-              stroke="#cbd5e1"
-              stroke-width="2"
+              :key="item.id"
+              :d="edgePath(item)"
+              class="graph-edge"
+              :class="{ dimmed: isEdgeDimmed(item), active: !isEdgeDimmed(item) && hasRelatedSelection }"
             />
             <g
               v-for="node in graphLayout.nodes"
               :key="node.id"
               class="graph-node"
-              :class="[`node-${node.type}`, { active: node.id === selectedNodeId }]"
+              :class="[
+                `node-${node.type}`,
+                { active: node.id === selectedNodeId, dimmed: isNodeDimmed(node) },
+              ]"
               @click="selectedNodeId = node.id"
             >
-              <rect
-                :x="node.x - nodeRect(node).width / 2"
-                :y="node.y - nodeRect(node).height / 2"
-                :width="nodeRect(node).width"
-                :height="nodeRect(node).height"
-                :rx="nodeRect(node).rx"
-              />
-              <text :x="node.x" :y="node.y - 4" text-anchor="middle" class="node-label">{{ node.label }}</text>
-              <text v-if="node.type === 'memory'" :x="node.x" :y="node.y + 16" text-anchor="middle" class="node-sub">{{ node.importance || 0 }} 分</text>
+              <path v-if="node.shape === 'diamond'" :d="topicDiamondPath(node)" class="node-shape" />
+              <circle v-else :cx="node.x" :cy="node.y" :r="node.radius" class="node-shape" />
+              <text :x="node.x" :y="node.y + node.radius + 18" text-anchor="middle" class="node-label">{{ node.shortLabel }}</text>
+              <text
+                v-if="node.type === 'memory'"
+                :x="node.x"
+                :y="node.y + node.radius + 34"
+                text-anchor="middle"
+                class="node-sub"
+              >
+                {{ node.metaLabel }}
+              </text>
             </g>
           </svg>
         </div>
       </section>
 
       <aside class="detail-column">
-        <h3>节点详情</h3>
-        <div v-if="!selectedNode" class="mini-empty">点击图中节点查看详细内容</div>
-        <div v-else class="detail-card">
-          <p class="detail-type">{{ selectedNode.type === 'memory' ? 'Memory' : 'Topic' }}</p>
-          <h4>{{ selectedNode.label }}</h4>
-          <p v-if="selectedNode.content" class="detail-content">{{ selectedNode.content }}</p>
-          <p v-if="selectedNode.owner"><strong>Owner：</strong>{{ selectedNode.owner }}</p>
-          <p v-if="selectedNode.importance"><strong>Importance：</strong>{{ selectedNode.importance }}</p>
-          <p v-if="selectedNode.occurred_at"><strong>Occurred：</strong>{{ new Date(selectedNode.occurred_at).toLocaleString() }}</p>
-          <p v-if="selectedNode.topics?.length"><strong>Topics：</strong>{{ selectedNode.topics.join(' / ') }}</p>
-        </div>
+        <section class="detail-block">
+          <h3>节点详情</h3>
+          <div v-if="!selectedNode" class="mini-empty">点击图中节点查看详细内容</div>
+          <div v-else class="detail-card">
+            <p class="detail-type">{{ selectedNode.type === 'memory' ? 'Memory' : 'Topic' }}</p>
+            <h4>{{ selectedNode.label }}</h4>
+            <p v-if="selectedNode.content" class="detail-content">{{ selectedNode.content }}</p>
+            <div v-if="selectedNodeNeighbors.length" class="neighbor-list">
+              <span v-for="item in selectedNodeNeighbors" :key="item.id" class="neighbor-chip">{{ item.label }}</span>
+            </div>
+            <p v-if="selectedNode.kind"><strong>Kind：</strong>{{ selectedNode.kind }}</p>
+            <p v-if="selectedNode.status"><strong>Status：</strong>{{ selectedNode.status }}</p>
+            <p v-if="selectedNode.owner"><strong>Owner：</strong>{{ selectedNode.owner }}</p>
+            <p v-if="selectedNode.importance"><strong>Importance：</strong>{{ selectedNode.importance }}</p>
+            <p v-if="selectedNode.occurred_at"><strong>Occurred：</strong>{{ formatDateTime(selectedNode.occurred_at) }}</p>
+            <p v-if="selectedNode.topics?.length"><strong>Topics：</strong>{{ selectedNode.topics.join(' / ') }}</p>
+          </div>
+        </section>
+
+        <section class="detail-block">
+          <h3>当前状态</h3>
+          <div v-if="!runtimeState" class="mini-empty">暂无 runtime state</div>
+          <div v-else class="detail-card">
+            <p class="detail-content">{{ runtimeState.activity_text }}</p>
+            <p v-if="runtimeState.basis_tags?.length"><strong>Basis：</strong>{{ runtimeState.basis_tags.join(' / ') }}</p>
+            <p><strong>Updated：</strong>{{ formatDateTime(runtimeState.updated_at) }}</p>
+          </div>
+        </section>
+
+        <section class="detail-block">
+          <h3>最近印象</h3>
+          <div v-if="!recentImpressions.length" class="mini-empty">暂无 recent impressions</div>
+          <div v-else class="stack-list">
+            <div v-for="item in recentImpressions" :key="item.id" class="detail-card compact-card">
+              <p class="detail-content">{{ item.content }}</p>
+              <p><strong>Kind：</strong>{{ item.kind }}</p>
+            </div>
+          </div>
+        </section>
+
+        <section class="detail-block">
+          <h3>最近变更</h3>
+          <div v-if="!recentChanges.length" class="mini-empty">暂无 recent changes</div>
+          <div v-else class="stack-list">
+            <div v-for="item in recentChanges" :key="item.id" class="detail-card compact-card">
+              <p class="detail-content">{{ item.field }} · {{ item.summary_text || item.proposed_value }}</p>
+              <p><strong>Status：</strong>{{ item.status }}</p>
+            </div>
+          </div>
+        </section>
+
+        <section class="detail-block">
+          <h3>待确认人设</h3>
+          <div v-if="!pendingPersonaChanges.length" class="mini-empty">暂无 pending persona changes</div>
+          <div v-else class="stack-list">
+            <div v-for="item in pendingPersonaChanges" :key="item.id" class="detail-card compact-card pending-card">
+              <p class="detail-content">{{ item.field }} · {{ item.summary_text || item.proposed_value }}</p>
+              <p><strong>Status：</strong>{{ item.status }}</p>
+            </div>
+          </div>
+        </section>
       </aside>
     </div>
 
@@ -256,24 +396,37 @@ onMounted(() => {
 
 .graph-header,
 .graph-topbar,
-.graph-summary {
+.graph-summary,
+.graph-stage-toolbar {
   display: flex;
   justify-content: space-between;
   align-items: center;
   gap: 12px;
 }
 
+.graph-topbar,
+.graph-summary,
+.graph-stage-toolbar,
+.legend-group {
+  flex-wrap: wrap;
+}
+
 .graph-topbar {
   align-items: end;
 }
 
-.search-field {
+.search-field,
+.mini-filter {
   display: grid;
   gap: 8px;
+}
+
+.search-field {
   flex: 1;
 }
 
-.search-field input {
+.search-field input,
+.mini-filter select {
   border: 1px solid rgba(148, 163, 184, 0.35);
   border-radius: 14px;
   padding: 12px 14px;
@@ -281,7 +434,7 @@ onMounted(() => {
 
 .graph-layout {
   display: grid;
-  grid-template-columns: 240px minmax(0, 1fr) 260px;
+  grid-template-columns: 240px minmax(0, 1fr) 320px;
   gap: 16px;
 }
 
@@ -322,39 +475,123 @@ onMounted(() => {
 .selector-card span,
 .mini-empty,
 .detail-content,
-.detail-card p {
+.detail-card p,
+.legend-note {
   color: #475569;
 }
 
 .graph-stage {
   overflow: auto;
   border-radius: 18px;
-  background: linear-gradient(180deg, #f8fafc, #eef2ff);
+  min-height: 680px;
+  padding: 16px;
+  background:
+    radial-gradient(circle at top, rgba(224, 231, 255, 0.95), rgba(248, 250, 252, 0.98) 44%),
+    linear-gradient(180deg, #f8fafc, #eef2ff);
+}
+
+.graph-stage-toolbar {
+  margin-bottom: 12px;
 }
 
 .graph-svg {
   width: 100%;
+  min-width: 860px;
   min-height: 620px;
 }
 
-.graph-node rect {
-  fill: white;
-  stroke: rgba(148, 163, 184, 0.55);
-  stroke-width: 1.5;
+.summary-pill,
+.legend-item,
+.neighbor-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: rgba(241, 245, 249, 0.96);
+  color: #334155;
+  font-size: 12px;
 }
 
-.graph-node.node-memory rect {
+.legend-dot,
+.legend-line {
+  display: inline-block;
+  flex: 0 0 auto;
+}
+
+.legend-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+}
+
+.legend-dot.topic {
+  background: #8b5cf6;
+}
+
+.legend-dot.memory {
+  background: #60a5fa;
+}
+
+.legend-line {
+  width: 16px;
+  height: 2px;
+  background: #94a3b8;
+}
+
+.graph-edge {
+  fill: none;
+  stroke: #cbd5e1;
+  stroke-width: 1.6;
+  opacity: 0.85;
+  transition: opacity 0.18s ease, stroke 0.18s ease, stroke-width 0.18s ease;
+}
+
+.graph-edge.active {
+  stroke: #94a3b8;
+  stroke-width: 2.3;
+  opacity: 0.95;
+}
+
+.graph-edge.dimmed {
+  opacity: 0.14;
+}
+
+.graph-node {
+  cursor: pointer;
+  transition: opacity 0.18s ease;
+}
+
+.graph-node.dimmed {
+  opacity: 0.24;
+}
+
+.node-shape {
   fill: #ffffff;
+  stroke: rgba(148, 163, 184, 0.65);
+  stroke-width: 1.6;
+  transition: stroke 0.18s ease, stroke-width 0.18s ease, filter 0.18s ease, fill 0.18s ease;
 }
 
-.graph-node.node-topic rect {
-  fill: #ede9fe;
+.node-memory .node-shape {
+  fill: rgba(255, 255, 255, 0.98);
+  stroke: #60a5fa;
+}
+
+.node-topic .node-shape {
+  fill: rgba(237, 233, 254, 0.96);
   stroke: #8b5cf6;
 }
 
-.graph-node.active rect {
+.graph-node.active .node-shape {
   stroke: #4f46e5;
   stroke-width: 3;
+  filter: drop-shadow(0 0 12px rgba(79, 70, 229, 0.24));
+}
+
+.node-label,
+.node-sub {
+  pointer-events: none;
 }
 
 .node-label {
@@ -366,6 +603,65 @@ onMounted(() => {
 .node-sub {
   font-size: 11px;
   fill: #64748b;
+}
+
+.detail-column {
+  display: grid;
+  gap: 14px;
+  align-content: start;
+}
+
+.detail-block {
+  display: grid;
+  gap: 10px;
+}
+
+.detail-card {
+  display: grid;
+  gap: 8px;
+  border-radius: 16px;
+  padding: 12px 14px;
+  background: #f8fafc;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+}
+
+.compact-card {
+  gap: 6px;
+}
+
+.pending-card {
+  background: #fff7ed;
+}
+
+.stack-list {
+  display: grid;
+  gap: 10px;
+  max-height: 240px;
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.neighbor-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.detail-type {
+  font-size: 12px;
+  color: #6366f1;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.detail-content,
+.detail-card p,
+.selector-card span,
+.selector-card strong,
+.legend-note,
+.neighbor-chip {
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 button {
@@ -407,6 +703,10 @@ button.ghost {
 @media (max-width: 1280px) {
   .graph-layout {
     grid-template-columns: 1fr;
+  }
+
+  .graph-svg {
+    min-width: 780px;
   }
 }
 </style>

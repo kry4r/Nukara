@@ -4,10 +4,11 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"nukara/backend/internal/agent"
 	"nukara/backend/internal/agentx"
-	agentxmemory "nukara/backend/internal/agentx/memory"
+	"nukara/backend/internal/agentx/memorygraph"
 	"nukara/backend/internal/agentx/subtasks"
 	"nukara/backend/internal/store"
 )
@@ -26,6 +27,7 @@ func (s *Server) runSubtaskPrompt(ctx context.Context, in subtasks.Input, prompt
 			ConversationID: strings.TrimSpace(in.ConversationID),
 			AggregatedText: prompt,
 			SystemPrompt:   subtaskSystemPrompt,
+			Purpose:        "subtask",
 		})
 		if err != nil {
 			return "", err
@@ -40,32 +42,50 @@ func (s *Server) runSubtaskPrompt(ctx context.Context, in subtasks.Input, prompt
 
 func (s *Server) buildMemoryCandidateContext(userID, botID, userText, botText string) string {
 	query := strings.TrimSpace(strings.Join([]string{userText, botText}, "\n"))
-	selected := make([]store.MemoryItem, 0, 8)
-	if s.memoryRecall != nil {
-		if items, err := s.memoryRecall.Build(context.Background(), agentxmemory.RecallInput{
-			UserID:     strings.TrimSpace(userID),
-			BotID:      strings.TrimSpace(botID),
-			QueryText:  query,
-			Limit:      8,
-			WithExpand: false,
-		}); err == nil && len(items) > 0 {
-			selected = append(selected, items...)
-		}
-	}
-	if len(selected) == 0 {
-		items := s.store.ListMemoryItems(userID, botID, 24)
-		if len(items) == 0 {
-			return "（暂无）"
-		}
-		selected = selectRelevantMemories(items, query, 8)
-		if len(selected) == 0 {
-			selected = append([]store.MemoryItem(nil), items...)
-			if len(selected) > 8 {
-				selected = selected[:8]
+	if s.temporalRecall != nil {
+		if result, err := s.temporalRecall.Recall(context.Background(), memorygraph.RecallInput{
+			UserID:          strings.TrimSpace(userID),
+			BotID:           strings.TrimSpace(botID),
+			ConversationID:  "",
+			TurnID:          "subtask-candidate",
+			QueryText:       query,
+			RecentTexts:     []string{strings.TrimSpace(userText), strings.TrimSpace(botText)},
+			ActivationLimit: 8,
+			MaxDepth:        2,
+			CardBudget:      memorygraph.CardBudget{MaxChars: 220, MaxCards: 6},
+			Now:             time.Now().UTC(),
+		}); err == nil && len(result.Activated) > 0 {
+			lines := make([]string, 0, len(result.Activated))
+			for _, item := range result.Activated {
+				content := strings.TrimSpace(item.Node.Summary)
+				if content == "" {
+					content = strings.TrimSpace(item.Node.Title)
+				}
+				if content == "" || strings.TrimSpace(item.Node.ID) == "" {
+					continue
+				}
+				lines = append(lines, fmt.Sprintf("- id=%s | type=%s | content=%s", strings.TrimSpace(item.Node.ID), strings.TrimSpace(item.Node.NodeType), content))
+				if len(lines) >= 8 {
+					break
+				}
+			}
+			if len(lines) > 0 {
+				return strings.Join(lines, "\n")
 			}
 		}
 	}
 
+	items := s.store.ListMemoryItems(userID, botID, 24)
+	if len(items) == 0 {
+		return "（暂无）"
+	}
+	selected := selectRelevantMemories(items, query, 8)
+	if len(selected) == 0 {
+		selected = append([]store.MemoryItem(nil), items...)
+		if len(selected) > 8 {
+			selected = selected[:8]
+		}
+	}
 	lines := make([]string, 0, len(selected))
 	for _, item := range selected {
 		content := strings.TrimSpace(item.Content)

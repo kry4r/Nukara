@@ -74,3 +74,41 @@ func TestEmailAuthLoginUsesEmailCode(t *testing.T) {
 		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
 	}
 }
+
+func TestGatewayTestSessionCreatesUserWithoutSMTP(t *testing.T) {
+	st := store.NewStore()
+	srv := NewServer(st, nil, apns.NewClient("com.nukara.app"), "test-secret", "")
+
+	body := bytes.NewBufferString(`{"email":"tester@example.com","nickname":"tester"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/gateway/test/session", body)
+	rec := httptest.NewRecorder()
+
+	srv.HandlerFor("gateway").ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var payload struct {
+		AccessToken string `json:"access_token"`
+		Created     bool   `json:"created"`
+		User        struct {
+			ID       string `json:"id"`
+			Nickname string `json:"nickname"`
+		} `json:"user"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if payload.AccessToken == "" || payload.User.ID == "" {
+		t.Fatalf("unexpected auth payload: %s", rec.Body.String())
+	}
+	if !payload.Created {
+		t.Fatalf("expected created=true payload: %s", rec.Body.String())
+	}
+	if payload.User.Nickname != "tester" {
+		t.Fatalf("nickname = %q, want tester", payload.User.Nickname)
+	}
+	if _, ok := st.FindUserByEmail("tester@example.com"); !ok {
+		t.Fatal("expected user to be created with email identity")
+	}
+}

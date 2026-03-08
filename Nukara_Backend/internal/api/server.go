@@ -19,7 +19,7 @@ import (
 	"nukara/backend/internal/agent"
 	"nukara/backend/internal/agentx"
 	"nukara/backend/internal/agentx/llm"
-	agentxmemory "nukara/backend/internal/agentx/memory"
+	"nukara/backend/internal/agentx/memorygraph"
 	agentprovider "nukara/backend/internal/agentx/provider"
 	"nukara/backend/internal/agentx/subtasks"
 	"nukara/backend/internal/apns"
@@ -38,8 +38,8 @@ type routeStore interface {
 	GetSystemSetting(key string) (value string, ok bool)
 }
 
-type semanticRecall interface {
-	Build(ctx context.Context, in agentxmemory.RecallInput) ([]store.MemoryItem, error)
+type temporalMemoryRecall interface {
+	Recall(ctx context.Context, in memorygraph.RecallInput) (memorygraph.RecallResult, error)
 }
 
 type memoryTool interface {
@@ -51,13 +51,13 @@ type verificationEmailSender interface {
 }
 
 type Server struct {
-	store        store.DataStore
-	agent        *agent.Agent
-	runtime      wsChatRuntime
-	memoryTool   memoryTool
-	memoryRecall semanticRecall
-	wsQueue      *wsConversationQueue
-	subtasks     interface {
+	store          store.DataStore
+	agent          *agent.Agent
+	runtime        wsChatRuntime
+	memoryTool     memoryTool
+	temporalRecall temporalMemoryRecall
+	wsQueue        *wsConversationQueue
+	subtasks       interface {
 		Run(ctx context.Context, in subtasks.Input) (subtasks.Result, error)
 	}
 	apns        *apns.Client
@@ -72,13 +72,14 @@ func NewServer(st store.DataStore, agentClient *agent.Agent, apnsClient *apns.Cl
 		tokenSecret = "nukara-dev-secret"
 	}
 	s := &Server{
-		store:       st,
-		agent:       agentClient,
-		apns:        apnsClient,
-		wsHub:       newWSHub(st, redisAddr),
-		emailSender: internalmail.NewSMTPSender(st),
-		tokenKey:    []byte(tokenSecret),
-		tokenTTL:    30 * 24 * time.Hour,
+		store:          st,
+		agent:          agentClient,
+		apns:           apnsClient,
+		wsHub:          newWSHub(st, redisAddr),
+		emailSender:    internalmail.NewSMTPSender(st),
+		tokenKey:       []byte(tokenSecret),
+		tokenTTL:       30 * 24 * time.Hour,
+		temporalRecall: memorygraph.NewService(memorygraph.ServiceDeps{Store: st}),
 	}
 	if agentClient != nil {
 		deps := agentx.RuntimeDeps{
@@ -96,8 +97,9 @@ func NewServer(st store.DataStore, agentClient *agent.Agent, apnsClient *apns.Cl
 
 func (s *Server) initSubtasks() {
 	s.subtasks = subtasks.NewRunner(subtasks.RunnerDeps{
-		Store:      s.store,
-		MemoryTool: s.memoryTool,
+		Store:       s.store,
+		MemoryTool:  s.memoryTool,
+		MemoryGraph: memorygraph.NewService(memorygraph.ServiceDeps{Store: s.store}),
 		MemoryExtractor: func(ctx context.Context, in subtasks.Input) (string, error) {
 			prompt := buildMemoryExtractPrompt(in.UserText, in.BotText, s.buildMemoryCandidateContext(in.UserID, in.BotID, in.UserText, in.BotText))
 			return s.runSubtaskPrompt(ctx, in, prompt, `{"items":[]}`)
@@ -110,6 +112,9 @@ func (s *Server) initSubtasks() {
 			prompt := buildPersonaIteratePrompt(in.UserText, in.BotText)
 			return s.runSubtaskPrompt(ctx, in, prompt, `{"identity_adds":[],"personality_adds":[],"expression_style_adds":[],"life_context_adds":[],"taboos_and_preferences_adds":[]}`)
 		},
+		SelfCognitionUpdater: func(ctx context.Context, in subtasks.Input, bot store.Bot, changes []store.PersonaChangeEvent) (store.Bot, error) {
+			return s.refreshBotSelfCognition(ctx, in, bot, changes)
+		},
 	})
 }
 
@@ -117,10 +122,8 @@ func (s *Server) SetChatRuntime(runtime wsChatRuntime) {
 	s.runtime = runtime
 }
 
-func (s *Server) SetMemoryServices(tool memoryTool, recall semanticRecall) {
-	s.memoryTool = tool
-	s.memoryRecall = recall
-	s.initSubtasks()
+func (s *Server) SetTemporalMemoryRecall(recall temporalMemoryRecall) {
+	s.temporalRecall = recall
 }
 
 func (s *Server) Handler() http.Handler {
@@ -134,6 +137,9 @@ func (s *Server) HandlerFor(role string) http.Handler {
 		mux.HandleFunc("/api/v1/auth/email/send", s.wrap(s.handleEmailSend))
 		mux.HandleFunc("/api/v1/auth/login", s.wrap(s.handleLogin))
 		mux.HandleFunc("/api/v1/auth/register", s.wrap(s.handleRegister))
+	}
+	if role == "gateway" {
+		mux.HandleFunc("/api/v1/gateway/test/session", s.wrap(s.handleGatewayTestSession))
 	}
 
 	if role == "gateway" || role == "bot" {
@@ -325,6 +331,61 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *Server) handleGatewayTestSession(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+
+	var req struct {
+		Email    string `json:"email"`
+		Nickname string `json:"nickname"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		badRequest(w, err)
+		return
+	}
+
+	email := strings.TrimSpace(req.Email)
+	if err := validateEmail(email); err != nil {
+		badRequest(w, err)
+		return
+	}
+	nickname := strings.TrimSpace(req.Nickname)
+	if nickname == "" {
+		nickname = "smoke_user"
+	}
+
+	user, ok := s.store.FindUserByEmail(email)
+	created := false
+	if !ok {
+		var err error
+		user, err = s.store.CreateUser(email, nickname)
+		if err != nil {
+			respondJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+			return
+		}
+		created = true
+	}
+
+	token, err := s.issueToken(user.ID)
+	if err != nil {
+		respondJSON(w, http.StatusInternalServerError, map[string]any{"error": "token issue failed"})
+		return
+	}
+
+	respondJSON(w, http.StatusOK, map[string]any{
+		"access_token":  token,
+		"refresh_token": "",
+		"created":       created,
+		"user": map[string]any{
+			"id":       user.ID,
+			"nickname": user.Nickname,
+			"avatar":   user.Avatar,
+		},
+	})
+}
+
 func (s *Server) handleBots(w http.ResponseWriter, r *http.Request) {
 	userID, ok := s.authUserID(w, r)
 	if !ok {
@@ -373,9 +434,6 @@ func (s *Server) handleBots(w http.ResponseWriter, r *http.Request) {
 		expressionStyle := firstNonEmpty(strings.TrimSpace(req.ExpressionStyle), strings.TrimSpace(req.SpeakingStyle))
 		lifeContext := firstNonEmpty(strings.TrimSpace(req.LifeContext), strings.TrimSpace(req.Background), strings.TrimSpace(req.Role))
 		taboos := strings.TrimSpace(req.TaboosAndPreferences)
-		if taboos == "" && len(req.SelfCognition) > 0 {
-			taboos = strings.TrimSpace(strings.Join(req.SelfCognition, "；"))
-		}
 		if req.Gender == "" {
 			req.Gender = "unknown"
 		}
@@ -451,6 +509,11 @@ func (s *Server) handleBotByID(w http.ResponseWriter, r *http.Request) {
 		case "iterate":
 			s.handleBotIterate(w, r, userID, botID)
 			return
+		case "persona-changes":
+			if len(parts) >= 4 && (parts[3] == "accept" || parts[3] == "reject") {
+				s.handleBotPersonaChangeAction(w, r, userID, botID, parts[2], parts[3])
+				return
+			}
 		}
 	}
 
@@ -495,9 +558,6 @@ func (s *Server) handleBotByID(w http.ResponseWriter, r *http.Request) {
 		expressionStyle := firstNonEmpty(strings.TrimSpace(req.ExpressionStyle), strings.TrimSpace(req.SpeakingStyle))
 		lifeContext := firstNonEmpty(strings.TrimSpace(req.LifeContext), strings.TrimSpace(req.Background), strings.TrimSpace(req.Role))
 		taboos := strings.TrimSpace(req.TaboosAndPreferences)
-		if taboos == "" && len(req.SelfCognition) > 0 {
-			taboos = strings.TrimSpace(strings.Join(req.SelfCognition, "；"))
-		}
 		updated, found := s.store.UpdateBot(userID, botID, store.Bot{
 			Name:                 req.Name,
 			Identity:             identity,

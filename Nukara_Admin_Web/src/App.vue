@@ -2,6 +2,8 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import EmailAuthPanel from './components/EmailAuthPanel.vue'
 import MemoryGraphPanel from './components/MemoryGraphPanel.vue'
+import PostTurnModelPanel from './components/PostTurnModelPanel.vue'
+import SummaryModelPanel from './components/SummaryModelPanel.vue'
 import {
   clearUserProviderSetting,
   createProvider,
@@ -641,6 +643,8 @@ onMounted(() => {
           </div>
 
           <EmailAuthPanel />
+          <PostTurnModelPanel />
+          <SummaryModelPanel />
 
           <div v-if="showCreateProvider" class="provider-create-inline">
             <p class="panel-eyebrow">新增 Provider（创建时自动联通测试）</p>

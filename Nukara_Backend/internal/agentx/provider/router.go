@@ -51,6 +51,36 @@ func (r *Router) ResolveChatRoute(userID, botID string) (Route, error) {
 	return buildRoute(sorted[0], defaultModel), nil
 }
 
+func (r *Router) ResolveSubtaskRoute(userID, botID string) (Route, error) {
+	sorted, err := r.sortedProviders()
+	if err != nil {
+		return Route{}, err
+	}
+
+	postTurnProviderID, _ := r.store.GetSystemSetting("post_turn_provider_id")
+	postTurnModel, _ := r.store.GetSystemSetting("post_turn_model")
+	defaultModel, _ := r.store.GetSystemSetting("default_chat_model")
+	if provider, found := findProvider(sorted, postTurnProviderID); found {
+		return buildRoute(provider, firstNonEmpty(postTurnModel, defaultModel)), nil
+	}
+	return r.ResolveChatRoute(userID, botID)
+}
+
+func (r *Router) ResolveSelfCognitionSummaryRoute(userID, botID string) (Route, error) {
+	sorted, err := r.sortedProviders()
+	if err != nil {
+		return Route{}, err
+	}
+
+	summaryProviderID, _ := r.store.GetSystemSetting("self_cognition_summary_provider_id")
+	summaryModel, _ := r.store.GetSystemSetting("self_cognition_summary_model")
+	defaultModel, _ := r.store.GetSystemSetting("default_chat_model")
+	if provider, found := findProvider(sorted, summaryProviderID); found {
+		return buildRoute(provider, firstNonEmpty(summaryModel, defaultModel)), nil
+	}
+	return r.ResolveChatRoute(userID, botID)
+}
+
 func (r *Router) ResolveEmbeddingRoute() (Route, error) {
 	sorted, err := r.sortedProviders()
 	if err != nil {
