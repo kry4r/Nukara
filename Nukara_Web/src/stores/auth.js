@@ -15,11 +15,11 @@ export const useAuthStore = defineStore('auth', () => {
     token.value = localStorage.getItem('nukara_token') || ''
   }
 
-  async function requestSMS(phone, purpose) {
+  async function requestEmailCode(email, purpose) {
     isLoading.value = true
     error.value = ''
     try {
-      await api.post('/api/v1/auth/sms/send', { phone, purpose })
+      await api.post('/api/v1/auth/email/send', { email, purpose })
     } catch (e) {
       error.value = e.message
     } finally {
@@ -27,12 +27,12 @@ export const useAuthStore = defineStore('auth', () => {
     }
   }
 
-  async function login(phone, smsCode) {
+  async function login(email, emailCode) {
     isLoading.value = true
     error.value = ''
     try {
       const data = await api.post('/api/v1/auth/login', {
-        phone, sms_code: smsCode,
+        email, email_code: emailCode,
       })
       if (data.access_token) {
         setSession(data)
@@ -47,12 +47,12 @@ export const useAuthStore = defineStore('auth', () => {
     return false
   }
 
-  async function register(phone, smsCode, nickname) {
+  async function register(email, emailCode, nickname) {
     isLoading.value = true
     error.value = ''
     try {
       const data = await api.post('/api/v1/auth/register', {
-        phone, sms_code: smsCode, nickname,
+        email, email_code: emailCode, nickname,
       })
       if (data.access_token) {
         setSession(data)
@@ -83,6 +83,6 @@ export const useAuthStore = defineStore('auth', () => {
 
   return {
     user, token, isLoading, error,
-    restoreSession, requestSMS, login, register, logout,
+    restoreSession, requestEmailCode, login, register, logout,
   }
 })

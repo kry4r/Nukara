@@ -15,13 +15,13 @@ final class RealAuthRepository: AuthRepositoryProtocol {
         return AuthSession(accessToken: token, refreshToken: nil, user: user)
     }
 
-    func requestSMSCode(phone: String, purpose: AuthCodePurpose) async throws {
-        let endpoint = try APIEndpoints.requestSMSCode(phone: phone, purpose: purpose)
+    func requestEmailCode(email: String, purpose: AuthCodePurpose) async throws {
+        let endpoint = try APIEndpoints.requestEmailCode(email: email, purpose: purpose)
         try await apiClient.requestVoid(endpoint)
     }
 
-    func login(phone: String, smsCode: String) async throws -> AuthSession {
-        let endpoint = try APIEndpoints.login(phone: phone, smsCode: smsCode)
+    func login(email: String, emailCode: String) async throws -> AuthSession {
+        let endpoint = try APIEndpoints.login(email: email, emailCode: emailCode)
         let response = try await apiClient.request(endpoint, as: LoginResponseDTO.self)
 
         let user = response.user?.toDomain() ?? User(id: "real-user", nickname: "Nukara", avatarURL: nil)
@@ -34,8 +34,8 @@ final class RealAuthRepository: AuthRepositoryProtocol {
         return session
     }
 
-    func register(phone: String, smsCode: String, nickname: String) async throws -> AuthSession {
-        let endpoint = try APIEndpoints.register(phone: phone, smsCode: smsCode, nickname: nickname)
+    func register(email: String, emailCode: String, nickname: String) async throws -> AuthSession {
+        let endpoint = try APIEndpoints.register(email: email, emailCode: emailCode, nickname: nickname)
         let response = try await apiClient.request(endpoint, as: LoginResponseDTO.self)
 
         let user = response.user?.toDomain() ?? User(id: "real-user", nickname: nickname, avatarURL: nil)

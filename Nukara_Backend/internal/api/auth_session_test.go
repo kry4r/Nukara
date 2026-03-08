@@ -10,7 +10,7 @@ import (
 
 func TestAuthUserIDRejectsDeletedUserTokenFromBearerHeader(t *testing.T) {
 	st := store.NewStore()
-	user, err := st.CreateUser("13900139001", "tester")
+	user, err := st.CreateUser("tester1@example.com", "tester")
 	if err != nil {
 		t.Fatalf("create user failed: %v", err)
 	}
@@ -38,7 +38,7 @@ func TestAuthUserIDRejectsDeletedUserTokenFromBearerHeader(t *testing.T) {
 
 func TestAuthUserIDRejectsDeletedUserTokenFromQueryString(t *testing.T) {
 	st := store.NewStore()
-	user, err := st.CreateUser("13900139002", "tester")
+	user, err := st.CreateUser("tester2@example.com", "tester")
 	if err != nil {
 		t.Fatalf("create user failed: %v", err)
 	}

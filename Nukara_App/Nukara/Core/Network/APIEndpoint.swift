@@ -18,20 +18,20 @@ struct APIEndpoint {
 }
 
 enum APIEndpoints {
-    static func requestSMSCode(phone: String, purpose: AuthCodePurpose) throws -> APIEndpoint {
-        let payload = RequestSMSCodeDTO(phone: phone, purpose: purpose.rawValue)
+    static func requestEmailCode(email: String, purpose: AuthCodePurpose) throws -> APIEndpoint {
+        let payload = RequestEmailCodeDTO(email: email, purpose: purpose.rawValue)
         let body = try JSONEncoder.nukara.encode(payload)
-        return APIEndpoint(method: .post, path: "/api/v1/auth/sms/send", body: body, requiresAuth: false)
+        return APIEndpoint(method: .post, path: "/api/v1/auth/email/send", body: body, requiresAuth: false)
     }
 
-    static func login(phone: String, smsCode: String) throws -> APIEndpoint {
-        let payload = LoginRequestDTO(phone: phone, smsCode: smsCode)
+    static func login(email: String, emailCode: String) throws -> APIEndpoint {
+        let payload = LoginRequestDTO(email: email, emailCode: emailCode)
         let body = try JSONEncoder.nukara.encode(payload)
         return APIEndpoint(method: .post, path: "/api/v1/auth/login", body: body, requiresAuth: false)
     }
 
-    static func register(phone: String, smsCode: String, nickname: String) throws -> APIEndpoint {
-        let payload = RegisterRequestDTO(phone: phone, smsCode: smsCode, nickname: nickname)
+    static func register(email: String, emailCode: String, nickname: String) throws -> APIEndpoint {
+        let payload = RegisterRequestDTO(email: email, emailCode: emailCode, nickname: nickname)
         let body = try JSONEncoder.nukara.encode(payload)
         return APIEndpoint(method: .post, path: "/api/v1/auth/register", body: body, requiresAuth: false)
     }
@@ -128,28 +128,28 @@ enum APIEndpoints {
 }
 
 struct LoginRequestDTO: Codable {
-    let phone: String
-    let smsCode: String
+    let email: String
+    let emailCode: String
 
     enum CodingKeys: String, CodingKey {
-        case phone
-        case smsCode = "sms_code"
+        case email
+        case emailCode = "email_code"
     }
 }
 
-struct RequestSMSCodeDTO: Codable {
-    let phone: String
+struct RequestEmailCodeDTO: Codable {
+    let email: String
     let purpose: String
 }
 
 struct RegisterRequestDTO: Codable {
-    let phone: String
-    let smsCode: String
+    let email: String
+    let emailCode: String
     let nickname: String
 
     enum CodingKeys: String, CodingKey {
-        case phone
-        case smsCode = "sms_code"
+        case email
+        case emailCode = "email_code"
         case nickname
     }
 }

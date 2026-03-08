@@ -144,16 +144,16 @@ END $$;
 
 CREATE TABLE IF NOT EXISTS users (
     id UUID PRIMARY KEY,
-    phone VARCHAR(20) UNIQUE NOT NULL,
+    email VARCHAR(255) UNIQUE NOT NULL,
     nickname VARCHAR(50) NOT NULL,
     avatar_url TEXT,
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
 
-CREATE TABLE IF NOT EXISTS sms_codes (
+CREATE TABLE IF NOT EXISTS email_codes (
     id UUID PRIMARY KEY,
-    phone VARCHAR(20) NOT NULL,
+    email VARCHAR(255) NOT NULL,
     purpose VARCHAR(20) NOT NULL,
     code VARCHAR(10) NOT NULL,
     expires_at TIMESTAMP NOT NULL,
@@ -582,20 +582,23 @@ func (p *PostgresStore) SnapshotMetrics() Metrics {
 	return metrics
 }
 
-func (p *PostgresStore) SaveSMSCode(phone, purpose, code string, ttl time.Duration) {
+func (p *PostgresStore) SaveEmailCode(email, purpose, code string, ttl time.Duration) {
+	if ttl <= 0 {
+		ttl = 15 * time.Minute
+	}
 	ctx, cancel := p.withTimeout()
 	defer cancel()
 	_, err := p.db.ExecContext(ctx,
-		`INSERT INTO sms_codes(id, phone, purpose, code, expires_at, used, created_at)
+		`INSERT INTO email_codes(id, email, purpose, code, expires_at, used, created_at)
 		 VALUES($1,$2,$3,$4,$5,FALSE,NOW())`,
-		NewID(), phone, purpose, code, time.Now().UTC().Add(ttl),
+		NewID(), email, purpose, code, time.Now().UTC().Add(ttl),
 	)
 	if err != nil {
-		log.Printf("save sms code to postgres failed: %v", err)
+		log.Printf("save email code to postgres failed: %v", err)
 	}
 }
 
-func (p *PostgresStore) ValidateSMSCode(phone, purpose, code string) bool {
+func (p *PostgresStore) ValidateEmailCode(email, purpose, code string) bool {
 	ctx, cancel := p.withTimeout()
 	defer cancel()
 
@@ -604,43 +607,43 @@ func (p *PostgresStore) ValidateSMSCode(phone, purpose, code string) bool {
 	var expiresAt time.Time
 	err := p.db.QueryRowContext(ctx,
 		`SELECT id, code, expires_at
-		 FROM sms_codes
-		 WHERE phone=$1 AND purpose=$2 AND used=FALSE
+		 FROM email_codes
+		 WHERE email=$1 AND purpose=$2 AND used=FALSE
 		 ORDER BY created_at DESC
 		 LIMIT 1`,
-		phone, purpose,
+		email, purpose,
 	).Scan(&id, &dbCode, &expiresAt)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return p.Store.ValidateSMSCode(phone, purpose, code)
+			return p.Store.ValidateEmailCode(email, purpose, code)
 		}
-		log.Printf("validate sms query failed: %v", err)
-		return p.Store.ValidateSMSCode(phone, purpose, code)
+		log.Printf("validate email query failed: %v", err)
+		return p.Store.ValidateEmailCode(email, purpose, code)
 	}
 	if dbCode != code || time.Now().UTC().After(expiresAt) {
 		return false
 	}
-	_, _ = p.db.ExecContext(ctx, `UPDATE sms_codes SET used=TRUE WHERE id=$1`, id)
+	_, _ = p.db.ExecContext(ctx, `UPDATE email_codes SET used=TRUE WHERE id=$1`, id)
 	return true
 }
 
-func (p *PostgresStore) FindUserByPhone(phone string) (User, bool) {
+func (p *PostgresStore) FindUserByEmail(email string) (User, bool) {
 	ctx, cancel := p.withTimeout()
 	defer cancel()
 
 	var user User
 	var avatar sql.NullString
 	err := p.db.QueryRowContext(ctx,
-		`SELECT id, phone, nickname, avatar_url, created_at
+		`SELECT id, email, nickname, avatar_url, created_at
 		 FROM users
-		 WHERE phone=$1`, phone,
-	).Scan(&user.ID, &user.Phone, &user.Nickname, &avatar, &user.CreatedAt)
+		 WHERE email=$1`, email,
+	).Scan(&user.ID, &user.Email, &user.Nickname, &avatar, &user.CreatedAt)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return User{}, false
 		}
-		log.Printf("find user by phone failed: %v", err)
-		return p.Store.FindUserByPhone(phone)
+		log.Printf("find user by email failed: %v", err)
+		return p.Store.FindUserByEmail(email)
 	}
 	user.Avatar = avatar.String
 	return user, true
@@ -653,10 +656,10 @@ func (p *PostgresStore) FindUserByID(id string) (User, bool) {
 	var user User
 	var avatar sql.NullString
 	err := p.db.QueryRowContext(ctx,
-		`SELECT id, phone, nickname, avatar_url, created_at
+		`SELECT id, email, nickname, avatar_url, created_at
 		 FROM users
 		 WHERE id=$1`, id,
-	).Scan(&user.ID, &user.Phone, &user.Nickname, &avatar, &user.CreatedAt)
+	).Scan(&user.ID, &user.Email, &user.Nickname, &avatar, &user.CreatedAt)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return User{}, false
@@ -668,7 +671,7 @@ func (p *PostgresStore) FindUserByID(id string) (User, bool) {
 	return user, true
 }
 
-func (p *PostgresStore) CreateUser(phone, nickname string) (User, error) {
+func (p *PostgresStore) CreateUser(email, nickname string) (User, error) {
 	ctx, cancel := p.withTimeout()
 	defer cancel()
 
@@ -676,20 +679,20 @@ func (p *PostgresStore) CreateUser(phone, nickname string) (User, error) {
 	now := time.Now().UTC()
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
-		return p.Store.CreateUser(phone, nickname)
+		return p.Store.CreateUser(email, nickname)
 	}
 	defer func() { _ = tx.Rollback() }()
 
 	_, err = tx.ExecContext(ctx,
-		`INSERT INTO users(id, phone, nickname, created_at, updated_at)
+		`INSERT INTO users(id, email, nickname, created_at, updated_at)
 		 VALUES($1,$2,$3,$4,$4)`,
-		id, phone, nickname, now,
+		id, email, nickname, now,
 	)
 	if err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "duplicate") {
-			return User{}, errors.New("phone already registered")
+			return User{}, errors.New("email already registered")
 		}
-		return p.Store.CreateUser(phone, nickname)
+		return p.Store.CreateUser(email, nickname)
 	}
 
 	_, _ = tx.ExecContext(ctx,
@@ -700,10 +703,10 @@ func (p *PostgresStore) CreateUser(phone, nickname string) (User, error) {
 	)
 
 	if err := tx.Commit(); err != nil {
-		return p.Store.CreateUser(phone, nickname)
+		return p.Store.CreateUser(email, nickname)
 	}
 
-	created := User{ID: id, Phone: phone, Nickname: nickname, CreatedAt: now}
+	created := User{ID: id, Email: email, Nickname: nickname, CreatedAt: now}
 	return created, nil
 }
 

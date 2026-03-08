@@ -11,6 +11,7 @@ import (
 	"log"
 	"math/rand"
 	"net/http"
+	stdmail "net/mail"
 	"strconv"
 	"strings"
 	"time"
@@ -22,6 +23,7 @@ import (
 	agentprovider "nukara/backend/internal/agentx/provider"
 	"nukara/backend/internal/agentx/subtasks"
 	"nukara/backend/internal/apns"
+	internalmail "nukara/backend/internal/mail"
 	"nukara/backend/internal/store"
 )
 
@@ -44,6 +46,10 @@ type memoryTool interface {
 	Save(ctx context.Context, item store.MemoryItem) (store.MemoryItem, error)
 }
 
+type verificationEmailSender interface {
+	SendVerificationCode(ctx context.Context, to, code string, ttl time.Duration) error
+}
+
 type Server struct {
 	store        store.DataStore
 	agent        *agent.Agent
@@ -54,10 +60,11 @@ type Server struct {
 	subtasks     interface {
 		Run(ctx context.Context, in subtasks.Input) (subtasks.Result, error)
 	}
-	apns     *apns.Client
-	wsHub    *wsHub
-	tokenKey []byte
-	tokenTTL time.Duration
+	apns        *apns.Client
+	wsHub       *wsHub
+	emailSender verificationEmailSender
+	tokenKey    []byte
+	tokenTTL    time.Duration
 }
 
 func NewServer(st store.DataStore, agentClient *agent.Agent, apnsClient *apns.Client, tokenSecret string, redisAddr string) *Server {
@@ -65,12 +72,13 @@ func NewServer(st store.DataStore, agentClient *agent.Agent, apnsClient *apns.Cl
 		tokenSecret = "nukara-dev-secret"
 	}
 	s := &Server{
-		store:    st,
-		agent:    agentClient,
-		apns:     apnsClient,
-		wsHub:    newWSHub(st, redisAddr),
-		tokenKey: []byte(tokenSecret),
-		tokenTTL: 30 * 24 * time.Hour,
+		store:       st,
+		agent:       agentClient,
+		apns:        apnsClient,
+		wsHub:       newWSHub(st, redisAddr),
+		emailSender: internalmail.NewSMTPSender(st),
+		tokenKey:    []byte(tokenSecret),
+		tokenTTL:    30 * 24 * time.Hour,
 	}
 	if agentClient != nil {
 		deps := agentx.RuntimeDeps{
@@ -123,7 +131,7 @@ func (s *Server) HandlerFor(role string) http.Handler {
 	mux := http.NewServeMux()
 
 	if role == "gateway" || role == "account" {
-		mux.HandleFunc("/api/v1/auth/sms/send", s.wrap(s.handleSMSSend))
+		mux.HandleFunc("/api/v1/auth/email/send", s.wrap(s.handleEmailSend))
 		mux.HandleFunc("/api/v1/auth/login", s.wrap(s.handleLogin))
 		mux.HandleFunc("/api/v1/auth/register", s.wrap(s.handleRegister))
 	}
@@ -166,27 +174,44 @@ func (s *Server) wrap(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-func (s *Server) handleSMSSend(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleEmailSend(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		methodNotAllowed(w)
 		return
 	}
 	var req struct {
-		Phone   string `json:"phone"`
+		Email   string `json:"email"`
 		Purpose string `json:"purpose"`
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		badRequest(w, err)
 		return
 	}
-	if req.Phone == "" || (req.Purpose != "login" && req.Purpose != "register") {
-		badRequest(w, errors.New("invalid phone or purpose"))
+	email := strings.TrimSpace(req.Email)
+	if err := validateEmail(email); err != nil || (req.Purpose != "login" && req.Purpose != "register") {
+		badRequest(w, errors.New("invalid email or purpose"))
 		return
 	}
 	code := fmt.Sprintf("%06d", rand.Intn(1000000))
-	log.Printf("[SMS] phone=%s purpose=%s code=%s", req.Phone, req.Purpose, code)
-	s.store.SaveSMSCode(req.Phone, req.Purpose, code, 5*time.Minute)
-	respondJSON(w, http.StatusOK, map[string]any{"success": true, "message": "验证码已发送"})
+	if s.emailSender == nil {
+		badRequest(w, errors.New("smtp not configured"))
+		return
+	}
+	ttl := 15 * time.Minute
+	if cfg, err := internalmail.LoadSMTPConfig(s.store); err == nil && cfg.CodeTTL > 0 {
+		ttl = cfg.CodeTTL
+	}
+	if err := s.emailSender.SendVerificationCode(r.Context(), email, code, ttl); err != nil {
+		status := http.StatusBadRequest
+		if !strings.Contains(strings.ToLower(err.Error()), "smtp not configured") && !strings.Contains(strings.ToLower(err.Error()), "invalid smtp") {
+			status = http.StatusBadGateway
+		}
+		respondJSON(w, status, map[string]any{"error": err.Error()})
+		return
+	}
+	log.Printf("[EMAIL] email=%s purpose=%s code=%s", email, req.Purpose, code)
+	s.store.SaveEmailCode(email, req.Purpose, code, ttl)
+	respondJSON(w, http.StatusOK, map[string]any{"success": true, "message": "验证码已发送到邮箱"})
 }
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
@@ -196,21 +221,31 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Phone   string `json:"phone"`
-		SMSCode string `json:"sms_code"`
+		Email     string `json:"email"`
+		EmailCode string `json:"email_code"`
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		badRequest(w, err)
 		return
 	}
-	if !s.store.ValidateSMSCode(req.Phone, "login", req.SMSCode) && !s.store.ValidateSMSCode(req.Phone, "register", req.SMSCode) {
+	email := strings.TrimSpace(req.Email)
+	code := strings.TrimSpace(req.EmailCode)
+	if err := validateEmail(email); err != nil {
+		badRequest(w, err)
+		return
+	}
+	if code == "" {
+		badRequest(w, errors.New("email_code required"))
+		return
+	}
+	if !s.store.ValidateEmailCode(email, "login", code) && !s.store.ValidateEmailCode(email, "register", code) {
 		respondJSON(w, http.StatusBadRequest, map[string]any{"error": "验证码错误或过期"})
 		return
 	}
 
-	user, ok := s.store.FindUserByPhone(req.Phone)
+	user, ok := s.store.FindUserByEmail(email)
 	if !ok {
-		respondJSON(w, http.StatusNotFound, map[string]any{"error": "手机号未注册"})
+		respondJSON(w, http.StatusNotFound, map[string]any{"error": "邮箱未注册"})
 		return
 	}
 
@@ -238,26 +273,36 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Phone    string `json:"phone"`
-		SMSCode  string `json:"sms_code"`
-		Nickname string `json:"nickname"`
+		Email     string `json:"email"`
+		EmailCode string `json:"email_code"`
+		Nickname  string `json:"nickname"`
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		badRequest(w, err)
 		return
 	}
 
-	if req.Phone == "" || strings.TrimSpace(req.Nickname) == "" {
-		badRequest(w, errors.New("phone and nickname required"))
+	email := strings.TrimSpace(req.Email)
+	code := strings.TrimSpace(req.EmailCode)
+	if email == "" || strings.TrimSpace(req.Nickname) == "" {
+		badRequest(w, errors.New("email and nickname required"))
+		return
+	}
+	if err := validateEmail(email); err != nil {
+		badRequest(w, err)
+		return
+	}
+	if code == "" {
+		badRequest(w, errors.New("email_code required"))
 		return
 	}
 
-	if !s.store.ValidateSMSCode(req.Phone, "register", req.SMSCode) {
+	if !s.store.ValidateEmailCode(email, "register", code) {
 		respondJSON(w, http.StatusBadRequest, map[string]any{"error": "验证码错误或过期"})
 		return
 	}
 
-	user, err := s.store.CreateUser(req.Phone, strings.TrimSpace(req.Nickname))
+	user, err := s.store.CreateUser(email, strings.TrimSpace(req.Nickname))
 	if err != nil {
 		respondJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
@@ -1149,6 +1194,16 @@ func fallback(value, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+func validateEmail(value string) error {
+	if strings.TrimSpace(value) == "" {
+		return errors.New("email required")
+	}
+	if _, err := stdmail.ParseAddress(value); err != nil {
+		return errors.New("invalid email")
+	}
+	return nil
 }
 
 func decodeJSON(r *http.Request, dst any) error {

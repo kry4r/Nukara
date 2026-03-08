@@ -30,19 +30,19 @@ curl http://localhost:8080/api/v1/gateway/health
 ### 2.1 发送验证码
 
 ```bash
-curl -X POST http://localhost:8080/api/v1/auth/sms/send \
+curl -X POST http://localhost:8080/api/v1/auth/email/send \
   -H "Content-Type: application/json" \
-  -d '{"phone":"13800000001","purpose":"register"}'
+  -d '{"email":"tester@example.com","purpose":"register"}'
 ```
 
-> 开发模式下验证码会打印在服务端日志中，格式：`[SMS] phone=... code=...`
+> 邮箱验证码发送成功后，服务端日志会打印形如：`[EMAIL] email=... purpose=... code=...`。实际生产环境请以收件箱中的邮件为准。
 
 ### 2.2 注册
 
 ```bash
 curl -X POST http://localhost:8080/api/v1/auth/register \
   -H "Content-Type: application/json" \
-  -d '{"phone":"13800000001","sms_code":"从日志获取","nickname":"测试用户"}'
+  -d '{"email":"tester@example.com","email_code":"从日志获取","nickname":"测试用户"}'
 ```
 
 返回中包含 `access_token`，后续请求需要用到。
@@ -57,14 +57,14 @@ export TOKEN="返回的access_token值"
 
 ```bash
 # 先发验证码
-curl -X POST http://localhost:8080/api/v1/auth/sms/send \
+curl -X POST http://localhost:8080/api/v1/auth/email/send \
   -H "Content-Type: application/json" \
-  -d '{"phone":"13800000001","purpose":"login"}'
+  -d '{"email":"tester@example.com","purpose":"login"}'
 
 # 登录
 curl -X POST http://localhost:8080/api/v1/auth/login \
   -H "Content-Type: application/json" \
-  -d '{"phone":"13800000001","sms_code":"从日志获取"}'
+  -d '{"email":"tester@example.com","email_code":"从日志获取"}'
 ```
 
 ## 4. Bot 管理

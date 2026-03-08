@@ -37,8 +37,8 @@
   <!-- 登录区 -->
   <div id="login">
     <h2>Nukara</h2>
-    <input type="text" id="phone" placeholder="手机号">
-    <button class="btn" onclick="sendSMS()">发送验证码</button>
+    <input type="text" id="email" placeholder="邮箱地址">
+    <button class="btn" onclick="sendEmailCode()">发送验证码</button>
     <input type="text" id="code" placeholder="验证码">
     <button class="btn" onclick="login()">登录</button>
     <button class="btn" onclick="register()" style="background:#34c759">注册</button>
@@ -69,21 +69,21 @@ async function api(path, opts = {}) {
   return res.json();
 }
 
-async function sendSMS() {
-  const phone = document.getElementById('phone').value;
-  const data = await api('/api/v1/auth/sms/send', {
+async function sendEmailCode() {
+  const email = document.getElementById('email').value;
+  const data = await api('/api/v1/auth/email/send', {
     method: 'POST',
-    body: JSON.stringify({ phone, purpose: 'login' })
+    body: JSON.stringify({ email, purpose: 'login' })
   });
-  document.getElementById('login-msg').textContent = '验证码已发送，请查看服务端日志';
+  document.getElementById('login-msg').textContent = '验证码已发送，请检查收件箱';
 }
 
 async function login() {
-  const phone = document.getElementById('phone').value;
-  const sms_code = document.getElementById('code').value;
+  const email = document.getElementById('email').value;
+  const email_code = document.getElementById('code').value;
   const data = await api('/api/v1/auth/login', {
     method: 'POST',
-    body: JSON.stringify({ phone, sms_code })
+    body: JSON.stringify({ email, email_code })
   });
   if (data.access_token) {
     token = data.access_token;
@@ -94,11 +94,12 @@ async function login() {
 }
 
 async function register() {
-  const phone = document.getElementById('phone').value;
-  const sms_code = document.getElementById('code').value;
+  const email = document.getElementById('email').value;
+  const email_code = document.getElementById('code').value;
+  const nicknameSeed = (email.split('@')[0] || 'user').slice(-6);
   const data = await api('/api/v1/auth/register', {
     method: 'POST',
-    body: JSON.stringify({ phone, sms_code, nickname: '用户' + phone.slice(-4) })
+    body: JSON.stringify({ email, email_code, nickname: '用户' + nicknameSeed })
   });
   if (data.access_token) {
     token = data.access_token;

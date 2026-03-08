@@ -19,8 +19,8 @@ struct AuthView: View {
     @EnvironmentObject private var sessionStore: SessionStore
 
     @State private var mode: AuthMode = .login
-    @State private var phone: String = ""
-    @State private var smsCode: String = ""
+    @State private var email: String = ""
+    @State private var emailCode: String = ""
     @State private var nickname: String = ""
 
     var body: some View {
@@ -33,9 +33,11 @@ struct AuthView: View {
                 }
                 .pickerStyle(.segmented)
 
-                fieldRow(icon: "phone.fill", title: "手机号") {
-                    TextField("请输入手机号", text: $phone)
-                        .keyboardType(.phonePad)
+                fieldRow(icon: "envelope.fill", title: "邮箱") {
+                    TextField("请输入邮箱", text: $email)
+                        .keyboardType(.emailAddress)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
                         .frame(maxWidth: .infinity, minHeight: 44)
                 }
 
@@ -48,7 +50,7 @@ struct AuthView: View {
 
                 fieldRow(icon: "number.square.fill", title: "验证码") {
                     HStack(spacing: 8) {
-                        TextField("请输入验证码", text: $smsCode)
+                        TextField("请输入验证码", text: $emailCode)
                             .keyboardType(.numberPad)
                             .frame(maxWidth: .infinity, minHeight: 44)
                             .padding(.horizontal, 12)
@@ -59,7 +61,7 @@ struct AuthView: View {
 
                         Button {
                             Task {
-                                await sessionStore.requestSMSCode(phone: phone, purpose: mode.codePurpose)
+                                await sessionStore.requestEmailCode(email: email, purpose: mode.codePurpose)
                             }
                         } label: {
                             if sessionStore.isRequestingCode {
@@ -90,9 +92,9 @@ struct AuthView: View {
                 Button {
                     Task {
                         if mode == .login {
-                            await sessionStore.login(phone: phone, smsCode: smsCode)
+                            await sessionStore.login(email: email, emailCode: emailCode)
                         } else {
-                            await sessionStore.register(phone: phone, smsCode: smsCode, nickname: nickname)
+                            await sessionStore.register(email: email, emailCode: emailCode, nickname: nickname)
                         }
                     }
                 } label: {

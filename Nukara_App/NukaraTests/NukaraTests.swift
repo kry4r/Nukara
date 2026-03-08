@@ -9,7 +9,7 @@ struct NukaraTests {
         let keychain = KeychainStore()
         let repository = MockAuthRepository(keychain: keychain)
 
-        let session = try await repository.login(phone: "13800138000", smsCode: "123456")
+        let session = try await repository.login(email: "tester@example.com", emailCode: "123456")
         #expect(session.accessToken.starts(with: "mock-token-"))
 
         let restored = await repository.restoreSession()

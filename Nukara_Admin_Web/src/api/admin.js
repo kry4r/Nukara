@@ -140,6 +140,47 @@ export function listUserProviderSettings({ q = '', limit = 50, offset = 0 } = {}
   return request(`/users/provider-settings${query ? `?${query}` : ''}`)
 }
 
+export function buildListAdminUsersPath({ q = '', limit = 50, offset = 0 } = {}) {
+  const search = new URLSearchParams()
+  if (q) search.set('q', q)
+  if (limit !== undefined) search.set('limit', String(limit))
+  if (offset !== undefined) search.set('offset', String(offset))
+  const query = search.toString()
+  return `/users${query ? `?${query}` : ''}`
+}
+
+export function buildListUserBotsPath(userId) {
+  return `/users/${userId}/bots`
+}
+
+export function buildMemoryGraphPath(userId, botId) {
+  return `/users/${userId}/bots/${botId}/memory-graph`
+}
+
+export function normalizeEmailAuthSettingsPayload(input = {}) {
+  return {
+    smtp_host: input.smtp_host?.trim() || '',
+    smtp_port: String(input.smtp_port || '465').trim() || '465',
+    smtp_username: input.smtp_username?.trim() || '',
+    smtp_password: input.smtp_password || '',
+    from_email: input.from_email?.trim() || '',
+    from_name: input.from_name?.trim() || 'Nukara',
+    code_ttl_seconds: Number.parseInt(input.code_ttl_seconds ?? 900, 10) || 900,
+  }
+}
+
+export function listAdminUsers(options = {}) {
+  return request(buildListAdminUsersPath(options))
+}
+
+export function listUserBots(userId) {
+  return request(buildListUserBotsPath(userId))
+}
+
+export function getMemoryGraph(userId, botId) {
+  return request(buildMemoryGraphPath(userId, botId))
+}
+
 export function getEmbeddingConfig() {
   return request('/settings/embedding-config')
 }
@@ -153,6 +194,24 @@ export function updateEmbeddingConfig(payload) {
       model: payload.model || '',
       provider_id: payload.provider_id || '',
     },
+  })
+}
+
+export function getEmailAuthSettings() {
+  return request('/settings/email-auth')
+}
+
+export function updateEmailAuthSettings(payload) {
+  return request('/settings/email-auth', {
+    method: 'PUT',
+    body: normalizeEmailAuthSettingsPayload(payload),
+  })
+}
+
+export function sendEmailAuthTest(to_email) {
+  return request('/settings/email-auth/test', {
+    method: 'POST',
+    body: { to_email: to_email?.trim() || '' },
   })
 }
 

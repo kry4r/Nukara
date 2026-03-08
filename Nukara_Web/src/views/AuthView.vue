@@ -7,15 +7,15 @@ const router = useRouter()
 const auth = useAuthStore()
 
 const mode = ref('login')
-const phone = ref('')
+const email = ref('')
 const code = ref('')
 const nickname = ref('')
 const countdown = ref(0)
 let countdownTimer = null
 
-async function sendSMS() {
+async function sendEmailCode() {
   const purpose = mode.value === 'login' ? 'login' : 'register'
-  await auth.requestSMS(phone.value, purpose)
+  await auth.requestEmailCode(email.value, purpose)
   countdown.value = 60
   countdownTimer = setInterval(() => {
     countdown.value--
@@ -26,9 +26,9 @@ async function sendSMS() {
 async function submit() {
   let ok = false
   if (mode.value === 'login') {
-    ok = await auth.login(phone.value, code.value)
+    ok = await auth.login(email.value, code.value)
   } else {
-    ok = await auth.register(phone.value, code.value, nickname.value)
+    ok = await auth.register(email.value, code.value, nickname.value)
   }
   if (ok) router.push('/')
 }
@@ -55,10 +55,9 @@ async function submit() {
     <div class="auth-form">
       <div class="field">
         <input
-          v-model="phone"
-          type="tel"
-          placeholder="手机号"
-          maxlength="11"
+          v-model="email"
+          type="email"
+          placeholder="邮箱"
         />
       </div>
 
@@ -71,10 +70,10 @@ async function submit() {
         />
         <button
           class="sms-btn"
-          :disabled="countdown > 0 || !phone"
-          @click="sendSMS"
+          :disabled="countdown > 0 || !email"
+          @click="sendEmailCode"
         >
-          {{ countdown > 0 ? `${countdown}s` : '发送验证码' }}
+          {{ countdown > 0 ? `${countdown}s` : '发送邮箱验证码' }}
         </button>
       </div>
 
@@ -91,7 +90,7 @@ async function submit() {
 
       <button
         class="submit-btn"
-        :disabled="auth.isLoading || !phone || !code"
+        :disabled="auth.isLoading || !email || !code"
         @click="submit"
       >
         {{ auth.isLoading ? '请稍候...' : (mode === 'login' ? '登录' : '注册') }}

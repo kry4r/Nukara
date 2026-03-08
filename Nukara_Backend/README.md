@@ -15,7 +15,7 @@ This folder contains the backend implementation aligned with:
 - `cmd/proactive`: proactive + APNs-related routes
 
 ## Key API coverage
-- Auth: `/api/v1/auth/sms/send`, `/api/v1/auth/login`, `/api/v1/auth/register`
+- Auth: `/api/v1/auth/email/send`, `/api/v1/auth/login`, `/api/v1/auth/register`
 - Bot: `/api/v1/bots`, `/api/v1/bots/{id}`, `/api/v1/bots/{id}/persona`
 - Conversation: `/api/v1/conversations`, `/api/v1/conversations/{id}/messages`, `/mark-read`, `/read`
 - Proactive/APNs surfaces:
@@ -83,7 +83,7 @@ This folder contains the backend implementation aligned with:
 - `./scripts/docker_local_logs.sh [container] [tail]`: show recent logs.
 - `./scripts/docker_local_down.sh [container]`: stop/remove local gateway container.
 - `./scripts/docker_local_smoke.sh`: offline-friendly docker build/run/smoke (no external base image pull).
-- `./scripts/smoke_backend.sh [base_url] [phone]`: backend API smoke test.
+- `./scripts/smoke_backend.sh [base_url] [email]`: backend API smoke test（需先配置 SMTP）。
 - `configs/ios-backend-integration.md`: iOS real-backend integration guide.
 
 ## Docker deployment notes

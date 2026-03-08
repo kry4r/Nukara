@@ -1,5 +1,7 @@
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
+import EmailAuthPanel from './components/EmailAuthPanel.vue'
+import MemoryGraphPanel from './components/MemoryGraphPanel.vue'
 import {
   clearUserProviderSetting,
   createProvider,
@@ -300,7 +302,7 @@ async function saveUser(item) {
       model: rows.value[idx]?.model || '',
       dirty: false,
     }
-    statusMessage.value = `已保存 ${item.nickname || item.phone} 的配置。`
+    statusMessage.value = `已保存 ${item.nickname || item.email} 的配置。`
   } catch (error) {
     errorMessage.value = error.message
   } finally {
@@ -638,6 +640,8 @@ onMounted(() => {
             </div>
           </div>
 
+          <EmailAuthPanel />
+
           <div v-if="showCreateProvider" class="provider-create-inline">
             <p class="panel-eyebrow">新增 Provider（创建时自动联通测试）</p>
             <label class="mini-form-field">
@@ -690,7 +694,7 @@ onMounted(() => {
               <span>检索用户</span>
               <input
                 v-model.trim="searchQuery"
-                placeholder="按手机号 / 昵称 / 用户ID 搜索"
+                placeholder="按邮箱 / 昵称 / 用户ID 搜索"
                 @keyup.enter="refreshAll"
               />
             </label>
@@ -711,7 +715,7 @@ onMounted(() => {
           <div v-else class="table-body">
             <div v-for="item in rowsForDisplay" :key="item.user_id" class="table-row">
               <div class="user-cell">
-                <strong>{{ item.phone }} · {{ item.nickname || '未命名用户' }}</strong>
+                <strong>{{ item.email }} · {{ item.nickname || '未命名用户' }}</strong>
                 <small>{{ item.user_id }}</small>
               </div>
 
@@ -761,6 +765,8 @@ onMounted(() => {
             </button>
           </footer>
         </article>
+
+        <MemoryGraphPanel />
       </section>
     </section>
   </main>

@@ -7,8 +7,8 @@ enum AuthCodePurpose: String {
 
 protocol AuthRepositoryProtocol {
     func restoreSession() async -> AuthSession?
-    func requestSMSCode(phone: String, purpose: AuthCodePurpose) async throws
-    func login(phone: String, smsCode: String) async throws -> AuthSession
-    func register(phone: String, smsCode: String, nickname: String) async throws -> AuthSession
+    func requestEmailCode(email: String, purpose: AuthCodePurpose) async throws
+    func login(email: String, emailCode: String) async throws -> AuthSession
+    func register(email: String, emailCode: String, nickname: String) async throws -> AuthSession
     func logout() async
 }

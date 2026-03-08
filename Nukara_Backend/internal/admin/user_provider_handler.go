@@ -20,7 +20,7 @@ type adminProviderOption struct {
 
 type userProviderSettingItem struct {
 	UserID              string     `json:"user_id"`
-	Phone               string     `json:"phone"`
+	Email               string     `json:"email"`
 	Nickname            string     `json:"nickname"`
 	ProviderID          string     `json:"provider_id"`
 	Model               string     `json:"model"`
@@ -210,7 +210,7 @@ func (s *Server) listUserProviderSettingItems(query string, limit, offset int, d
 	rows, err := s.db.Query(`
 		SELECT
 			u.id::text,
-			u.phone,
+			u.email,
 			u.nickname,
 			COALESCE(ups.provider_id, ''),
 			COALESCE(ups.model, ''),
@@ -219,7 +219,7 @@ func (s *Server) listUserProviderSettingItems(query string, limit, offset int, d
 		LEFT JOIN user_provider_settings ups ON ups.user_id = u.id
 		WHERE (
 			$1 = ''
-			OR u.phone ILIKE '%' || $1 || '%'
+			OR u.email ILIKE '%' || $1 || '%'
 			OR u.nickname ILIKE '%' || $1 || '%'
 			OR u.id::text ILIKE '%' || $1 || '%'
 		)
@@ -237,7 +237,7 @@ func (s *Server) listUserProviderSettingItems(query string, limit, offset int, d
 		var updatedAt sql.NullTime
 		if scanErr := rows.Scan(
 			&item.UserID,
-			&item.Phone,
+			&item.Email,
 			&item.Nickname,
 			&item.ProviderID,
 			&item.Model,
@@ -272,7 +272,7 @@ func (s *Server) listUserProviderSettingItems(query string, limit, offset int, d
 		FROM users u
 		WHERE (
 			$1 = ''
-			OR u.phone ILIKE '%' || $1 || '%'
+			OR u.email ILIKE '%' || $1 || '%'
 			OR u.nickname ILIKE '%' || $1 || '%'
 			OR u.id::text ILIKE '%' || $1 || '%'
 		)
@@ -288,7 +288,7 @@ func (s *Server) getUserProviderSettingItem(userID, defaultProviderID, defaultMo
 	err := s.db.QueryRow(`
 		SELECT
 			u.id::text,
-			u.phone,
+			u.email,
 			u.nickname,
 			COALESCE(ups.provider_id, ''),
 			COALESCE(ups.model, ''),
@@ -298,7 +298,7 @@ func (s *Server) getUserProviderSettingItem(userID, defaultProviderID, defaultMo
 		WHERE u.id = $1
 	`, userID).Scan(
 		&item.UserID,
-		&item.Phone,
+		&item.Email,
 		&item.Nickname,
 		&item.ProviderID,
 		&item.Model,

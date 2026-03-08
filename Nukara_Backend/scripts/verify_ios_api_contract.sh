@@ -2,21 +2,22 @@
 set -euo pipefail
 
 BASE_URL="${1:-http://localhost:8080}"
-PHONE_INPUT="${2:-}"
+EMAIL_INPUT="${2:-}"
+EMAIL_DOMAIN="${NUKARA_TEST_EMAIL_DOMAIN:-nukara.local}"
 NICKNAME="ios_contract_user"
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
-generate_phone() {
+generate_email() {
   local epoch rand
   epoch="$(date +%s)"
   rand="$(printf "%04d" $((RANDOM % 10000)))"
-  printf "13%09d" "$(((epoch + 10#$rand) % 1000000000))"
+  printf "ios_contract_%s_%s@%s" "$epoch" "$rand" "$EMAIL_DOMAIN"
 }
 
-PHONE="$PHONE_INPUT"
-if [[ -z "$PHONE" ]]; then
-  PHONE="$(generate_phone)"
+EMAIL="$EMAIL_INPUT"
+if [[ -z "$EMAIL" ]]; then
+  EMAIL="$(generate_email)"
 fi
 
 extract_json_value() {
@@ -56,22 +57,39 @@ request_json() {
   echo "$response"
 }
 
-echo "[1/19] auth sms register"
-request_json POST "$BASE_URL/api/v1/auth/sms/send" "{\"phone\":\"$PHONE\",\"purpose\":\"register\"}" >/dev/null
+read_email_code() {
+  local purpose="$1"
+  docker logs configs-gateway-1 --tail 50 2>&1 | grep "\[EMAIL\].*email=$EMAIL.*purpose=$purpose" | tail -1 | sed 's/.*code=//'
+}
+
+echo "[1/19] auth email register"
+request_json POST "$BASE_URL/api/v1/auth/email/send" "{\"email\":\"$EMAIL\",\"purpose\":\"register\"}" >/dev/null
+sleep 0.5
+REGISTER_CODE="$(read_email_code register)"
+if [[ -z "$REGISTER_CODE" ]]; then
+  echo "register email code missing from logs; make sure SMTP is configured and gateway logs are reachable"
+  exit 1
+fi
 
 echo "[2/19] auth register"
-register_resp=$(request_json POST "$BASE_URL/api/v1/auth/register" "{\"phone\":\"$PHONE\",\"sms_code\":\"123456\",\"nickname\":\"$NICKNAME\"}")
+register_resp=$(request_json POST "$BASE_URL/api/v1/auth/register" "{\"email\":\"$EMAIL\",\"email_code\":\"$REGISTER_CODE\",\"nickname\":\"$NICKNAME\"}")
 token=$(extract_json_value "access_token" "$register_resp")
 if [[ -z "$token" ]]; then
   echo "register token missing: $register_resp"
   exit 1
 fi
 
-echo "[3/19] auth sms login"
-request_json POST "$BASE_URL/api/v1/auth/sms/send" "{\"phone\":\"$PHONE\",\"purpose\":\"login\"}" >/dev/null
+echo "[3/19] auth email login"
+request_json POST "$BASE_URL/api/v1/auth/email/send" "{\"email\":\"$EMAIL\",\"purpose\":\"login\"}" >/dev/null
+sleep 0.5
+LOGIN_CODE="$(read_email_code login)"
+if [[ -z "$LOGIN_CODE" ]]; then
+  echo "login email code missing from logs; make sure SMTP is configured and gateway logs are reachable"
+  exit 1
+fi
 
 echo "[4/19] auth login"
-request_json POST "$BASE_URL/api/v1/auth/login" "{\"phone\":\"$PHONE\",\"sms_code\":\"123456\"}" >/dev/null
+request_json POST "$BASE_URL/api/v1/auth/login" "{\"email\":\"$EMAIL\",\"email_code\":\"$LOGIN_CODE\"}" >/dev/null
 
 echo "[5/19] bots list"
 request_json GET "$BASE_URL/api/v1/bots" "" "$token" >/dev/null

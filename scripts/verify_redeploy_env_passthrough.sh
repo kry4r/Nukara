@@ -11,7 +11,7 @@ printf '%s\n' "$@"
 EOF
 chmod +x "$TMP_DIR/sudo"
 
-output="$(cd "$ROOT_DIR" && PATH="$TMP_DIR:$PATH" LLM_API_KEY=test-key NUKARA_ADMIN_PASSWORD=test-pass bash scripts/redeploy_local.sh --full 2>&1 || true)"
+output="$(cd "$ROOT_DIR" && PATH="$TMP_DIR:$PATH" LLM_API_KEY=test-key NUKARA_ADMIN_PASSWORD=test-pass NUKARA_SMTP_FROM_EMAIL=test-mail@example.com NUKARA_SMTP_PASSWORD=test-smtp-pass bash scripts/redeploy_local.sh --full 2>&1 || true)"
 
 echo "$output" | rg -q '^LLM_API_KEY=test-key$' || {
   echo "redeploy script did not pass LLM_API_KEY through sudo" >&2
@@ -20,6 +20,16 @@ echo "$output" | rg -q '^LLM_API_KEY=test-key$' || {
 
 echo "$output" | rg -q '^NUKARA_ADMIN_PASSWORD=test-pass$' || {
   echo "redeploy script did not pass NUKARA_ADMIN_PASSWORD through sudo" >&2
+  exit 1
+}
+
+echo "$output" | rg -q '^NUKARA_SMTP_FROM_EMAIL=test-mail@example.com$' || {
+  echo "redeploy script did not pass NUKARA_SMTP_FROM_EMAIL through sudo" >&2
+  exit 1
+}
+
+echo "$output" | rg -q '^NUKARA_SMTP_PASSWORD=test-smtp-pass$' || {
+  echo "redeploy script did not pass NUKARA_SMTP_PASSWORD through sudo" >&2
   exit 1
 }
 

@@ -13,29 +13,30 @@ final class MockAuthRepository: AuthRepositoryProtocol {
         return AuthSession(accessToken: token, refreshToken: nil, user: user)
     }
 
-    func requestSMSCode(phone: String, purpose: AuthCodePurpose) async throws {
-        let normalizedPhone = phone.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard normalizedPhone.count >= 11 else {
-            throw NetworkError.transport("请输入正确手机号")
+    func requestEmailCode(email: String, purpose: AuthCodePurpose) async throws {
+        let normalizedEmail = email.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard normalizedEmail.contains("@") else {
+            throw NetworkError.transport("请输入正确邮箱")
         }
         _ = purpose
     }
 
-    func login(phone: String, smsCode: String) async throws -> AuthSession {
-        let normalizedPhone = phone.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !normalizedPhone.isEmpty, !smsCode.isEmpty else {
-            throw NetworkError.transport("Phone and code are required")
+    func login(email: String, emailCode: String) async throws -> AuthSession {
+        let normalizedEmail = email.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedEmail.isEmpty, !emailCode.isEmpty else {
+            throw NetworkError.transport("Email and code are required")
         }
 
         let token = "mock-token-\(UUID().uuidString)"
         keychain.save(token, for: "access_token")
 
-        let user = User(id: "mock-user", nickname: "用户\(normalizedPhone.suffix(4))", avatarURL: nil)
+        let suffix = normalizedEmail.split(separator: "@").first.map(String.init) ?? normalizedEmail
+        let user = User(id: "mock-user", nickname: "用户\(suffix.suffix(4))", avatarURL: nil)
         return AuthSession(accessToken: token, refreshToken: nil, user: user)
     }
 
-    func register(phone: String, smsCode: String, nickname: String) async throws -> AuthSession {
-        let session = try await login(phone: phone, smsCode: smsCode)
+    func register(email: String, emailCode: String, nickname: String) async throws -> AuthSession {
+        let session = try await login(email: email, emailCode: emailCode)
         let finalNickname = nickname.trimmingCharacters(in: .whitespacesAndNewlines)
 
         return AuthSession(
