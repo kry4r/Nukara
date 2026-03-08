@@ -5,6 +5,10 @@ import MemoryGraphPanel from './components/MemoryGraphPanel.vue'
 import PostTurnModelPanel from './components/PostTurnModelPanel.vue'
 import SummaryModelPanel from './components/SummaryModelPanel.vue'
 import {
+  pickRuntimeDefaultProviderId,
+  resolveExpandedProviderId,
+} from './utils/provider-panel-state.js'
+import {
   clearUserProviderSetting,
   createProvider,
   deleteProvider,
@@ -32,6 +36,8 @@ const showCreateProvider = ref(false)
 const createStatus = ref('')
 const selectedSourceId = ref('')
 const expandedProviderId = ref('')
+const embeddingSectionOpen = ref(true)
+const hasAutoExpandedRuntimeDefault = ref(false)
 
 const providers = ref([])
 const rows = ref([])
@@ -71,10 +77,16 @@ const embeddingConfig = reactive({
   provider_id: '',
 })
 
+const runtimeDefaultProviderId = computed(() =>
+  pickRuntimeDefaultProviderId(providers.value, defaultProviderId.value),
+)
+
 const activeProvider = computed(() =>
-  providers.value.find((provider) => provider.is_active) ||
-  providers.value.find((provider) => provider.id === defaultProviderId.value) ||
-  null,
+  providers.value.find((provider) => provider.id === runtimeDefaultProviderId.value) || null,
+)
+
+const isRuntimeDefaultExpanded = computed(() =>
+  Boolean(runtimeDefaultProviderId.value) && expandedProviderId.value === runtimeDefaultProviderId.value,
 )
 
 const activeProviderModel = computed(() => {
@@ -206,6 +218,14 @@ function toggleProviderExpand(providerId) {
   expandedProviderId.value = expandedProviderId.value === providerId ? '' : providerId
 }
 
+function toggleRuntimeDefaultExpand() {
+  if (!runtimeDefaultProviderId.value) {
+    return
+  }
+  toggleProviderExpand(runtimeDefaultProviderId.value)
+  hasAutoExpandedRuntimeDefault.value = true
+}
+
 function ensureDraft(user) {
   if (!drafts[user.user_id]) {
     drafts[user.user_id] = {
@@ -298,9 +318,14 @@ async function refreshAll() {
     if (selectedSourceId.value && !providers.value.some((provider) => provider.id === selectedSourceId.value)) {
       selectedSourceId.value = ''
     }
-    if (expandedProviderId.value && !providers.value.some((provider) => provider.id === expandedProviderId.value)) {
-      expandedProviderId.value = ''
-    }
+    const expandedState = resolveExpandedProviderId({
+      expandedProviderId: expandedProviderId.value,
+      providers: providers.value,
+      runtimeDefaultProviderId: pickRuntimeDefaultProviderId(providers.value, defaultProviderId.value),
+      hasAutoExpandedRuntimeDefault: hasAutoExpandedRuntimeDefault.value,
+    })
+    expandedProviderId.value = expandedState.expandedProviderId
+    hasAutoExpandedRuntimeDefault.value = expandedState.hasAutoExpandedRuntimeDefault
 
     resetDraftsFromRows()
     resetProviderDrafts()
@@ -446,6 +471,8 @@ async function activateProvider(provider) {
     await switchProvider(provider.id, activeModel)
     statusMessage.value = `${provider.name} 已切换为默认 Provider。`
     await refreshAll()
+    expandedProviderId.value = provider.id
+    hasAutoExpandedRuntimeDefault.value = true
   } catch (error) {
     errorMessage.value = error.message
   } finally {
@@ -755,44 +782,72 @@ onMounted(() => {
           </div>
 
           <div class="default-summary">
-            <div class="kv-row">
-              <span>Runtime Default</span>
-              <strong>{{ activeProvider?.name || defaultProviderName() }}</strong>
+            <div class="section-card-header">
+              <p class="panel-eyebrow">Runtime Default</p>
+              <button
+                type="button"
+                class="ghost mini section-toggle"
+                :disabled="!runtimeDefaultProviderId"
+                :aria-expanded="isRuntimeDefaultExpanded"
+                @click="toggleRuntimeDefaultExpand"
+              >
+                {{ isRuntimeDefaultExpanded ? '收起主 Provider' : '展开主 Provider' }}
+              </button>
             </div>
-            <div class="kv-row">
-              <span>Model</span>
-              <strong>{{ activeProviderModel }}</strong>
+            <div class="section-card-body default-summary-body">
+              <div class="kv-row">
+                <span>Provider</span>
+                <strong>{{ activeProvider?.name || defaultProviderName() }}</strong>
+              </div>
+              <div class="kv-row">
+                <span>Model</span>
+                <strong>{{ activeProviderModel }}</strong>
+              </div>
             </div>
           </div>
 
           <div class="embedding-config-card">
-            <p class="panel-eyebrow">全局 Embedding Config</p>
-            <p class="panel-desc">默认所有用户 / Bot 共用这一套 embedding 模型，仅用于记忆检索，不影响聊天回复模型。这里填写到 <strong>/v1</strong> 即可，实际请求会自动走 <strong>/embeddings</strong>。</p>
-            <label class="mini-form-field">
-              <span>Embedding Base URL</span>
-              <input v-model.trim="embeddingConfig.base_url" placeholder="https://router.tumuer.me/v1" />
-            </label>
-            <label class="mini-form-field">
-              <span>Embedding API Key</span>
-              <input v-model.trim="embeddingConfig.api_key" type="password" placeholder="sk-..." />
-            </label>
-            <label class="mini-form-field">
-              <span>Embedding Model</span>
-              <input v-model.trim="embeddingConfig.model" placeholder="Qwen/Qwen3-Embedding-4B" />
-            </label>
-            <label class="mini-form-field">
-              <span>未配置专用 URL/Key 时的回退 Provider（可选）</span>
-              <select v-model="embeddingConfig.provider_id">
-                <option value="">不指定</option>
-                <option v-for="provider in providers" :key="provider.id" :value="provider.id">
-                  {{ provider.name }}
-                </option>
-              </select>
-            </label>
-            <div class="create-actions">
-              <button type="button" :disabled="embeddingSaving" @click="saveEmbeddingSettings">
-                {{ embeddingSaving ? '保存中...' : '保存全局 Embedding 配置' }}
+            <div class="section-card-header">
+              <div>
+                <p class="panel-eyebrow">全局 Embedding Config</p>
+                <p class="panel-desc">默认所有用户 / Bot 共用这一套 embedding 模型，仅用于记忆检索，不影响聊天回复模型。这里填写到 <strong>/v1</strong> 即可，实际请求会自动走 <strong>/embeddings</strong>。</p>
+              </div>
+              <button
+                type="button"
+                class="ghost mini section-toggle"
+                :aria-expanded="embeddingSectionOpen"
+                @click="embeddingSectionOpen = !embeddingSectionOpen"
+              >
+                {{ embeddingSectionOpen ? '收起' : '展开' }}
               </button>
+            </div>
+            <div v-if="embeddingSectionOpen" class="section-card-body">
+              <label class="mini-form-field">
+                <span>Embedding Base URL</span>
+                <input v-model.trim="embeddingConfig.base_url" placeholder="https://router.tumuer.me/v1" />
+              </label>
+              <label class="mini-form-field">
+                <span>Embedding API Key</span>
+                <input v-model.trim="embeddingConfig.api_key" type="password" placeholder="sk-..." />
+              </label>
+              <label class="mini-form-field">
+                <span>Embedding Model</span>
+                <input v-model.trim="embeddingConfig.model" placeholder="Qwen/Qwen3-Embedding-4B" />
+              </label>
+              <label class="mini-form-field">
+                <span>未配置专用 URL/Key 时的回退 Provider（可选）</span>
+                <select v-model="embeddingConfig.provider_id">
+                  <option value="">不指定</option>
+                  <option v-for="provider in providers" :key="provider.id" :value="provider.id">
+                    {{ provider.name }}
+                  </option>
+                </select>
+              </label>
+              <div class="create-actions">
+                <button type="button" :disabled="embeddingSaving" @click="saveEmbeddingSettings">
+                  {{ embeddingSaving ? '保存中...' : '保存全局 Embedding 配置' }}
+                </button>
+              </div>
             </div>
           </div>
 

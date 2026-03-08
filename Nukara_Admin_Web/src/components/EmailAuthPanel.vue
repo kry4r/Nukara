@@ -8,6 +8,7 @@ import {
 
 const saving = ref(false)
 const testing = ref(false)
+const isOpen = ref(true)
 const statusMessage = ref('')
 const errorMessage = ref('')
 const testRecipient = ref('')
@@ -87,14 +88,20 @@ onMounted(() => {
         <p class="panel-eyebrow">邮箱认证 / SMTP</p>
         <h2>QQ 邮箱验证码配置</h2>
       </div>
-      <button type="button" class="ghost" @click="refreshSettings">刷新</button>
+      <div class="panel-header-actions">
+        <button type="button" class="ghost" @click="refreshSettings">刷新</button>
+        <button type="button" class="ghost" :aria-expanded="isOpen" @click="isOpen = !isOpen">
+          {{ isOpen ? '收起' : '展开' }}
+        </button>
+      </div>
     </header>
 
-    <p class="panel-desc">
-      当前认证链路已切换为 <strong>邮箱验证码</strong>。QQ 邮箱推荐填写 <strong>smtp.qq.com</strong> 与端口 <strong>465</strong>，密码使用 SMTP 授权码而不是邮箱登录密码。
-    </p>
+    <template v-if="isOpen">
+      <p class="panel-desc">
+        当前认证链路已切换为 <strong>邮箱验证码</strong>。QQ 邮箱推荐填写 <strong>smtp.qq.com</strong> 与端口 <strong>465</strong>，密码使用 SMTP 授权码而不是邮箱登录密码。
+      </p>
 
-    <div class="email-grid">
+      <div class="email-grid">
       <label class="mini-form-field">
         <span>SMTP Host</span>
         <input v-model.trim="form.smtp_host" placeholder="smtp.qq.com" />
@@ -128,26 +135,27 @@ onMounted(() => {
         <span>验证码有效期（秒）</span>
         <input v-model.number="form.code_ttl_seconds" type="number" min="60" step="60" placeholder="900" />
       </label>
-    </div>
+      </div>
 
-    <div class="email-actions">
-      <button type="button" :disabled="saving" @click="saveSettings">
-        {{ saving ? '保存中...' : '保存 SMTP 配置' }}
-      </button>
-    </div>
+      <div class="email-actions">
+        <button type="button" :disabled="saving" @click="saveSettings">
+          {{ saving ? '保存中...' : '保存 SMTP 配置' }}
+        </button>
+      </div>
 
-    <div class="test-mail-box">
-      <label class="mini-form-field full-width">
-        <span>测试收件邮箱</span>
-        <input v-model.trim="testRecipient" placeholder="例如：Nidhogxt@outlook.com" />
-      </label>
-      <button type="button" class="ghost" :disabled="testing || !testRecipient" @click="sendTest">
-        {{ testing ? '发送中...' : '发送测试邮件' }}
-      </button>
-    </div>
+      <div class="test-mail-box">
+        <label class="mini-form-field full-width">
+          <span>测试收件邮箱</span>
+          <input v-model.trim="testRecipient" placeholder="例如：Nidhogxt@outlook.com" />
+        </label>
+        <button type="button" class="ghost" :disabled="testing || !testRecipient" @click="sendTest">
+          {{ testing ? '发送中...' : '发送测试邮件' }}
+        </button>
+      </div>
 
-    <p v-if="statusMessage" class="status-inline">{{ statusMessage }}</p>
-    <p v-if="errorMessage" class="error-inline">{{ errorMessage }}</p>
+      <p v-if="statusMessage" class="status-inline">{{ statusMessage }}</p>
+      <p v-if="errorMessage" class="error-inline">{{ errorMessage }}</p>
+    </template>
   </article>
 </template>
 
@@ -167,6 +175,13 @@ onMounted(() => {
   justify-content: space-between;
   gap: 16px;
   align-items: flex-start;
+}
+
+.panel-header-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 .panel-header h2 {

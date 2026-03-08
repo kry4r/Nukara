@@ -1,6 +1,7 @@
 <script setup>
-import { ref } from 'vue'
+import { computed, onBeforeUnmount, ref } from 'vue'
 import { useRouter } from 'vue-router'
+import { canSendEmailCode } from '../utils/auth-email'
 import { useAuthStore } from '../stores/auth'
 
 const router = useRouter()
@@ -11,17 +12,43 @@ const email = ref('')
 const code = ref('')
 const nickname = ref('')
 const countdown = ref(0)
+const canSendCode = computed(() => canSendEmailCode({
+  email: email.value,
+  countdown: countdown.value,
+  isLoading: auth.isLoading,
+}))
 let countdownTimer = null
 
+function stopCountdown() {
+  if (countdownTimer) {
+    clearInterval(countdownTimer)
+    countdownTimer = null
+  }
+}
+
 async function sendEmailCode() {
+  if (!canSendCode.value) {
+    return
+  }
   const purpose = mode.value === 'login' ? 'login' : 'register'
-  await auth.requestEmailCode(email.value, purpose)
+  const ok = await auth.requestEmailCode(email.value, purpose)
+  if (!ok) {
+    return
+  }
+  stopCountdown()
   countdown.value = 60
   countdownTimer = setInterval(() => {
     countdown.value--
-    if (countdown.value <= 0) clearInterval(countdownTimer)
+    if (countdown.value <= 0) {
+      countdown.value = 0
+      stopCountdown()
+    }
   }, 1000)
 }
+
+onBeforeUnmount(() => {
+  stopCountdown()
+})
 
 async function submit() {
   let ok = false
@@ -70,10 +97,10 @@ async function submit() {
         />
         <button
           class="sms-btn"
-          :disabled="countdown > 0 || !email"
+          :disabled="!canSendCode"
           @click="sendEmailCode"
         >
-          {{ countdown > 0 ? `${countdown}s` : '发送邮箱验证码' }}
+          {{ auth.isLoading ? '发送中...' : (countdown > 0 ? `${countdown}s` : '发送邮箱验证码') }}
         </button>
       </div>
 

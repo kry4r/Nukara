@@ -20,8 +20,10 @@ export const useAuthStore = defineStore('auth', () => {
     error.value = ''
     try {
       await api.post('/api/v1/auth/email/send', { email, purpose })
+      return true
     } catch (e) {
       error.value = e.message
+      return false
     } finally {
       isLoading.value = false
     }

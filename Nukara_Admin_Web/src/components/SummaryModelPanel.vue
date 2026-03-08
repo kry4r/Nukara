@@ -8,6 +8,7 @@ import {
 
 const loading = ref(false)
 const saving = ref(false)
+const isOpen = ref(true)
 const statusMessage = ref('')
 const errorMessage = ref('')
 const providers = ref([])
@@ -82,16 +83,22 @@ onMounted(() => {
         <p class="panel-eyebrow">Self-Cognition</p>
         <h2>自我认知总结模型</h2>
       </div>
-      <button type="button" class="ghost" :disabled="loading" @click="refreshPanel">
-        {{ loading ? '刷新中...' : '刷新' }}
-      </button>
+      <div class="panel-header-actions">
+        <button type="button" class="ghost" :disabled="loading" @click="refreshPanel">
+          {{ loading ? '刷新中...' : '刷新' }}
+        </button>
+        <button type="button" class="ghost" :aria-expanded="isOpen" @click="isOpen = !isOpen">
+          {{ isOpen ? '收起' : '展开' }}
+        </button>
+      </div>
     </header>
 
-    <p class="panel-desc">
-      配置“自我认知”总结专用模型；未设置时会自动回退到默认聊天路由。
-    </p>
+    <template v-if="isOpen">
+      <p class="panel-desc">
+        配置“自我认知”总结专用模型；未设置时会自动回退到默认聊天路由。
+      </p>
 
-    <div class="panel-grid">
+      <div class="panel-grid">
       <label class="mini-form-field">
         <span>Provider</span>
         <select v-model="form.provider_id" @change="onProviderChange">
@@ -113,16 +120,17 @@ onMounted(() => {
           <option v-for="model in selectedProviderModels" :key="model" :value="model" />
         </datalist>
       </label>
-    </div>
+      </div>
 
-    <div class="panel-actions">
-      <button type="button" :disabled="saving" @click="saveConfig">
-        {{ saving ? '保存中...' : '保存总结模型' }}
-      </button>
-    </div>
+      <div class="panel-actions">
+        <button type="button" :disabled="saving" @click="saveConfig">
+          {{ saving ? '保存中...' : '保存总结模型' }}
+        </button>
+      </div>
 
-    <p v-if="statusMessage" class="status-inline">{{ statusMessage }}</p>
-    <p v-if="errorMessage" class="error-inline">{{ errorMessage }}</p>
+      <p v-if="statusMessage" class="status-inline">{{ statusMessage }}</p>
+      <p v-if="errorMessage" class="error-inline">{{ errorMessage }}</p>
+    </template>
   </article>
 </template>
 
@@ -142,6 +150,13 @@ onMounted(() => {
   justify-content: space-between;
   gap: 16px;
   align-items: flex-start;
+}
+
+.panel-header-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 .panel-header h2 {

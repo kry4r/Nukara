@@ -76,9 +76,9 @@ select {
 }
 
 .admin-shell {
-  max-width: 1440px;
+  max-width: 1680px;
   margin: 0 auto;
-  padding: 28px 40px 32px;
+  padding: 28px 36px 32px;
 }
 
 .top-bar {
@@ -139,8 +139,8 @@ select {
 
 .main-area {
   display: grid;
-  gap: 20px;
-  grid-template-columns: 360px minmax(0, 1fr);
+  gap: 18px;
+  grid-template-columns: 320px minmax(0, 1fr);
   min-height: 680px;
   align-items: start;
 }
@@ -312,9 +312,30 @@ select {
   border: 1px solid #d8dfcb;
   border-radius: 12px;
   background: #f7f9f3;
-  padding: 10px 12px;
+  padding: 12px;
+  display: grid;
+  gap: 10px;
+}
+
+.default-summary-body {
   display: grid;
   gap: 8px;
+}
+
+.section-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.section-card-body {
+  display: grid;
+  gap: 8px;
+}
+
+.section-toggle {
+  flex: 0 0 auto;
 }
 
 .provider-create-inline {
@@ -330,9 +351,9 @@ select {
   border: 1px solid #d8dfcb;
   border-radius: 12px;
   background: #fbfdf8;
-  padding: 10px 12px;
+  padding: 12px;
   display: grid;
-  gap: 8px;
+  gap: 10px;
 }
 
 .create-actions {

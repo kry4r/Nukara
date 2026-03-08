@@ -62,8 +62,8 @@ const statusOptions = [
   { value: 'all', label: 'All' },
 ]
 
-const canvasWidth = 920
-const canvasHeight = 620
+const canvasWidth = 1160
+const canvasHeight = 780
 
 const graphLayout = computed(() => buildMemoryGraphLayout(graph.value.nodes, graph.value.edges, {
   width: canvasWidth,
@@ -434,8 +434,8 @@ onMounted(() => {
 
 .graph-layout {
   display: grid;
-  grid-template-columns: 240px minmax(0, 1fr) 320px;
-  gap: 16px;
+  grid-template-columns: 190px minmax(0, 1.65fr) 260px;
+  gap: 14px;
 }
 
 .selector-column,
@@ -483,8 +483,8 @@ onMounted(() => {
 .graph-stage {
   overflow: auto;
   border-radius: 18px;
-  min-height: 680px;
-  padding: 16px;
+  min-height: 820px;
+  padding: 18px;
   background:
     radial-gradient(circle at top, rgba(224, 231, 255, 0.95), rgba(248, 250, 252, 0.98) 44%),
     linear-gradient(180deg, #f8fafc, #eef2ff);
@@ -496,8 +496,8 @@ onMounted(() => {
 
 .graph-svg {
   width: 100%;
-  min-width: 860px;
-  min-height: 620px;
+  min-width: 1100px;
+  min-height: 780px;
 }
 
 .summary-pill,
@@ -700,13 +700,18 @@ button.ghost {
   color: #b91c1c;
 }
 
-@media (max-width: 1280px) {
+@media (max-width: 1480px) {
   .graph-layout {
     grid-template-columns: 1fr;
   }
 
+  .graph-stage {
+    min-height: 760px;
+  }
+
   .graph-svg {
-    min-width: 780px;
+    min-width: 920px;
+    min-height: 720px;
   }
 }
 </style>
