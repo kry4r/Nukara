@@ -161,21 +161,24 @@ onMounted(() => {
 
 .panel-header h2 {
   margin: 4px 0 0;
+  font-size: 18px;
+  line-height: 1.25;
 }
 
 .panel-eyebrow {
   margin: 0;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 700;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.06em;
   text-transform: uppercase;
   color: #6366f1;
 }
 
 .panel-desc {
   margin: 0;
-  color: #475569;
-  line-height: 1.7;
+  color: #64748b;
+  font-size: 13px;
+  line-height: 1.6;
 }
 
 .panel-grid {

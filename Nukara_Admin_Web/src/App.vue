@@ -36,6 +36,7 @@ const showCreateProvider = ref(false)
 const createStatus = ref('')
 const selectedSourceId = ref('')
 const expandedProviderId = ref('')
+const providerListOpen = ref(false)
 const embeddingSectionOpen = ref(true)
 const hasAutoExpandedRuntimeDefault = ref(false)
 
@@ -85,9 +86,7 @@ const activeProvider = computed(() =>
   providers.value.find((provider) => provider.id === runtimeDefaultProviderId.value) || null,
 )
 
-const isRuntimeDefaultExpanded = computed(() =>
-  Boolean(runtimeDefaultProviderId.value) && expandedProviderId.value === runtimeDefaultProviderId.value,
-)
+const isRuntimeDefaultExpanded = computed(() => providerListOpen.value)
 
 const activeProviderModel = computed(() => {
   const firstModel = Array.isArray(activeProvider.value?.models)
@@ -222,7 +221,12 @@ function toggleRuntimeDefaultExpand() {
   if (!runtimeDefaultProviderId.value) {
     return
   }
-  toggleProviderExpand(runtimeDefaultProviderId.value)
+  if (providerListOpen.value) {
+    providerListOpen.value = false
+    return
+  }
+  providerListOpen.value = true
+  expandedProviderId.value = runtimeDefaultProviderId.value
   hasAutoExpandedRuntimeDefault.value = true
 }
 
@@ -651,136 +655,6 @@ onMounted(() => {
     <section class="main-area">
       <aside class="left-column">
         <article class="panel-card provider-list-card">
-          <div class="provider-list-header">
-            <p class="panel-eyebrow">来源 Provider 列表</p>
-            <button type="button" class="ghost mini plus-button" @click="showCreateProvider = !showCreateProvider">
-              +
-            </button>
-          </div>
-
-          <div class="provider-card-list">
-            <article
-              v-for="provider in providers"
-              :key="provider.id"
-              :class="['provider-item-card', {
-                selected: selectedSourceId === provider.id,
-                expanded: expandedProviderId === provider.id,
-              }]"
-            >
-              <button type="button" class="provider-card-toggle" @click="toggleProviderExpand(provider.id)">
-                <div class="provider-item-top">
-                  <strong>{{ provider.name }}</strong>
-                  <span :class="['provider-state', { active: provider.is_active }]">
-                    {{ provider.is_active ? 'Active' : 'Standby' }}
-                  </span>
-                </div>
-                <div class="provider-summary-grid">
-                  <p class="provider-model">
-                    {{ Array.isArray(provider.models) && provider.models.length > 0 ? provider.models[0] : '未配置 model' }}
-                  </p>
-                  <p class="provider-count">{{ providerModeLabel(provider.api_mode) }}</p>
-                  <p class="provider-count">{{ providerUsersCount(provider.id) }} 位用户</p>
-                </div>
-              </button>
-
-              <div class="provider-inline-actions">
-                <button
-                  type="button"
-                  class="ghost mini"
-                  @click="selectedSourceId = selectedSourceId === provider.id ? '' : provider.id"
-                >
-                  {{ selectedSourceId === provider.id ? '取消筛选' : '筛选用户' }}
-                </button>
-                <button
-                  type="button"
-                  class="ghost mini"
-                  :disabled="creatingProvider || savingByProvider[provider.id]"
-                  @click="quickTestProvider(provider)"
-                >
-                  连通测试
-                </button>
-                <button
-                  type="button"
-                  class="mini"
-                  :disabled="creatingProvider || savingByProvider[provider.id] || provider.is_active"
-                  @click="activateProvider(provider)"
-                >
-                  {{ provider.is_active ? 'Active' : '设为默认' }}
-                </button>
-              </div>
-
-              <div v-if="expandedProviderId === provider.id" class="provider-expander">
-                <label class="mini-form-field">
-                  <span>Name</span>
-                  <input v-model.trim="ensureProviderDraft(provider).name" placeholder="Provider 名称" />
-                </label>
-                <label class="mini-form-field">
-                  <span>Base URL</span>
-                  <input v-model.trim="ensureProviderDraft(provider).base_url" placeholder="https://api.example.com/v1" />
-                </label>
-                <label class="mini-form-field">
-                  <span>API Key</span>
-                  <input v-model.trim="ensureProviderDraft(provider).api_key" type="password" placeholder="sk-..." />
-                </label>
-                <div class="provider-expander-grid">
-                  <label class="mini-form-field">
-                    <span>API Mode</span>
-                    <select v-model="ensureProviderDraft(provider).api_mode">
-                      <option value="chat_completions">Chat Completions</option>
-                      <option value="responses">Responses</option>
-                      <option value="auto">Auto</option>
-                    </select>
-                  </label>
-                  <label class="mini-form-field">
-                    <span>Priority</span>
-                    <input v-model.trim="ensureProviderDraft(provider).priority" inputmode="numeric" placeholder="100" />
-                  </label>
-                </div>
-                <label class="mini-form-field">
-                  <span>Models（逗号分隔）</span>
-                  <input v-model.trim="ensureProviderDraft(provider).models" placeholder="gpt-4o-mini, gpt-4.1-mini" />
-                </label>
-
-                <div class="provider-item-actions">
-                  <button
-                    type="button"
-                    :disabled="savingByProvider[provider.id]"
-                    @click="saveProvider(provider)"
-                  >
-                    {{ savingByProvider[provider.id] ? '保存中...' : '保存配置' }}
-                  </button>
-                  <button
-                    type="button"
-                    class="ghost mini"
-                    :disabled="testingByProvider[provider.id]"
-                    @click="runProviderMessageTest(provider)"
-                  >
-                    {{ testingByProvider[provider.id] ? '测试中...' : '消息测试' }}
-                  </button>
-                  <button
-                    type="button"
-                    class="ghost mini"
-                    :disabled="savingByProvider[provider.id] || provider.is_active"
-                    @click="removeProvider(provider)"
-                  >
-                    删除
-                  </button>
-                </div>
-
-                <div class="provider-test-box">
-                  <input
-                    :value="ensureProviderTestDraft(provider)"
-                    placeholder="输入一条测试消息，验证端点是否可用"
-                    @input="providerTestDrafts[provider.id] = $event.target.value"
-                  />
-                  <p v-if="providerTestReplies[provider.id]" class="provider-test-reply">
-                    {{ providerTestReplies[provider.id] }}
-                  </p>
-                </div>
-              </div>
-            </article>
-          </div>
-
           <div class="default-summary">
             <div class="section-card-header">
               <p class="panel-eyebrow">Runtime Default</p>
@@ -803,6 +677,176 @@ onMounted(() => {
                 <span>Model</span>
                 <strong>{{ activeProviderModel }}</strong>
               </div>
+            </div>
+          </div>
+
+          <div v-if="providerListOpen" class="runtime-default-expander">
+            <div class="provider-list-header">
+              <p class="panel-eyebrow">来源 Provider 列表</p>
+              <button type="button" class="ghost mini plus-button" @click="showCreateProvider = !showCreateProvider">
+                +
+              </button>
+            </div>
+
+            <div class="provider-card-list">
+              <article
+                v-for="provider in providers"
+                :key="provider.id"
+                :class="['provider-item-card', {
+                  selected: selectedSourceId === provider.id,
+                  expanded: expandedProviderId === provider.id,
+                }]"
+              >
+                <button type="button" class="provider-card-toggle" @click="toggleProviderExpand(provider.id)">
+                  <div class="provider-item-top">
+                    <strong>{{ provider.name }}</strong>
+                    <span :class="['provider-state', { active: provider.is_active }]">
+                      {{ provider.is_active ? 'Active' : 'Standby' }}
+                    </span>
+                  </div>
+                  <div class="provider-summary-grid">
+                    <p class="provider-model">
+                      {{ Array.isArray(provider.models) && provider.models.length > 0 ? provider.models[0] : '未配置 model' }}
+                    </p>
+                    <p class="provider-count">{{ providerModeLabel(provider.api_mode) }}</p>
+                    <p class="provider-count">{{ providerUsersCount(provider.id) }} 位用户</p>
+                  </div>
+                </button>
+
+                <div class="provider-inline-actions">
+                  <button
+                    type="button"
+                    class="ghost mini"
+                    @click="selectedSourceId = selectedSourceId === provider.id ? '' : provider.id"
+                  >
+                    {{ selectedSourceId === provider.id ? '取消筛选' : '筛选用户' }}
+                  </button>
+                  <button
+                    type="button"
+                    class="ghost mini"
+                    :disabled="creatingProvider || savingByProvider[provider.id]"
+                    @click="quickTestProvider(provider)"
+                  >
+                    连通测试
+                  </button>
+                  <button
+                    type="button"
+                    class="mini"
+                    :disabled="creatingProvider || savingByProvider[provider.id] || provider.is_active"
+                    @click="activateProvider(provider)"
+                  >
+                    {{ provider.is_active ? 'Active' : '设为默认' }}
+                  </button>
+                </div>
+
+                <div v-if="expandedProviderId === provider.id" class="provider-expander">
+                  <label class="mini-form-field">
+                    <span>Name</span>
+                    <input v-model.trim="ensureProviderDraft(provider).name" placeholder="Provider 名称" />
+                  </label>
+                  <label class="mini-form-field">
+                    <span>Base URL</span>
+                    <input v-model.trim="ensureProviderDraft(provider).base_url" placeholder="https://api.example.com/v1" />
+                  </label>
+                  <label class="mini-form-field">
+                    <span>API Key</span>
+                    <input v-model.trim="ensureProviderDraft(provider).api_key" type="password" placeholder="sk-..." />
+                  </label>
+                  <div class="provider-expander-grid">
+                    <label class="mini-form-field">
+                      <span>API Mode</span>
+                      <select v-model="ensureProviderDraft(provider).api_mode">
+                        <option value="chat_completions">Chat Completions</option>
+                        <option value="responses">Responses</option>
+                        <option value="auto">Auto</option>
+                      </select>
+                    </label>
+                    <label class="mini-form-field">
+                      <span>Priority</span>
+                      <input v-model.trim="ensureProviderDraft(provider).priority" inputmode="numeric" placeholder="100" />
+                    </label>
+                  </div>
+                  <label class="mini-form-field">
+                    <span>Models（逗号分隔）</span>
+                    <input v-model.trim="ensureProviderDraft(provider).models" placeholder="gpt-4o-mini, gpt-4.1-mini" />
+                  </label>
+
+                  <div class="provider-item-actions">
+                    <button
+                      type="button"
+                      :disabled="savingByProvider[provider.id]"
+                      @click="saveProvider(provider)"
+                    >
+                      {{ savingByProvider[provider.id] ? '保存中...' : '保存配置' }}
+                    </button>
+                    <button
+                      type="button"
+                      class="ghost mini"
+                      :disabled="testingByProvider[provider.id]"
+                      @click="runProviderMessageTest(provider)"
+                    >
+                      {{ testingByProvider[provider.id] ? '测试中...' : '消息测试' }}
+                    </button>
+                    <button
+                      type="button"
+                      class="ghost mini"
+                      :disabled="savingByProvider[provider.id] || provider.is_active"
+                      @click="removeProvider(provider)"
+                    >
+                      删除
+                    </button>
+                  </div>
+
+                  <div class="provider-test-box">
+                    <input
+                      :value="ensureProviderTestDraft(provider)"
+                      placeholder="输入一条测试消息，验证端点是否可用"
+                      @input="providerTestDrafts[provider.id] = $event.target.value"
+                    />
+                    <p v-if="providerTestReplies[provider.id]" class="provider-test-reply">
+                      {{ providerTestReplies[provider.id] }}
+                    </p>
+                  </div>
+                </div>
+              </article>
+            </div>
+
+            <div v-if="showCreateProvider" class="provider-create-inline">
+              <p class="panel-eyebrow">新增 Provider（创建时自动联通测试）</p>
+              <label class="mini-form-field">
+                <span>Name</span>
+                <input v-model.trim="newProvider.name" placeholder="例如：OpenAI Compatible" />
+              </label>
+              <label class="mini-form-field">
+                <span>Base URL</span>
+                <input v-model.trim="newProvider.base_url" placeholder="https://api.example.com/v1" />
+              </label>
+              <label class="mini-form-field">
+                <span>API Key</span>
+                <input v-model.trim="newProvider.api_key" type="password" placeholder="sk-..." />
+              </label>
+              <label class="mini-form-field">
+                <span>API Mode</span>
+                <select v-model="newProvider.api_mode">
+                  <option value="chat_completions">Chat Completions</option>
+                  <option value="responses">Responses</option>
+                  <option value="auto">Auto</option>
+                </select>
+              </label>
+              <label class="mini-form-field">
+                <span>Models（逗号分隔）</span>
+                <input v-model.trim="newProvider.models" placeholder="gpt-4o-mini, gpt-4.1-mini" />
+              </label>
+              <div class="create-actions">
+                <button type="button" class="ghost" :disabled="creatingProvider" @click="showCreateProvider = false">取消</button>
+                <button type="button" :disabled="creatingProvider" @click="testAndCreateProvider">
+                  {{ creatingProvider ? '测试中...' : '测试并创建' }}
+                </button>
+              </div>
+              <p v-if="createStatus" class="status-inline">{{ createStatus }}</p>
+            </div>
+            <div v-else class="panel-desc provider-create-hint">
+              点击右上角 <strong>+</strong> 新建 provider，保存前会自动执行连通测试。
             </div>
           </div>
 
@@ -854,44 +898,6 @@ onMounted(() => {
           <EmailAuthPanel />
           <PostTurnModelPanel />
           <SummaryModelPanel />
-
-          <div v-if="showCreateProvider" class="provider-create-inline">
-            <p class="panel-eyebrow">新增 Provider（创建时自动联通测试）</p>
-            <label class="mini-form-field">
-              <span>Name</span>
-              <input v-model.trim="newProvider.name" placeholder="例如：OpenAI Compatible" />
-            </label>
-            <label class="mini-form-field">
-              <span>Base URL</span>
-              <input v-model.trim="newProvider.base_url" placeholder="https://api.example.com/v1" />
-            </label>
-            <label class="mini-form-field">
-              <span>API Key</span>
-              <input v-model.trim="newProvider.api_key" type="password" placeholder="sk-..." />
-            </label>
-            <label class="mini-form-field">
-              <span>API Mode</span>
-              <select v-model="newProvider.api_mode">
-                <option value="chat_completions">Chat Completions</option>
-                <option value="responses">Responses</option>
-                <option value="auto">Auto</option>
-              </select>
-            </label>
-            <label class="mini-form-field">
-              <span>Models（逗号分隔）</span>
-              <input v-model.trim="newProvider.models" placeholder="gpt-4o-mini, gpt-4.1-mini" />
-            </label>
-            <div class="create-actions">
-              <button type="button" class="ghost" :disabled="creatingProvider" @click="showCreateProvider = false">取消</button>
-              <button type="button" :disabled="creatingProvider" @click="testAndCreateProvider">
-                {{ creatingProvider ? '测试中...' : '测试并创建' }}
-              </button>
-            </div>
-            <p v-if="createStatus" class="status-inline">{{ createStatus }}</p>
-          </div>
-          <div v-else class="panel-desc">
-            点击右上角 <strong>+</strong> 新建 provider，保存前会自动执行连通测试。
-          </div>
         </article>
       </aside>
 

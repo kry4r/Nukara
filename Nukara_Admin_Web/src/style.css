@@ -182,10 +182,12 @@ select {
 
 .provider-list-card {
   gap: 12px;
-  max-height: calc(100vh - 40px);
-  overflow-x: hidden;
-  overflow-y: auto;
-  padding-right: 6px;
+}
+
+.runtime-default-expander {
+  display: grid;
+  gap: 12px;
+  padding-top: 4px;
 }
 
 .provider-list-header {
@@ -338,6 +340,10 @@ select {
   flex: 0 0 auto;
 }
 
+.provider-create-hint {
+  padding-top: 2px;
+}
+
 .provider-create-inline {
   border: 1px dashed #d8dfcb;
   border-radius: 12px;
@@ -428,14 +434,14 @@ select {
 .panel-eyebrow {
   margin: 0;
   color: #6b6b6b;
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 600;
 }
 
 .panel-desc {
   margin: 0;
-  color: #2c2c2c;
-  font-size: 14px;
+  color: #4b5563;
+  font-size: 13px;
   font-weight: 500;
   line-height: 1.5;
 }
