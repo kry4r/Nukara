@@ -117,49 +117,8 @@ func (r *Runner) Run(ctx context.Context, in Input) (Result, error) {
 		})
 	}
 
-	if r.personaIterator != nil {
-		turnCount := r.store.Store.IncrementTurnCount(in.UserID, in.BotID)
-		if turnCount%3 == 0 || len(savedItems) > 0 {
-			raw, err := r.personaIterator(ctx, in)
-			if err != nil {
-				return result, nil
-			}
-			patch, err := persona.ParsePatch(raw)
-			if err != nil {
-				return result, nil
-			}
-			patch, err = persona.ValidatePatch(patch)
-			if err != nil {
-				return result, nil
-			}
-
-			bot, found := r.store.Store.GetBot(in.UserID, in.BotID)
-			if !found {
-				return result, nil
-			}
-
-			risk := persona.ClassifyPatchRisk(patch)
-			if risk.Route == persona.RoutePendingConfirm {
-				_, _ = r.createPendingPersonaChanges(patch, in)
-				result.Patch = patch
-				result.PatchSummary = summarizePatch(patch)
-				return result, nil
-			}
-			acceptedChanges, createErr := r.createAcceptedPersonaChanges(patch, in, risk.Risk)
-			if createErr != nil {
-				return result, nil
-			}
-			if r.selfCognitionUpdater != nil && len(acceptedChanges) > 0 {
-				if updatedBot, updateErr := r.selfCognitionUpdater(ctx, in, bot, acceptedChanges); updateErr == nil {
-					bot = updatedBot
-				}
-			}
-			if len(acceptedChanges) > 0 {
-				result.PersonaUpdated = true
-				result.Patch = patch
-				result.PatchSummary = summarizePatch(patch)
-			}
-		}
+	if len(savedItems) > 0 {
+		r.applyPersonaDecisions(ctx, in, savedItems, &result)
 	}
 
 	return result, nil
@@ -230,6 +189,59 @@ func shouldUseForRuntimeState(item store.MemoryItem) bool {
 		return false
 	}
 	return strings.TrimSpace(item.Content) != ""
+}
+
+func (r *Runner) applyPersonaDecisions(ctx context.Context, in Input, items []store.MemoryItem, result *Result) {
+	bot, found := r.store.Store.GetBot(in.UserID, in.BotID)
+	if !found {
+		return
+	}
+	acceptedChanges := make([]store.PersonaChangeEvent, 0, len(items))
+	mergedPatch := persona.Patch{}
+	for _, item := range items {
+		decision, ok := decidePersonaChange(item, bot)
+		if !ok {
+			continue
+		}
+		event := store.PersonaChangeEvent{
+			UserID:        in.UserID,
+			BotID:         in.BotID,
+			Field:         decision.Field,
+			ChangeType:    "append",
+			ProposedValue: strings.TrimSpace(item.Content),
+			SourceTurnID:  in.TurnID,
+			Risk:          strings.TrimSpace(decision.Risk),
+			Status:        strings.TrimSpace(decision.Status),
+		}
+		if decision.ShouldApply {
+			updatedBot, ok := r.store.Store.ApplyBotPersonaPatch(in.UserID, in.BotID, decision.Patch)
+			if !ok {
+				event.Status = "failed"
+				_, _ = r.store.Store.CreatePersonaChangeEvent(event)
+				continue
+			}
+			bot = updatedBot
+			accepted, err := r.store.Store.CreatePersonaChangeEvent(event)
+			if err != nil {
+				continue
+			}
+			acceptedChanges = append(acceptedChanges, accepted)
+			mergedPatch = mergePersonaPatch(mergedPatch, decision.Patch)
+			result.PersonaUpdated = true
+			continue
+		}
+		_, _ = r.store.Store.CreatePersonaChangeEvent(event)
+	}
+	if r.selfCognitionUpdater != nil && len(acceptedChanges) > 0 {
+		if updatedBot, err := r.selfCognitionUpdater(ctx, in, bot, acceptedChanges); err == nil {
+			bot = updatedBot
+			_ = bot
+		}
+	}
+	if result.PersonaUpdated {
+		result.Patch = mergedPatch
+		result.PatchSummary = summarizePatch(mergedPatch)
+	}
 }
 
 type personaChangeCandidate struct {

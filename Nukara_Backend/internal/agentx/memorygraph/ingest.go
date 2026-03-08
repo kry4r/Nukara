@@ -51,24 +51,74 @@ func BuildSessionSummaryNode(in IngestTurnInput, now time.Time) *store.TemporalM
 		occurredAt = time.Now().UTC()
 	}
 	node := store.TemporalMemoryNode{
-		ID:           sessionSummaryNodeID(in.ConversationID),
-		UserID:       strings.TrimSpace(in.UserID),
-		BotID:        strings.TrimSpace(in.BotID),
-		SessionID:    strings.TrimSpace(in.ConversationID),
-		NodeType:     "session_summary",
-		Title:        "会话摘要",
-		Summary:      buildSessionSummaryText(summary, payload.Facts),
-		BodyJSON:     string(body),
-		Status:       "active",
-		OccurredAt:   occurredAt,
-		ObservedAt:   now,
-		ValidFrom:    occurredAt,
-		SourceTurnID: strings.TrimSpace(in.TurnID),
-		Salience:     0.66,
-		Confidence:   0.82,
-		Stability:    0.74,
+		ID:               sessionSummaryNodeID(in.ConversationID),
+		UserID:           strings.TrimSpace(in.UserID),
+		BotID:            strings.TrimSpace(in.BotID),
+		SessionID:        strings.TrimSpace(in.ConversationID),
+		NodeType:         "session_summary",
+		Title:            "会话摘要",
+		Summary:          buildSessionSummaryText(summary, payload.Facts),
+		BodyJSON:         string(body),
+		Status:           "active",
+		OccurredAt:       occurredAt,
+		ObservedAt:       now,
+		ValidFrom:        occurredAt,
+		SourceTurnID:     strings.TrimSpace(in.TurnID),
+		SourceKind:       "compact_summary",
+		SemanticCategory: "life_context",
+		StabilityLabel:   "temporary",
+		MergeKey:         sessionSummaryNodeID(in.ConversationID),
+		EvidenceCount:    1,
+		Salience:         0.66,
+		Confidence:       0.82,
+		Stability:        0.74,
 	}
 	return &node
+}
+
+func BuildSessionSummaryFactNodes(in IngestTurnInput, now time.Time) []store.TemporalMemoryNode {
+	raw := strings.TrimSpace(in.CompactJSON)
+	if raw == "" {
+		return nil
+	}
+	var payload compactEnvelope
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		return nil
+	}
+	out := make([]store.TemporalMemoryNode, 0, len(payload.Facts))
+	for idx, fact := range payload.Facts {
+		fact = strings.TrimSpace(fact)
+		if fact == "" {
+			continue
+		}
+		occurredAt := now
+		if occurredAt.IsZero() {
+			occurredAt = time.Now().UTC()
+		}
+		out = append(out, store.TemporalMemoryNode{
+			ID:               fmt.Sprintf("summary-fact:%s:%d", strings.TrimSpace(in.TurnID), idx),
+			UserID:           strings.TrimSpace(in.UserID),
+			BotID:            strings.TrimSpace(in.BotID),
+			SessionID:        strings.TrimSpace(in.ConversationID),
+			NodeType:         "episode",
+			Title:            deriveNodeTitle("episode", fact),
+			Summary:          fact,
+			Status:           "active",
+			OccurredAt:       occurredAt,
+			ObservedAt:       now,
+			ValidFrom:        occurredAt,
+			SourceTurnID:     strings.TrimSpace(in.TurnID),
+			SourceKind:       "compact_fact",
+			SemanticCategory: "life_context",
+			StabilityLabel:   normalizeFactStability(fact),
+			MergeKey:         normalizeSimilarityText(fact),
+			EvidenceCount:    1,
+			Salience:         0.6,
+			Confidence:       0.7,
+			Stability:        0.55,
+		})
+	}
+	return out
 }
 
 func BuildTurnEdges(nodes []store.TemporalMemoryNode) []store.TemporalMemoryEdge {
@@ -216,21 +266,30 @@ func materializeMemoryNode(in IngestTurnInput, item store.MemoryItem, idx int, n
 		status = "active"
 	}
 	node := store.TemporalMemoryNode{
-		ID:           materializedNodeID(in.TurnID, item.ID, nodeType, idx),
-		UserID:       strings.TrimSpace(in.UserID),
-		BotID:        strings.TrimSpace(in.BotID),
-		SessionID:    strings.TrimSpace(in.ConversationID),
-		NodeType:     nodeType,
-		Title:        deriveNodeTitle(nodeType, summary),
-		Summary:      summary,
-		Status:       status,
-		OccurredAt:   occurredAt,
-		ObservedAt:   now,
-		ValidFrom:    occurredAt,
-		SourceTurnID: strings.TrimSpace(in.TurnID),
-		Salience:     importanceScore(item.Importance),
-		Confidence:   0.72,
-		Stability:    initialStability(nodeType),
+		ID:               materializedNodeID(in.TurnID, item.ID, nodeType, idx),
+		UserID:           strings.TrimSpace(in.UserID),
+		BotID:            strings.TrimSpace(in.BotID),
+		SessionID:        strings.TrimSpace(in.ConversationID),
+		NodeType:         nodeType,
+		Title:            deriveNodeTitle(nodeType, summary),
+		Summary:          summary,
+		Status:           status,
+		OccurredAt:       occurredAt,
+		ObservedAt:       now,
+		ValidFrom:        occurredAt,
+		SourceTurnID:     strings.TrimSpace(in.TurnID),
+		SourceKind:       strings.TrimSpace(item.Kind),
+		SemanticCategory: strings.TrimSpace(item.SemanticCategory),
+		StabilityLabel:   strings.TrimSpace(item.Stability),
+		MergeKey:         deriveMergeKey(item, summary),
+		EvidenceCount:    1,
+		Entities:         append([]store.Entity(nil), item.Entities...),
+		Salience:         importanceScore(item.Importance),
+		Confidence:       0.72,
+		Stability:        initialStability(nodeType),
+	}
+	if node.StabilityLabel == "" {
+		node.StabilityLabel = normalizeFactStability(summary)
 	}
 	return node, true
 }
@@ -315,6 +374,32 @@ func materializedNodeID(turnID, memoryID, nodeType string, idx int) string {
 		return fmt.Sprintf("tm:%s:%s:%d", turnID, nodeType, idx)
 	}
 	return store.NewID()
+}
+
+func deriveMergeKey(item store.MemoryItem, summary string) string {
+	if len(item.Entities) > 0 {
+		names := make([]string, 0, len(item.Entities))
+		for _, entity := range item.Entities {
+			name := strings.TrimSpace(entity.Name)
+			if name == "" {
+				continue
+			}
+			names = append(names, normalizeSimilarityText(name))
+		}
+		if len(names) > 0 {
+			return strings.TrimSpace(item.SemanticCategory) + ":" + strings.Join(names, ":")
+		}
+	}
+	return normalizeSimilarityText(summary)
+}
+
+func normalizeFactStability(content string) string {
+	for _, cue := range []string{"最近", "暂时", "这周", "今天", "刚", "刚刚", "目前", "这阵子"} {
+		if strings.Contains(content, cue) {
+			return "temporary"
+		}
+	}
+	return "stable"
 }
 
 func sessionSummaryNodeID(conversationID string) string {

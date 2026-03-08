@@ -76,6 +76,14 @@ func TestRunner_MaterializesSessionSummaryNode(t *testing.T) {
 	if nodes[0].SessionID != "conv-1" {
 		t.Fatalf("session summary session_id = %q", nodes[0].SessionID)
 	}
+	facts := st.ListMemoryNodes("u1", "b1", store.TemporalMemoryNodeFilter{NodeTypes: []string{"episode"}, Limit: 10})
+	if len(facts) != 2 {
+		t.Fatalf("expected two materialized summary fact nodes, got %d", len(facts))
+	}
+	edges := st.ListMemoryEdges([]string{nodes[0].ID}, store.TemporalMemoryEdgeFilter{EdgeTypes: []string{"summarizes"}, Limit: 10})
+	if len(edges) != 2 {
+		t.Fatalf("expected two summarizes edges, got %d", len(edges))
+	}
 }
 
 func assertTemporalNodeType(t *testing.T, nodes []store.TemporalMemoryNode, want string) {

@@ -85,195 +85,88 @@ func (s *testStore) CreatePersonaChangeEvent(event store.PersonaChangeEvent) (st
 	return event, nil
 }
 
-func TestRunnerAppliesValidatedLowRiskPatchAndPersistsOutputs(t *testing.T) {
-	st := &testStore{
-		updatedBot: store.Bot{
-			ID:          "bot-1",
-			UserID:      "user-1",
-			Name:        "bot",
-			Identity:    "朋友",
-			LifeContext: "住在东京",
-		},
-		turnCount: 2,
-	}
-	var refreshedBot store.Bot
+func TestRunnerAutoAppliesStableIdentityFacts(t *testing.T) {
+	st := &testStore{updatedBot: store.Bot{ID: "bot-1", UserID: "user-1", Name: "bot", Identity: "朋友"}}
 	var refreshedChanges []store.PersonaChangeEvent
 	runner := NewRunner(RunnerDeps{
 		Store: st,
 		MemoryExtractor: func(context.Context, Input) (string, error) {
-			return `{"items":[{"kind":"fact","owner":"user","content":"用户喜欢喝茶","importance":70}]}`, nil
-		},
-		CompactUpdater: func(context.Context, Input) (string, error) {
-			return `{"summary":"最近在聊喝茶","facts":["用户喜欢喝茶"]}`, nil
-		},
-		PersonaIterator: func(context.Context, Input) (string, error) {
-			return `{"life_context_adds":["最近开始把凌晨散步当作下班后的固定习惯"]}`, nil
+			return `{"items":[{"kind":"self_fact","owner":"bot","content":"不是纯金融，更偏研究型","importance":88,"semantic_category":"identity","stability":"stable"}]}`, nil
 		},
 		SelfCognitionUpdater: func(_ context.Context, _ Input, bot store.Bot, changes []store.PersonaChangeEvent) (store.Bot, error) {
 			refreshedChanges = append([]store.PersonaChangeEvent(nil), changes...)
-			bot.SelfCognition = []string{"我最近会在下班后用凌晨散步让自己慢慢沉下来。"}
-			st.updatedBot = bot
-			refreshedBot = bot
 			return bot, nil
 		},
 	})
 
-	result, err := runner.Run(context.Background(), Input{
-		UserID:         "user-1",
-		BotID:          "bot-1",
-		ConversationID: "conv-1",
-		TurnID:         "turn-1",
-		UserText:       "我喜欢喝茶",
-		BotText:        "记住啦",
-	})
+	result, err := runner.Run(context.Background(), Input{UserID: "user-1", BotID: "bot-1", ConversationID: "conv-1", TurnID: "turn-1"})
 	if err != nil {
 		t.Fatalf("Run failed: %v", err)
-	}
-	if len(st.memoryItems) != 1 {
-		t.Fatalf("memory items persisted = %d, want 1", len(st.memoryItems))
-	}
-	if len(st.compacts) != 1 || st.compacts[0].UntilTurnID != "turn-1" {
-		t.Fatalf("compact upsert mismatch: %+v", st.compacts)
-	}
-	if len(st.personaCalls) != 0 {
-		t.Fatalf("low-risk patch should not mutate static persona directly")
 	}
 	if !result.PersonaUpdated {
 		t.Fatalf("expected persona updated")
 	}
-	if result.PatchSummary == "" {
-		t.Fatalf("expected patch summary")
+	if len(st.personaCalls) != 1 {
+		t.Fatalf("persona patch calls = %d, want 1", len(st.personaCalls))
 	}
-	if st.updatedBot.LifeContext != "住在东京" {
-		t.Fatalf("life context should stay static, got %q", st.updatedBot.LifeContext)
+	if !strings.Contains(st.updatedBot.Identity, "偏研究型") {
+		t.Fatalf("updated identity = %q", st.updatedBot.Identity)
 	}
-	if len(refreshedBot.SelfCognition) != 1 || !strings.Contains(refreshedBot.SelfCognition[0], "凌晨散步") {
-		t.Fatalf("expected self cognition refreshed, got %#v", refreshedBot.SelfCognition)
+	if len(st.personaChanges) != 1 || st.personaChanges[0].Status != "accepted" {
+		t.Fatalf("persona changes = %+v", st.personaChanges)
 	}
-	if len(st.personaChanges) != 1 {
-		t.Fatalf("accepted persona changes = %d, want 1", len(st.personaChanges))
+	if st.personaChanges[0].Field != "identity" {
+		t.Fatalf("change field = %q", st.personaChanges[0].Field)
 	}
-	if st.personaChanges[0].Status != "accepted" {
-		t.Fatalf("accepted change status = %q", st.personaChanges[0].Status)
-	}
-	if st.personaChanges[0].Field != "life_context" {
-		t.Fatalf("accepted change field = %q", st.personaChanges[0].Field)
-	}
-	if len(refreshedChanges) != 1 || refreshedChanges[0].ProposedValue != "最近开始把凌晨散步当作下班后的固定习惯" {
+	if len(refreshedChanges) != 1 || refreshedChanges[0].Field != "identity" {
 		t.Fatalf("refreshed changes = %+v", refreshedChanges)
 	}
 }
 
-func TestRunnerRejectsInvalidPersonaPatch(t *testing.T) {
-	st := &testStore{updatedBot: store.Bot{ID: "bot-1", UserID: "user-1"}, turnCount: 2}
+func TestRunnerSkipsTemporaryLifeContextForPersonaButKeepsAudit(t *testing.T) {
+	st := &testStore{updatedBot: store.Bot{ID: "bot-1", UserID: "user-1", Name: "bot", LifeContext: "住在东京"}}
 	runner := NewRunner(RunnerDeps{
 		Store: st,
-		PersonaIterator: func(context.Context, Input) (string, error) {
-			return `{"identity_adds":[""]}`, nil
+		MemoryExtractor: func(context.Context, Input) (string, error) {
+			return `{"items":[{"kind":"self_fact","owner":"bot","content":"最近住在爸妈这边","importance":70,"semantic_category":"life_context","stability":"temporary"}]}`, nil
 		},
 	})
 
-	result, err := runner.Run(context.Background(), Input{
-		UserID:         "user-1",
-		BotID:          "bot-1",
-		ConversationID: "conv-1",
-		TurnID:         "turn-1",
-	})
+	result, err := runner.Run(context.Background(), Input{UserID: "user-1", BotID: "bot-1", ConversationID: "conv-1", TurnID: "turn-1"})
 	if err != nil {
-		t.Fatalf("Run should not fail on invalid patch: %v", err)
+		t.Fatalf("Run failed: %v", err)
 	}
 	if result.PersonaUpdated {
-		t.Fatalf("invalid patch should be ignored")
+		t.Fatalf("temporary fact should not update persona")
 	}
 	if len(st.personaCalls) != 0 {
-		t.Fatalf("invalid patch should not be applied")
+		t.Fatalf("persona patch should not be applied")
+	}
+	if st.updatedBot.LifeContext != "住在东京" {
+		t.Fatalf("life context should stay static, got %q", st.updatedBot.LifeContext)
+	}
+	if len(st.personaChanges) != 1 || st.personaChanges[0].Status != "skipped" {
+		t.Fatalf("persona changes = %+v", st.personaChanges)
+	}
+	if st.personaChanges[0].Field != "life_context" {
+		t.Fatalf("change field = %q", st.personaChanges[0].Field)
 	}
 }
 
-func TestRunnerOnlyIteratesPersonaEveryThreeTurns(t *testing.T) {
+func TestRunnerDoesNotUseLegacyTurnCountTriggerWithoutStableFacts(t *testing.T) {
 	st := &testStore{updatedBot: store.Bot{ID: "bot-1", UserID: "user-1", Name: "bot"}}
-	runner := NewRunner(RunnerDeps{
-		Store: st,
-		PersonaIterator: func(context.Context, Input) (string, error) {
-			return `{"expression_style_adds":["我会慢慢更懂你"]}`, nil
-		},
-	})
+	runner := NewRunner(RunnerDeps{Store: st})
 
-	for i := 0; i < 2; i++ {
+	for i := 0; i < 3; i++ {
 		result, err := runner.Run(context.Background(), Input{UserID: "user-1", BotID: "bot-1", ConversationID: "conv-1", TurnID: "turn-a"})
 		if err != nil {
 			t.Fatalf("Run failed: %v", err)
 		}
 		if result.PersonaUpdated {
-			t.Fatalf("persona should not update on turn %d", i+1)
+			t.Fatalf("persona should not update without stable facts")
 		}
 	}
-
-	result, err := runner.Run(context.Background(), Input{UserID: "user-1", BotID: "bot-1", ConversationID: "conv-1", TurnID: "turn-3"})
-	if err != nil {
-		t.Fatalf("Run failed: %v", err)
-	}
-	if !result.PersonaUpdated {
-		t.Fatalf("persona should update on third turn")
-	}
-	if len(st.personaCalls) != 0 {
-		t.Fatalf("low-risk persona should not patch static bot directly, got %d calls", len(st.personaCalls))
-	}
-}
-
-func TestRunnerIteratesPersonaOnImportantMemoryTurns(t *testing.T) {
-	st := &testStore{updatedBot: store.Bot{ID: "bot-1", UserID: "user-1", Name: "bot"}}
-	runner := NewRunner(RunnerDeps{
-		Store: st,
-		MemoryExtractor: func(context.Context, Input) (string, error) {
-			return `{"items":[{"kind":"user_fact","owner":"user","content":"用户对猫毛过敏","importance":90}]}`, nil
-		},
-		PersonaIterator: func(context.Context, Input) (string, error) {
-			return `{"expression_style_adds":["会把重要提醒记得更牢"]}`, nil
-		},
-	})
-
-	result, err := runner.Run(context.Background(), Input{UserID: "user-1", BotID: "bot-1", ConversationID: "conv-1", TurnID: "turn-1", UserText: "我对猫毛过敏", BotText: "我记住了"})
-	if err != nil {
-		t.Fatalf("Run failed: %v", err)
-	}
-	if !result.PersonaUpdated {
-		t.Fatalf("important memory turn should trigger persona update")
-	}
-	if len(st.personaCalls) != 0 {
-		t.Fatalf("low-risk persona should not patch static bot directly, got %d calls", len(st.personaCalls))
-	}
-	if len(st.personaChanges) != 1 || st.personaChanges[0].Status != "accepted" {
-		t.Fatalf("accepted persona changes = %+v", st.personaChanges)
-	}
-}
-
-func TestRunnerCreatesPendingPersonaChangeForHighRiskPatch(t *testing.T) {
-	st := &testStore{updatedBot: store.Bot{ID: "bot-1", UserID: "user-1", Name: "bot", Identity: "朋友"}, turnCount: 2}
-	runner := NewRunner(RunnerDeps{
-		Store: st,
-		PersonaIterator: func(context.Context, Input) (string, error) {
-			return `{"identity_adds":["其实我是医生"]}`, nil
-		},
-	})
-
-	result, err := runner.Run(context.Background(), Input{UserID: "user-1", BotID: "bot-1", ConversationID: "conv-1", TurnID: "turn-3"})
-	if err != nil {
-		t.Fatalf("Run failed: %v", err)
-	}
-	if result.PersonaUpdated {
-		t.Fatalf("high-risk patch should not auto-apply")
-	}
-	if len(st.personaCalls) != 0 {
-		t.Fatalf("high-risk patch should not be applied directly")
-	}
-	if len(st.personaChanges) != 1 {
-		t.Fatalf("persona changes = %d, want 1", len(st.personaChanges))
-	}
-	if st.personaChanges[0].Field != "identity" {
-		t.Fatalf("change field = %q", st.personaChanges[0].Field)
-	}
-	if st.personaChanges[0].Status != "pending" {
-		t.Fatalf("change status = %q", st.personaChanges[0].Status)
+	if len(st.personaChanges) != 0 {
+		t.Fatalf("unexpected persona changes = %+v", st.personaChanges)
 	}
 }

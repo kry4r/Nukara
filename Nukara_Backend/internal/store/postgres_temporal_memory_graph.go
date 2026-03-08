@@ -40,6 +40,12 @@ CREATE TABLE IF NOT EXISTS memory_nodes (
     valid_to TIMESTAMP,
     last_accessed_at TIMESTAMP NOT NULL DEFAULT NOW(),
     source_turn_id TEXT,
+    source_kind VARCHAR(40) NOT NULL DEFAULT '',
+    semantic_category VARCHAR(40) NOT NULL DEFAULT '',
+    stability_label VARCHAR(20) NOT NULL DEFAULT '',
+    merge_key TEXT NOT NULL DEFAULT '',
+    evidence_count INT NOT NULL DEFAULT 1,
+    entities JSONB NOT NULL DEFAULT '[]'::jsonb,
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
@@ -52,6 +58,12 @@ BEGIN
         ALTER TABLE IF EXISTS memory_nodes ALTER COLUMN id TYPE TEXT USING id::text;
         ALTER TABLE IF EXISTS memory_nodes ALTER COLUMN session_id TYPE TEXT USING session_id::text;
         ALTER TABLE IF EXISTS memory_nodes ALTER COLUMN source_turn_id TYPE TEXT USING source_turn_id::text;
+        ALTER TABLE IF EXISTS memory_nodes ADD COLUMN IF NOT EXISTS source_kind VARCHAR(40) NOT NULL DEFAULT '';
+        ALTER TABLE IF EXISTS memory_nodes ADD COLUMN IF NOT EXISTS semantic_category VARCHAR(40) NOT NULL DEFAULT '';
+        ALTER TABLE IF EXISTS memory_nodes ADD COLUMN IF NOT EXISTS stability_label VARCHAR(20) NOT NULL DEFAULT '';
+        ALTER TABLE IF EXISTS memory_nodes ADD COLUMN IF NOT EXISTS merge_key TEXT NOT NULL DEFAULT '';
+        ALTER TABLE IF EXISTS memory_nodes ADD COLUMN IF NOT EXISTS evidence_count INT NOT NULL DEFAULT 1;
+        ALTER TABLE IF EXISTS memory_nodes ADD COLUMN IF NOT EXISTS entities JSONB NOT NULL DEFAULT '[]'::jsonb;
     EXCEPTION WHEN OTHERS THEN
         NULL;
     END;
@@ -190,18 +202,21 @@ func (p *PostgresStore) upsertMemoryNodeRow(node TemporalMemoryNode) error {
 	if node.ValidTo != nil {
 		validTo = node.ValidTo.UTC()
 	}
+	entities, _ := json.Marshal(node.Entities)
 	_, err := p.db.ExecContext(ctx, `
 		INSERT INTO memory_nodes(
 			id, user_id, bot_id, session_id, node_type, title, summary, body_json,
 			salience, affect_weight, confidence, stability, status, occurred_at,
 			observed_at, valid_from, valid_to, last_accessed_at, source_turn_id,
+			source_kind, semantic_category, stability_label, merge_key, evidence_count, entities,
 			created_at, updated_at
 		)
 		VALUES (
 			$1,$2,$3,$4,$5,$6,$7,$8::jsonb,
 			$9,$10,$11,$12,$13,$14,
 			$15,$16,$17,$18,$19,
-			$20,$21
+			$20,$21,$22,$23,$24,$25::jsonb,
+			$26,$27
 		)
 		ON CONFLICT (id)
 		DO UPDATE SET
@@ -221,11 +236,18 @@ func (p *PostgresStore) upsertMemoryNodeRow(node TemporalMemoryNode) error {
 			valid_to=EXCLUDED.valid_to,
 			last_accessed_at=EXCLUDED.last_accessed_at,
 			source_turn_id=EXCLUDED.source_turn_id,
+			source_kind=EXCLUDED.source_kind,
+			semantic_category=EXCLUDED.semantic_category,
+			stability_label=EXCLUDED.stability_label,
+			merge_key=EXCLUDED.merge_key,
+			evidence_count=EXCLUDED.evidence_count,
+			entities=EXCLUDED.entities,
 			updated_at=EXCLUDED.updated_at
 	`, node.ID, node.UserID, node.BotID, nullIfEmpty(node.SessionID), node.NodeType, node.Title, node.Summary,
 		normalizeJSONOrObject(node.BodyJSON), node.Salience, node.AffectWeight, node.Confidence, node.Stability,
 		node.Status, node.OccurredAt, node.ObservedAt, node.ValidFrom, validTo, node.LastAccessedAt,
-		nullIfEmpty(node.SourceTurnID), node.CreatedAt, node.UpdatedAt)
+		nullIfEmpty(node.SourceTurnID), node.SourceKind, node.SemanticCategory, node.StabilityLabel, node.MergeKey, node.EvidenceCount, string(entities),
+		node.CreatedAt, node.UpdatedAt)
 	if err != nil {
 		log.Printf("upsert memory node failed: %v", err)
 	}
@@ -236,25 +258,25 @@ func (p *PostgresStore) GetMemoryNode(nodeID string) (TemporalMemoryNode, bool) 
 	ctx, cancel := p.withTimeout()
 	defer cancel()
 	var node TemporalMemoryNode
-	var bodyRaw []byte
+	var bodyRaw, entitiesRaw []byte
 	var validTo sql.NullTime
 	err := p.db.QueryRowContext(ctx, `
 		SELECT id, user_id, bot_id, COALESCE(session_id::text, ''), node_type, title, summary, body_json,
 			salience, affect_weight, confidence, stability, status, occurred_at, observed_at,
-			valid_from, valid_to, last_accessed_at, COALESCE(source_turn_id::text, ''), created_at, updated_at
+			valid_from, valid_to, last_accessed_at, COALESCE(source_turn_id::text, ''),
+			COALESCE(source_kind, ''), COALESCE(semantic_category, ''), COALESCE(stability_label, ''), COALESCE(merge_key, ''), evidence_count, entities,
+			created_at, updated_at
 		FROM memory_nodes
 		WHERE id=$1
 	`, strings.TrimSpace(nodeID)).Scan(
 		&node.ID, &node.UserID, &node.BotID, &node.SessionID, &node.NodeType, &node.Title, &node.Summary, &bodyRaw,
 		&node.Salience, &node.AffectWeight, &node.Confidence, &node.Stability, &node.Status, &node.OccurredAt,
-		&node.ObservedAt, &node.ValidFrom, &validTo, &node.LastAccessedAt, &node.SourceTurnID, &node.CreatedAt, &node.UpdatedAt,
+		&node.ObservedAt, &node.ValidFrom, &validTo, &node.LastAccessedAt, &node.SourceTurnID,
+		&node.SourceKind, &node.SemanticCategory, &node.StabilityLabel, &node.MergeKey, &node.EvidenceCount, &entitiesRaw,
+		&node.CreatedAt, &node.UpdatedAt,
 	)
 	if err == nil {
-		node.BodyJSON = strings.TrimSpace(string(bodyRaw))
-		if validTo.Valid {
-			value := validTo.Time.UTC()
-			node.ValidTo = &value
-		}
+		hydrateTemporalMemoryNodeRow(&node, bodyRaw, entitiesRaw, validTo)
 		return node, true
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
@@ -274,7 +296,9 @@ func (p *PostgresStore) ListMemoryNodes(userID, botID string, filter TemporalMem
 	query.WriteString(`
 		SELECT id, user_id, bot_id, COALESCE(session_id::text, ''), node_type, title, summary, body_json,
 			salience, affect_weight, confidence, stability, status, occurred_at, observed_at,
-			valid_from, valid_to, last_accessed_at, COALESCE(source_turn_id::text, ''), created_at, updated_at
+			valid_from, valid_to, last_accessed_at, COALESCE(source_turn_id::text, ''),
+			COALESCE(source_kind, ''), COALESCE(semantic_category, ''), COALESCE(stability_label, ''), COALESCE(merge_key, ''), evidence_count, entities,
+			created_at, updated_at
 		FROM memory_nodes
 		WHERE user_id=$1 AND bot_id=$2`)
 	args := []any{strings.TrimSpace(userID), strings.TrimSpace(botID)}
@@ -306,27 +330,34 @@ func (p *PostgresStore) ListMemoryNodes(userID, botID string, filter TemporalMem
 	out := make([]TemporalMemoryNode, 0, limit)
 	for rows.Next() {
 		var node TemporalMemoryNode
-		var bodyRaw []byte
+		var bodyRaw, entitiesRaw []byte
 		var validTo sql.NullTime
 		if scanErr := rows.Scan(
 			&node.ID, &node.UserID, &node.BotID, &node.SessionID, &node.NodeType, &node.Title, &node.Summary, &bodyRaw,
 			&node.Salience, &node.AffectWeight, &node.Confidence, &node.Stability, &node.Status, &node.OccurredAt,
-			&node.ObservedAt, &node.ValidFrom, &validTo, &node.LastAccessedAt, &node.SourceTurnID, &node.CreatedAt, &node.UpdatedAt,
+			&node.ObservedAt, &node.ValidFrom, &validTo, &node.LastAccessedAt, &node.SourceTurnID,
+			&node.SourceKind, &node.SemanticCategory, &node.StabilityLabel, &node.MergeKey, &node.EvidenceCount, &entitiesRaw,
+			&node.CreatedAt, &node.UpdatedAt,
 		); scanErr != nil {
 			log.Printf("scan memory node failed: %v", scanErr)
 			continue
 		}
-		node.BodyJSON = strings.TrimSpace(string(bodyRaw))
-		if validTo.Valid {
-			value := validTo.Time.UTC()
-			node.ValidTo = &value
-		}
+		hydrateTemporalMemoryNodeRow(&node, bodyRaw, entitiesRaw, validTo)
 		out = append(out, node)
 	}
 	if len(out) == 0 {
 		return p.Store.ListMemoryNodes(userID, botID, filter)
 	}
 	return out
+}
+
+func hydrateTemporalMemoryNodeRow(node *TemporalMemoryNode, bodyRaw, entitiesRaw []byte, validTo sql.NullTime) {
+	node.BodyJSON = strings.TrimSpace(string(bodyRaw))
+	_ = json.Unmarshal(entitiesRaw, &node.Entities)
+	if validTo.Valid {
+		value := validTo.Time.UTC()
+		node.ValidTo = &value
+	}
 }
 
 func (p *PostgresStore) CreateMemoryEdge(edge TemporalMemoryEdge) (TemporalMemoryEdge, error) {

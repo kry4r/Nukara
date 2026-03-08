@@ -100,6 +100,98 @@ func TestService_Recall_ReturnsCardsAndSavesTrace(t *testing.T) {
 	}
 }
 
+func TestService_IngestTurn_MergesHighlySimilarFacts(t *testing.T) {
+	now := time.Date(2026, 3, 8, 12, 0, 0, 0, time.UTC)
+	st := store.NewStore()
+	svc := NewService(ServiceDeps{Store: st})
+
+	_, err := svc.IngestTurn(context.Background(), IngestTurnInput{
+		UserID:         "u1",
+		BotID:          "b1",
+		ConversationID: "conv-1",
+		TurnID:         "turn-1",
+		Now:            now,
+		Items: []store.MemoryItem{{
+			ID:               "m1",
+			Kind:             "self_fact",
+			Content:          "我养了一只猫叫小蜜",
+			Status:           "active",
+			SemanticCategory: "life_context",
+			Stability:        "stable",
+			OccurredAt:       now.Add(-2 * time.Hour),
+		}},
+	})
+	if err != nil {
+		t.Fatalf("first IngestTurn failed: %v", err)
+	}
+
+	_, err = svc.IngestTurn(context.Background(), IngestTurnInput{
+		UserID:         "u1",
+		BotID:          "b1",
+		ConversationID: "conv-1",
+		TurnID:         "turn-2",
+		Now:            now.Add(time.Minute),
+		Items: []store.MemoryItem{{
+			ID:               "m2",
+			Kind:             "self_fact",
+			Content:          "我养了只猫，名字叫小蜜",
+			Status:           "active",
+			SemanticCategory: "life_context",
+			Stability:        "stable",
+			OccurredAt:       now.Add(-time.Hour),
+		}},
+	})
+	if err != nil {
+		t.Fatalf("second IngestTurn failed: %v", err)
+	}
+
+	stored := st.ListMemoryNodes("u1", "b1", store.TemporalMemoryNodeFilter{NodeTypes: []string{"episode"}, Limit: 10})
+	if len(stored) != 1 {
+		t.Fatalf("expected merged episode node, got %d", len(stored))
+	}
+	if stored[0].EvidenceCount != 2 {
+		t.Fatalf("evidence_count = %d, want 2", stored[0].EvidenceCount)
+	}
+}
+
+func TestService_IngestTurn_MaterializesSummaryFactNodes(t *testing.T) {
+	now := time.Date(2026, 3, 8, 12, 0, 0, 0, time.UTC)
+	st := store.NewStore()
+	svc := NewService(ServiceDeps{Store: st})
+
+	result, err := svc.IngestTurn(context.Background(), IngestTurnInput{
+		UserID:         "u1",
+		BotID:          "b1",
+		ConversationID: "conv-1",
+		TurnID:         "turn-1",
+		Now:            now,
+		CompactJSON:    `{"summary":"最近一直在聊散步和摄影课","facts":["散步让状态稳定","摄影课还没报名"]}`,
+	})
+	if err != nil {
+		t.Fatalf("IngestTurn failed: %v", err)
+	}
+	if result.SessionSummary == nil {
+		t.Fatal("expected session summary node")
+	}
+
+	stored := st.ListMemoryNodes("u1", "b1", store.TemporalMemoryNodeFilter{Limit: 20})
+	if countNodeType(stored, "session_summary") != 1 {
+		t.Fatalf("expected one session_summary node, got %d", countNodeType(stored, "session_summary"))
+	}
+	if countNodeType(stored, "episode") != 2 {
+		t.Fatalf("expected two materialized fact nodes, got %d", countNodeType(stored, "episode"))
+	}
+	edges := st.ListMemoryEdges([]string{result.SessionSummary.ID}, store.TemporalMemoryEdgeFilter{EdgeTypes: []string{"summarizes"}, Limit: 10})
+	if len(edges) != 2 {
+		t.Fatalf("expected two summarizes edges, got %d", len(edges))
+	}
+	for _, edge := range edges {
+		if edge.SourceID != result.SessionSummary.ID {
+			t.Fatalf("unexpected edge source: %+v", edge)
+		}
+	}
+}
+
 func TestService_Consolidate_PromotesHabitAndPersistsIt(t *testing.T) {
 	now := time.Date(2026, 3, 8, 12, 0, 0, 0, time.UTC)
 	st := store.NewStore()

@@ -153,3 +153,78 @@ func TestPersonaChangeEventsKeepLatestTwenty(t *testing.T) {
 		t.Fatalf("oldest retained value = %q", all[len(all)-1].ProposedValue)
 	}
 }
+
+func TestMemoryItemPersistsEntitiesAndRelations(t *testing.T) {
+	s := NewStore()
+	now := time.Date(2026, 3, 8, 12, 30, 0, 0, time.UTC)
+
+	item, err := s.UpsertMemoryItem(MemoryItem{
+		UserID:           "user-1",
+		BotID:            "bot-1",
+		Kind:             "self_fact",
+		Owner:            "bot",
+		Content:          "我养了一只猫叫小蜜",
+		Importance:       88,
+		OccurredAt:       now,
+		Status:           "active",
+		SemanticCategory: "life_context",
+		Stability:        "stable",
+		Entities: []Entity{{
+			ID:   "pet-xiaomi",
+			Type: "pet",
+			Name: "小蜜",
+			Role: "bot",
+		}},
+		Relations: []Relation{{
+			SourceEntityID: "bot-self",
+			TargetEntityID: "pet-xiaomi",
+			RelationType:   "owns",
+			RoleHint:       "first_person",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("UpsertMemoryItem failed: %v", err)
+	}
+	if item.SemanticCategory != "life_context" || item.Stability != "stable" {
+		t.Fatalf("unexpected memory item metadata: %+v", item)
+	}
+	if len(item.Entities) != 1 || item.Entities[0].Name != "小蜜" {
+		t.Fatalf("entities = %+v", item.Entities)
+	}
+	if len(item.Relations) != 1 || item.Relations[0].RelationType != "owns" {
+		t.Fatalf("relations = %+v", item.Relations)
+	}
+
+	got, ok := s.GetMemoryItem(item.ID)
+	if !ok {
+		t.Fatal("expected memory item to exist")
+	}
+	if got.SemanticCategory != "life_context" || got.Stability != "stable" {
+		t.Fatalf("stored metadata = %+v", got)
+	}
+	if len(got.Entities) != 1 || got.Entities[0].ID != "pet-xiaomi" {
+		t.Fatalf("stored entities = %+v", got.Entities)
+	}
+	if len(got.Relations) != 1 || got.Relations[0].TargetEntityID != "pet-xiaomi" {
+		t.Fatalf("stored relations = %+v", got.Relations)
+	}
+}
+
+func TestPersonaChangeEventDefaultsToAcceptedAuditStatus(t *testing.T) {
+	s := NewStore()
+
+	event, err := s.CreatePersonaChangeEvent(PersonaChangeEvent{
+		UserID:        "user-1",
+		BotID:         "bot-1",
+		Field:         "identity",
+		ChangeType:    "append",
+		ProposedValue: "偏研究型的金融从业背景",
+		Risk:          "low",
+	})
+	if err != nil {
+		t.Fatalf("CreatePersonaChangeEvent failed: %v", err)
+	}
+	if event.Status != "accepted" {
+		t.Fatalf("status = %q, want accepted", event.Status)
+	}
+}

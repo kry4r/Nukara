@@ -141,9 +141,8 @@ func TestBotProfileEndpoints(t *testing.T) {
 		if firstRecentChange == nil || strings.TrimSpace(firstRecentChange["summary_text"].(string)) == "" {
 			t.Fatalf("expected summary_text on recent change, got=%v", recentChanges[0])
 		}
-		pendingChanges, _ := got["pending_persona_changes"].([]any)
-		if len(pendingChanges) == 0 {
-			t.Fatalf("expected pending_persona_changes, got=%v", got["pending_persona_changes"])
+		if _, ok := got["pending_persona_changes"]; ok {
+			t.Fatalf("expected pending_persona_changes omitted, got=%v", got["pending_persona_changes"])
 		}
 	})
 

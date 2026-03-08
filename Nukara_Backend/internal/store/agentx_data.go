@@ -25,19 +25,37 @@ type ConversationCompact struct {
 	UpdatedAt      time.Time
 }
 
+type Entity struct {
+	ID   string
+	Type string
+	Name string
+	Role string
+}
+
+type Relation struct {
+	SourceEntityID string
+	TargetEntityID string
+	RelationType   string
+	RoleHint       string
+}
+
 type MemoryItem struct {
-	ID         string
-	UserID     string
-	BotID      string
-	Kind       string
-	Owner      string
-	Content    string
-	Importance int
-	OccurredAt time.Time
-	Status     string
-	Topics     []string
-	CreatedAt  time.Time
-	UpdatedAt  time.Time
+	ID               string
+	UserID           string
+	BotID            string
+	Kind             string
+	Owner            string
+	Content          string
+	Importance       int
+	OccurredAt       time.Time
+	Status           string
+	Topics           []string
+	SemanticCategory string
+	Stability        string
+	Entities         []Entity
+	Relations        []Relation
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
 }
 
 type BotRuntimeState struct {
@@ -197,17 +215,27 @@ func (s *Store) UpsertMemoryItem(item MemoryItem) (MemoryItem, error) {
 	if strings.TrimSpace(item.Status) == "" {
 		item.Status = "active"
 	}
+	item.Kind = strings.TrimSpace(item.Kind)
+	item.Owner = strings.TrimSpace(item.Owner)
+	item.Content = strings.TrimSpace(item.Content)
+	item.SemanticCategory = strings.TrimSpace(item.SemanticCategory)
+	item.Stability = strings.TrimSpace(item.Stability)
 	item.UpdatedAt = now
 	item.Topics = append([]string(nil), item.Topics...)
+	item.Entities = append([]Entity(nil), item.Entities...)
+	item.Relations = append([]Relation(nil), item.Relations...)
 	s.memoryItemsByID[item.ID] = item
-	return item, nil
+	return cloneMemoryItem(item), nil
 }
 
 func (s *Store) GetMemoryItem(memoryID string) (MemoryItem, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	item, ok := s.memoryItemsByID[strings.TrimSpace(memoryID)]
-	return item, ok
+	if !ok {
+		return MemoryItem{}, false
+	}
+	return cloneMemoryItem(item), true
 }
 
 func (s *Store) ListMemoryItems(userID, botID string, limit int) []MemoryItem {
@@ -225,7 +253,7 @@ func (s *Store) ListMemoryItems(userID, botID string, limit int) []MemoryItem {
 		if strings.TrimSpace(item.Status) != "" && !strings.EqualFold(strings.TrimSpace(item.Status), "active") {
 			continue
 		}
-		items = append(items, item)
+		items = append(items, cloneMemoryItem(item))
 	}
 	sort.Slice(items, func(i, j int) bool {
 		if items[i].Importance != items[j].Importance {
@@ -237,6 +265,14 @@ func (s *Store) ListMemoryItems(userID, botID string, limit int) []MemoryItem {
 		items = items[:limit]
 	}
 	return append([]MemoryItem(nil), items...)
+}
+
+func cloneMemoryItem(item MemoryItem) MemoryItem {
+	clone := item
+	clone.Topics = append([]string(nil), item.Topics...)
+	clone.Entities = append([]Entity(nil), item.Entities...)
+	clone.Relations = append([]Relation(nil), item.Relations...)
+	return clone
 }
 
 func (s *Store) UpsertBotRuntimeState(state BotRuntimeState) (BotRuntimeState, error) {
@@ -306,7 +342,7 @@ func (s *Store) CreatePersonaChangeEvent(event PersonaChangeEvent) (PersonaChang
 		event.UpdatedAt = event.UpdatedAt.UTC()
 	}
 	if event.Status == "" {
-		event.Status = "pending"
+		event.Status = "accepted"
 	}
 	s.personaChangeEventsByID[event.ID] = event
 	s.prunePersonaChangeEventsLocked(event.UserID, event.BotID, 20)

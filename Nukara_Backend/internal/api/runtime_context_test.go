@@ -3,6 +3,7 @@ package api
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"nukara/backend/internal/agent"
 	"nukara/backend/internal/apns"
@@ -110,5 +111,44 @@ func TestNewTurnRequestSeparatesProviderConversationIDFromLocalConversationID(t 
 	}
 	if !strings.Contains(request.SystemPrompt, "这是一段本地会话摘要") {
 		t.Fatalf("expected compact from local conversation id, got=%s", request.SystemPrompt)
+	}
+}
+
+func TestRuntimeContextIncludesRelationshipGuidanceFromTemporalMemoryGraph(t *testing.T) {
+	st := store.NewStore()
+	user, err := st.CreateUser("13900139005", "runtime-relationship")
+	if err != nil {
+		t.Fatalf("create user failed: %v", err)
+	}
+	bot := st.CreateBot(user.ID, store.Bot{Name: "苏子衿", Identity: "温柔的人", LifeContext: "和家人关系亲近"})
+	conv, found := st.FindConversationByBot(user.ID, bot.ID)
+	if !found {
+		t.Fatalf("conversation not found")
+	}
+	now := time.Now().UTC()
+	if _, err := st.CreateMemoryNode(store.TemporalMemoryNode{
+		UserID:           user.ID,
+		BotID:            bot.ID,
+		SessionID:        conv.ID,
+		NodeType:         "episode",
+		Title:            "家庭和宠物",
+		Summary:          "最近住在爸妈这边，还养了一只猫叫小蜜",
+		Status:           "active",
+		OccurredAt:       now.Add(-time.Hour),
+		ObservedAt:       now,
+		ValidFrom:        now.Add(-time.Hour),
+		SemanticCategory: "life_context",
+		StabilityLabel:   "temporary",
+		Entities: []store.Entity{{ID: "parents", Type: "person", Name: "爸妈", Role: "bot"}, {ID: "pet-xiaomi", Type: "pet", Name: "小蜜", Role: "bot"}},
+	}); err != nil {
+		t.Fatalf("create relationship node failed: %v", err)
+	}
+
+	server := NewServer(st, nil, apns.NewClient("com.nukara.app"), "test-secret", "")
+	prompt, _ := server.buildRuntimeContext(user.ID, bot.ID, conv.ID, "叔叔阿姨最近身体还好吗？小蜜会不会闹你", nil, agent.BuildSystemContext(bot, nil))
+	for _, want := range []string{"【关系上下文】", "叔叔阿姨", "你的父母", "小蜜", "你养的猫"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing %q: %s", want, prompt)
+		}
 	}
 }

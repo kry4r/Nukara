@@ -56,6 +56,7 @@ func (s *Server) buildRuntimeContext(userID, botID, conversationID, prompt strin
 	if runtimeState, ok := s.store.GetBotRuntimeState(userID, botID); ok {
 		runtimeStateText = strings.TrimSpace(runtimeState.ActivityText)
 	}
+	relationshipText := s.buildRelationshipContext(userID, botID, prompt)
 	activeItems := s.store.ListMemoryItems(userID, botID, 24)
 	promiseText := formatMemoryContext(selectRelevantPromises(activeItems, prompt, 3))
 	memoryCardsText := s.selectRuntimeMemoryCards(userID, botID, conversationID, prompt, recentTexts)
@@ -63,7 +64,7 @@ func (s *Server) buildRuntimeContext(userID, botID, conversationID, prompt strin
 	if strings.TrimSpace(memoryCardsText) == "" {
 		memoryText = formatMemoryContext(s.selectRuntimeMemories(userID, botID, prompt))
 	}
-	return formatSystemPrompt(systemContext, compactText, runtimeStateText, promiseText, memoryCardsText, memoryText), history
+	return formatSystemPrompt(systemContext, compactText, runtimeStateText, relationshipText, promiseText, memoryCardsText, memoryText), history
 }
 
 func (s *Server) selectRuntimeMemories(userID, botID, prompt string) []store.MemoryItem {
@@ -107,8 +108,8 @@ func (s *Server) buildRecentHistory(userID, conversationID, prompt string, userM
 	return out
 }
 
-func formatSystemPrompt(systemContext map[string]any, compactText, runtimeStateText, promiseText, memoryCardsText, memoryText string) string {
-	sections := make([]string, 0, 8)
+func formatSystemPrompt(systemContext map[string]any, compactText, runtimeStateText, relationshipText, promiseText, memoryCardsText, memoryText string) string {
+	sections := make([]string, 0, 9)
 	appendLine := func(title, value string) {
 		value = strings.TrimSpace(value)
 		if value == "" {
@@ -121,6 +122,7 @@ func formatSystemPrompt(systemContext map[string]any, compactText, runtimeStateT
 	appendLine("【说话风格】", stringifySystemContextValue(systemContext["speaking_style"]))
 	appendLine("【角色背景】", stringifySystemContextValue(systemContext["background"]))
 	appendLine("【角色特质】", stringifySystemContextValue(systemContext["traits"]))
+	appendLine("【关系上下文】", relationshipText)
 	appendLine("【当前状态】", runtimeStateText)
 	appendLine("【用户要求】", stringifySystemContextValue(systemContext["user_directives"]))
 	appendLine("【用户状态】", stringifySystemContextValue(systemContext["user_status"]))
@@ -184,6 +186,46 @@ func formatMemoryContext(items []store.MemoryItem) string {
 		}
 		lines = append(lines, line)
 	}
+	return strings.Join(lines, "\n")
+}
+
+func (s *Server) buildRelationshipContext(userID, botID, prompt string) string {
+	nodes := s.store.ListMemoryNodes(userID, botID, store.TemporalMemoryNodeFilter{Status: "active", Limit: 24})
+	if len(nodes) == 0 {
+		return ""
+	}
+	prompt = strings.TrimSpace(prompt)
+	hasParents := false
+	hasPetXiaomi := false
+	for _, node := range nodes {
+		text := strings.TrimSpace(node.Title + " " + node.Summary)
+		if strings.Contains(text, "爸妈") || strings.Contains(text, "父母") {
+			hasParents = true
+		}
+		if strings.Contains(text, "小蜜") && strings.Contains(text, "猫") {
+			hasPetXiaomi = true
+		}
+		for _, entity := range node.Entities {
+			name := strings.TrimSpace(entity.Name)
+			switch {
+			case (name == "爸妈" || name == "父母") && strings.TrimSpace(entity.Type) == "person":
+				hasParents = true
+			case name == "小蜜" && strings.TrimSpace(entity.Type) == "pet":
+				hasPetXiaomi = true
+			}
+		}
+	}
+	lines := make([]string, 0, 3)
+	if strings.Contains(prompt, "叔叔阿姨") && hasParents {
+		lines = append(lines, "- 用户提到的“叔叔阿姨”是指你的父母")
+	}
+	if strings.Contains(prompt, "小蜜") && hasPetXiaomi {
+		lines = append(lines, "- 用户提到的“小蜜”是指你养的猫")
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+	lines = append(lines, "- 回复时请使用第一人称视角：“我的父母”“我养的猫”")
 	return strings.Join(lines, "\n")
 }
 

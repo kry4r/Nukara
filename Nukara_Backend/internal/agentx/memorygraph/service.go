@@ -37,16 +37,19 @@ func (s *Service) IngestTurn(_ context.Context, in IngestTurnInput) (IngestTurnR
 		return result, nil
 	}
 	now := effectiveNow(in.Now)
-	nodes := MaterializeMemoryNodes(in, now)
-	persistedNodes := make([]store.TemporalMemoryNode, 0, len(nodes)+1)
-	for _, node := range nodes {
-		created, err := s.store.CreateMemoryNode(node)
-		if err != nil {
-			return result, err
-		}
-		persistedNodes = append(persistedNodes, created)
+	itemNodes := MaterializeMemoryNodes(in, now)
+	summaryFactNodes := BuildSessionSummaryFactNodes(in, now)
+	persistedItemNodes, err := s.persistNodesWithMerge(itemNodes)
+	if err != nil {
+		return result, err
 	}
-	edges := BuildTurnEdges(persistedNodes)
+	persistedSummaryFactNodes, err := s.persistNodesWithMerge(summaryFactNodes)
+	if err != nil {
+		return result, err
+	}
+	allNodes := append([]store.TemporalMemoryNode(nil), persistedItemNodes...)
+	allNodes = append(allNodes, persistedSummaryFactNodes...)
+	edges := BuildTurnEdges(allNodes)
 	persistedEdges := make([]store.TemporalMemoryEdge, 0, len(edges))
 	for _, edge := range edges {
 		created, err := s.store.CreateMemoryEdge(edge)
@@ -55,7 +58,7 @@ func (s *Service) IngestTurn(_ context.Context, in IngestTurnInput) (IngestTurnR
 		}
 		persistedEdges = append(persistedEdges, created)
 	}
-	result.Nodes = persistedNodes
+	result.Nodes = append(result.Nodes, allNodes...)
 	result.Edges = persistedEdges
 	if summaryNode := BuildSessionSummaryNode(in, now); summaryNode != nil {
 		storedNode, err := s.upsertSessionSummary(*summaryNode)
@@ -64,7 +67,7 @@ func (s *Service) IngestTurn(_ context.Context, in IngestTurnInput) (IngestTurnR
 		}
 		result.SessionSummary = &storedNode
 		result.Nodes = append(result.Nodes, storedNode)
-		summaryEdges := BuildSessionSummaryEdges(storedNode, persistedNodes)
+		summaryEdges := BuildSessionSummaryEdges(storedNode, persistedSummaryFactNodes)
 		for _, edge := range summaryEdges {
 			created, err := s.store.CreateMemoryEdge(edge)
 			if err != nil {
@@ -170,6 +173,30 @@ func (s *Service) upsertSessionSummary(node store.TemporalMemoryNode) (store.Tem
 			node.ValidFrom = existing.ValidFrom
 		}
 		return s.store.UpdateMemoryNode(node)
+	}
+	return s.store.CreateMemoryNode(node)
+}
+
+func (s *Service) persistNodesWithMerge(nodes []store.TemporalMemoryNode) ([]store.TemporalMemoryNode, error) {
+	if len(nodes) == 0 {
+		return nil, nil
+	}
+	persisted := make([]store.TemporalMemoryNode, 0, len(nodes))
+	for _, node := range nodes {
+		stored, err := s.upsertMemoryFact(node)
+		if err != nil {
+			return nil, err
+		}
+		persisted = append(persisted, stored)
+	}
+	return persisted, nil
+}
+
+func (s *Service) upsertMemoryFact(node store.TemporalMemoryNode) (store.TemporalMemoryNode, error) {
+	existing := s.store.ListMemoryNodes(node.UserID, node.BotID, store.TemporalMemoryNodeFilter{NodeTypes: []string{node.NodeType}, Status: "active", Limit: 128})
+	if match, matchedNode, ok := findBestSimilarityNode(node, existing); ok && match.ShouldMerge {
+		merged := mergeNode(matchedNode, node)
+		return s.store.UpdateMemoryNode(merged)
 	}
 	return s.store.CreateMemoryNode(node)
 }

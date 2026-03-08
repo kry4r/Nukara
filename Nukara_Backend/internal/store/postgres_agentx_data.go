@@ -185,13 +185,29 @@ func (p *PostgresStore) UpsertMemoryItem(item MemoryItem) (MemoryItem, error) {
 	ctx, cancel := p.withTimeout()
 	defer cancel()
 	topics, _ := json.Marshal(saved.Topics)
+	entities, _ := json.Marshal(saved.Entities)
+	relations, _ := json.Marshal(saved.Relations)
 	_, dbErr := p.db.ExecContext(ctx, `
-		INSERT INTO memory_items(id, user_id, bot_id, kind, owner, content, importance, occurred_at, status, topics, created_at, updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,$12)
+		INSERT INTO memory_items(
+			id, user_id, bot_id, kind, owner, content, importance, occurred_at, status, topics,
+			semantic_category, stability, entities, relations, created_at, updated_at
+		)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,$12,$13::jsonb,$14::jsonb,$15,$16)
 		ON CONFLICT (id)
-		DO UPDATE SET kind=EXCLUDED.kind, owner=EXCLUDED.owner, content=EXCLUDED.content, importance=EXCLUDED.importance,
-		  occurred_at=EXCLUDED.occurred_at, status=EXCLUDED.status, topics=EXCLUDED.topics, updated_at=EXCLUDED.updated_at
-	`, saved.ID, saved.UserID, saved.BotID, saved.Kind, saved.Owner, saved.Content, saved.Importance, saved.OccurredAt, saved.Status, string(topics), saved.CreatedAt, saved.UpdatedAt)
+		DO UPDATE SET
+			kind=EXCLUDED.kind,
+			owner=EXCLUDED.owner,
+			content=EXCLUDED.content,
+			importance=EXCLUDED.importance,
+			occurred_at=EXCLUDED.occurred_at,
+			status=EXCLUDED.status,
+			topics=EXCLUDED.topics,
+			semantic_category=EXCLUDED.semantic_category,
+			stability=EXCLUDED.stability,
+			entities=EXCLUDED.entities,
+			relations=EXCLUDED.relations,
+			updated_at=EXCLUDED.updated_at
+	`, saved.ID, saved.UserID, saved.BotID, saved.Kind, saved.Owner, saved.Content, saved.Importance, saved.OccurredAt, saved.Status, string(topics), saved.SemanticCategory, saved.Stability, string(entities), string(relations), saved.CreatedAt, saved.UpdatedAt)
 	if dbErr != nil {
 		log.Printf("upsert memory item failed: %v", dbErr)
 	}
@@ -203,17 +219,19 @@ func (p *PostgresStore) GetMemoryItem(memoryID string) (MemoryItem, bool) {
 	defer cancel()
 
 	var item MemoryItem
-	var topicsRaw []byte
+	var topicsRaw, entitiesRaw, relationsRaw []byte
 	err := p.db.QueryRowContext(ctx, `
-		SELECT id, user_id, bot_id, kind, owner, content, importance, occurred_at, status, topics, created_at, updated_at
+		SELECT id, user_id, bot_id, kind, owner, content, importance, occurred_at, status, topics,
+			semantic_category, stability, entities, relations, created_at, updated_at
 		FROM memory_items
 		WHERE id=$1
 	`, strings.TrimSpace(memoryID)).Scan(
 		&item.ID, &item.UserID, &item.BotID, &item.Kind, &item.Owner, &item.Content, &item.Importance,
-		&item.OccurredAt, &item.Status, &topicsRaw, &item.CreatedAt, &item.UpdatedAt,
+		&item.OccurredAt, &item.Status, &topicsRaw, &item.SemanticCategory, &item.Stability, &entitiesRaw, &relationsRaw,
+		&item.CreatedAt, &item.UpdatedAt,
 	)
 	if err == nil {
-		_ = json.Unmarshal(topicsRaw, &item.Topics)
+		hydrateMemoryItemJSON(&item, topicsRaw, entitiesRaw, relationsRaw)
 		return item, true
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
@@ -230,7 +248,8 @@ func (p *PostgresStore) ListMemoryItems(userID, botID string, limit int) []Memor
 		limit = 20
 	}
 	rows, err := p.db.QueryContext(ctx, `
-		SELECT id, user_id, bot_id, kind, owner, content, importance, occurred_at, status, topics, created_at, updated_at
+		SELECT id, user_id, bot_id, kind, owner, content, importance, occurred_at, status, topics,
+			semantic_category, stability, entities, relations, created_at, updated_at
 		FROM memory_items
 		WHERE user_id=$1 AND bot_id=$2 AND status='active'
 		ORDER BY importance DESC, occurred_at DESC
@@ -245,21 +264,28 @@ func (p *PostgresStore) ListMemoryItems(userID, botID string, limit int) []Memor
 	items := make([]MemoryItem, 0, limit)
 	for rows.Next() {
 		var item MemoryItem
-		var topicsRaw []byte
+		var topicsRaw, entitiesRaw, relationsRaw []byte
 		if scanErr := rows.Scan(
 			&item.ID, &item.UserID, &item.BotID, &item.Kind, &item.Owner, &item.Content, &item.Importance,
-			&item.OccurredAt, &item.Status, &topicsRaw, &item.CreatedAt, &item.UpdatedAt,
+			&item.OccurredAt, &item.Status, &topicsRaw, &item.SemanticCategory, &item.Stability, &entitiesRaw, &relationsRaw,
+			&item.CreatedAt, &item.UpdatedAt,
 		); scanErr != nil {
 			log.Printf("scan memory item failed: %v", scanErr)
 			continue
 		}
-		_ = json.Unmarshal(topicsRaw, &item.Topics)
+		hydrateMemoryItemJSON(&item, topicsRaw, entitiesRaw, relationsRaw)
 		items = append(items, item)
 	}
 	if len(items) == 0 {
 		return p.Store.ListMemoryItems(userID, botID, limit)
 	}
 	return items
+}
+
+func hydrateMemoryItemJSON(item *MemoryItem, topicsRaw, entitiesRaw, relationsRaw []byte) {
+	_ = json.Unmarshal(topicsRaw, &item.Topics)
+	_ = json.Unmarshal(entitiesRaw, &item.Entities)
+	_ = json.Unmarshal(relationsRaw, &item.Relations)
 }
 
 func (p *PostgresStore) UpsertBotRuntimeState(state BotRuntimeState) (BotRuntimeState, error) {

@@ -325,7 +325,8 @@ SET identity = COALESCE(NULLIF(identity, ''), NULLIF(summary, ''), relationship)
     life_context = COALESCE(NULLIF(life_context, ''), NULLIF(background, ''), role),
     taboos_and_preferences = COALESCE(
         NULLIF(taboos_and_preferences, ''),
-        NULLIF(array_to_string(ARRAY(SELECT jsonb_array_elements_text(self_cognition)), '；'), '')
+        NULLIF(array_to_string(ARRAY(SELECT jsonb_array_elements_text(self_cognition)), '；'), ''),
+        ''
     )
 WHERE identity = ''
    OR personality = '[]'::jsonb
@@ -430,9 +431,17 @@ CREATE TABLE IF NOT EXISTS memory_items (
     occurred_at TIMESTAMP NOT NULL DEFAULT NOW(),
     status VARCHAR(20) NOT NULL DEFAULT 'active',
     topics JSONB NOT NULL DEFAULT '[]'::jsonb,
+    semantic_category VARCHAR(40) NOT NULL DEFAULT '',
+    stability VARCHAR(20) NOT NULL DEFAULT '',
+    entities JSONB NOT NULL DEFAULT '[]'::jsonb,
+    relations JSONB NOT NULL DEFAULT '[]'::jsonb,
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
+ALTER TABLE IF EXISTS memory_items ADD COLUMN IF NOT EXISTS semantic_category VARCHAR(40) NOT NULL DEFAULT '';
+ALTER TABLE IF EXISTS memory_items ADD COLUMN IF NOT EXISTS stability VARCHAR(20) NOT NULL DEFAULT '';
+ALTER TABLE IF EXISTS memory_items ADD COLUMN IF NOT EXISTS entities JSONB NOT NULL DEFAULT '[]'::jsonb;
+ALTER TABLE IF EXISTS memory_items ADD COLUMN IF NOT EXISTS relations JSONB NOT NULL DEFAULT '[]'::jsonb;
 CREATE INDEX IF NOT EXISTS idx_memory_items_user_bot ON memory_items(user_id, bot_id, status, occurred_at DESC);
 
 CREATE TABLE IF NOT EXISTS bot_runtime_states (
@@ -454,7 +463,7 @@ CREATE TABLE IF NOT EXISTS persona_change_events (
     proposed_value TEXT NOT NULL,
     source_turn_id TEXT,
     risk VARCHAR(20) NOT NULL DEFAULT 'low',
-    status VARCHAR(20) NOT NULL DEFAULT 'pending',
+    status VARCHAR(20) NOT NULL DEFAULT 'accepted',
     reviewer_note TEXT,
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP NOT NULL DEFAULT NOW()
@@ -462,6 +471,7 @@ CREATE TABLE IF NOT EXISTS persona_change_events (
 DO $$ BEGIN
     BEGIN
         ALTER TABLE IF EXISTS persona_change_events ALTER COLUMN source_turn_id TYPE TEXT USING source_turn_id::text;
+        ALTER TABLE IF EXISTS persona_change_events ALTER COLUMN status SET DEFAULT 'accepted';
     EXCEPTION WHEN OTHERS THEN
         NULL;
     END;

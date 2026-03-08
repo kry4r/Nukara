@@ -87,17 +87,16 @@ func (s *Server) handleBotProfile(w http.ResponseWriter, r *http.Request, userID
 		conversationID = conv.ID
 	}
 
-	runtimeState, recentImpressions, keyMemories, recentChanges, pendingChanges := s.buildRuntimePortrait(userID, botID)
+	runtimeState, recentImpressions, keyMemories, recentChanges := s.buildRuntimePortrait(userID, botID)
 
 	respondJSON(w, http.StatusOK, map[string]any{
-		"bot":                     bot,
-		"bot_state":               state,
-		"conversation_id":         conversationID,
-		"runtime_state":           runtimeState,
-		"recent_impressions":      recentImpressions,
-		"key_memories":            keyMemories,
-		"recent_changes":          recentChanges,
-		"pending_persona_changes": pendingChanges,
+		"bot":                bot,
+		"bot_state":          state,
+		"conversation_id":    conversationID,
+		"runtime_state":      runtimeState,
+		"recent_impressions": recentImpressions,
+		"key_memories":       keyMemories,
+		"recent_changes":     recentChanges,
 	})
 }
 
@@ -369,7 +368,7 @@ func messagePlainText(msg store.Message) string {
 	}
 }
 
-func (s *Server) buildRuntimePortrait(userID, botID string) (*runtimeStateView, []profileMemoryView, []profileMemoryView, []personaChangeView, []personaChangeView) {
+func (s *Server) buildRuntimePortrait(userID, botID string) (*runtimeStateView, []profileMemoryView, []profileMemoryView, []personaChangeView) {
 	var runtimeState *runtimeStateView
 	if state, ok := s.store.GetBotRuntimeState(userID, botID); ok {
 		runtimeState = &runtimeStateView{
@@ -390,9 +389,8 @@ func (s *Server) buildRuntimePortrait(userID, botID string) (*runtimeStateView, 
 			return false
 		}
 	}))
-	recentChanges := buildPersonaChangeViews(s.store.ListPersonaChangeEvents(userID, botID, "accepted", 20))
-	pendingChanges := buildPersonaChangeViews(s.store.ListPersonaChangeEvents(userID, botID, "pending", 20))
-	return runtimeState, recentImpressions, keyMemories, recentChanges, pendingChanges
+	recentChanges := buildPersonaChangeViews(s.store.ListPersonaChangeEvents(userID, botID, "", 20))
+	return runtimeState, recentImpressions, keyMemories, recentChanges
 }
 
 func (s *Server) cachedBotImpression(userID, botID string) string {

@@ -108,3 +108,12 @@ func TestBuildMemoryCandidateContextUsesTemporalGraphRecall(t *testing.T) {
 		t.Fatalf("expected node summary in candidate context, got=%s", contextText)
 	}
 }
+
+func TestBuildMemoryExtractPromptRequestsSemanticFieldsAndExamples(t *testing.T) {
+	prompt := buildMemoryExtractPrompt("我不是纯金融，更偏研究型，我养了一只猫叫小蜜", "我记住了", "（暂无）")
+	for _, want := range []string{"semantic_category", "stability", "entities", "relations", "专业", "宠物", "家庭关系"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing %q: %s", want, prompt)
+		}
+	}
+}

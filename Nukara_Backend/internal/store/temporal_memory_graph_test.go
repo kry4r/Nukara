@@ -156,3 +156,60 @@ func TestTemporalMemoryGraphStore_ListSessionSummaryNodes(t *testing.T) {
 		t.Fatalf("session_id = %q", nodes[0].SessionID)
 	}
 }
+
+func TestTemporalMemoryGraphStore_PreservesNodeMetadata(t *testing.T) {
+	s := NewStore()
+	now := time.Now().UTC()
+
+	node, err := s.CreateMemoryNode(TemporalMemoryNode{
+		UserID:           "user-1",
+		BotID:            "bot-1",
+		SessionID:        "conv-1",
+		NodeType:         "episode",
+		Title:            "小蜜",
+		Summary:          "我养了一只猫叫小蜜",
+		Status:           "active",
+		OccurredAt:       now.Add(-time.Hour),
+		SourceTurnID:     "turn-1",
+		SourceKind:       "self_fact",
+		SemanticCategory: "life_context",
+		StabilityLabel:   "stable",
+		MergeKey:         "pet:xiaomi",
+		EvidenceCount:    2,
+		Entities: []Entity{{
+			ID:   "entity-pet-xiaomi",
+			Type: "pet",
+			Name: "小蜜",
+			Role: "bot",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("create node with metadata: %v", err)
+	}
+	if node.SourceKind != "self_fact" || node.SemanticCategory != "life_context" {
+		t.Fatalf("unexpected node metadata: %+v", node)
+	}
+	if node.StabilityLabel != "stable" || node.MergeKey != "pet:xiaomi" {
+		t.Fatalf("unexpected stability metadata: %+v", node)
+	}
+	if node.EvidenceCount != 2 {
+		t.Fatalf("evidence_count = %d, want 2", node.EvidenceCount)
+	}
+	if len(node.Entities) != 1 || node.Entities[0].Name != "小蜜" {
+		t.Fatalf("entities = %+v", node.Entities)
+	}
+
+	got, ok := s.GetMemoryNode(node.ID)
+	if !ok {
+		t.Fatal("expected stored node")
+	}
+	if got.SourceTurnID != "turn-1" || got.SourceKind != "self_fact" {
+		t.Fatalf("stored source metadata = %+v", got)
+	}
+	if got.StabilityLabel != "stable" || got.MergeKey != "pet:xiaomi" {
+		t.Fatalf("stored stability metadata = %+v", got)
+	}
+	if len(got.Entities) != 1 || got.Entities[0].ID != "entity-pet-xiaomi" {
+		t.Fatalf("stored entities = %+v", got.Entities)
+	}
+}

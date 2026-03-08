@@ -9,7 +9,6 @@ const api = useApi()
 
 const loading = ref(false)
 const loadingImpression = ref(false)
-const resolvingChangeId = ref('')
 const error = ref('')
 const profile = ref({
   bot: null,
@@ -19,7 +18,6 @@ const profile = ref({
   recent_impressions: [],
   key_memories: [],
   recent_changes: [],
-  pending_persona_changes: [],
 })
 const impression = ref('')
 
@@ -30,7 +28,6 @@ const runtimeState = computed(() => profile.value.runtime_state || null)
 const recentImpressions = computed(() => Array.isArray(profile.value.recent_impressions) ? profile.value.recent_impressions : [])
 const keyMemories = computed(() => Array.isArray(profile.value.key_memories) ? profile.value.key_memories : [])
 const recentChanges = computed(() => Array.isArray(profile.value.recent_changes) ? profile.value.recent_changes : [])
-const pendingPersonaChanges = computed(() => Array.isArray(profile.value.pending_persona_changes) ? profile.value.pending_persona_changes : [])
 const displayImpression = computed(() => impression.value || recentImpressions.value[0]?.content || '')
 const selfCognitionList = computed(() => {
   const raw = Array.isArray(bot.value.self_cognition) ? bot.value.self_cognition : []
@@ -57,7 +54,6 @@ function applyProfilePayload(data = {}) {
     recent_impressions: Array.isArray(data.recent_impressions) ? data.recent_impressions : [],
     key_memories: Array.isArray(data.key_memories) ? data.key_memories : [],
     recent_changes: Array.isArray(data.recent_changes) ? data.recent_changes : [],
-    pending_persona_changes: Array.isArray(data.pending_persona_changes) ? data.pending_persona_changes : [],
   }
   if (!impression.value && profile.value.recent_impressions.length > 0) {
     impression.value = String(profile.value.recent_impressions[0]?.content || '').trim()
@@ -101,27 +97,6 @@ async function refreshImpression() {
     error.value = e?.message || '印象更新失败'
   } finally {
     loadingImpression.value = false
-  }
-}
-
-async function resolvePersonaChange(changeId, action) {
-  if (!botID.value || !changeId || resolvingChangeId.value) return
-  resolvingChangeId.value = changeId
-  error.value = ''
-  try {
-    const data = await api.post(`/api/v1/bots/${botID.value}/persona-changes/${changeId}/${action}`, {})
-    const updatedChange = data?.change || null
-    if (data?.bot) {
-      profile.value.bot = data.bot
-    }
-    profile.value.pending_persona_changes = pendingPersonaChanges.value.filter((item) => item.id !== changeId)
-    if (action === 'accept' && updatedChange) {
-      profile.value.recent_changes = [updatedChange, ...recentChanges.value].slice(0, 20)
-    }
-  } catch (e) {
-    error.value = e?.message || '处理待确认变更失败'
-  } finally {
-    resolvingChangeId.value = ''
   }
 }
 
@@ -209,7 +184,7 @@ onMounted(async () => {
         </section>
 
         <section class="card">
-          <h3>最近人设更迭</h3>
+          <h3>最近人设变更记录</h3>
           <div v-if="!recentChanges.length" class="muted">暂无最近变化</div>
           <div v-else class="stack-list bounded-stack-list" data-testid="bot-detail-recent-changes">
             <div v-for="item in recentChanges" :key="item.id" class="change-row accepted-row">
@@ -218,24 +193,6 @@ onMounted(async () => {
                 <span class="memory-status">{{ item.status }}</span>
               </div>
               <p class="paragraph">{{ item.summary_text || item.proposed_value }}</p>
-            </div>
-          </div>
-        </section>
-
-        <section class="card">
-          <h3>待确认的人设变更</h3>
-          <div v-if="!pendingPersonaChanges.length" class="muted">暂无待确认变更</div>
-          <div v-else class="stack-list" data-testid="bot-detail-pending-changes">
-            <div v-for="item in pendingPersonaChanges" :key="item.id" class="change-row pending-row">
-              <div class="memory-head">
-                <span class="mini-kind">{{ item.field || 'persona' }}</span>
-                <span class="memory-status">{{ item.status }}</span>
-              </div>
-              <p class="paragraph">{{ item.proposed_value }}</p>
-              <div class="action-row">
-                <button type="button" class="ghost-btn" :disabled="resolvingChangeId === item.id" @click="resolvePersonaChange(item.id, 'accept')">接受</button>
-                <button type="button" class="danger-btn" :disabled="resolvingChangeId === item.id" @click="resolvePersonaChange(item.id, 'reject')">拒绝</button>
-              </div>
             </div>
           </div>
         </section>

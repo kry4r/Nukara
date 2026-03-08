@@ -19,7 +19,8 @@ SET identity = COALESCE(NULLIF(identity, ''), NULLIF(summary, ''), relationship)
     life_context = COALESCE(NULLIF(life_context, ''), NULLIF(background, ''), role),
     taboos_and_preferences = COALESCE(
         NULLIF(taboos_and_preferences, ''),
-        NULLIF(array_to_string(ARRAY(SELECT jsonb_array_elements_text(self_cognition)), '；'), '')
+        NULLIF(array_to_string(ARRAY(SELECT jsonb_array_elements_text(self_cognition)), '；'), ''),
+        ''
     )
 WHERE identity = ''
    OR personality = '[]'::jsonb

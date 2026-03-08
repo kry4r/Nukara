@@ -8,27 +8,33 @@ import (
 )
 
 type TemporalMemoryNode struct {
-	ID             string
-	UserID         string
-	BotID          string
-	SessionID      string
-	NodeType       string
-	Title          string
-	Summary        string
-	BodyJSON       string
-	Salience       float64
-	AffectWeight   float64
-	Confidence     float64
-	Stability      float64
-	Status         string
-	OccurredAt     time.Time
-	ObservedAt     time.Time
-	ValidFrom      time.Time
-	ValidTo        *time.Time
-	LastAccessedAt time.Time
-	SourceTurnID   string
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
+	ID               string
+	UserID           string
+	BotID            string
+	SessionID        string
+	NodeType         string
+	Title            string
+	Summary          string
+	BodyJSON         string
+	Salience         float64
+	AffectWeight     float64
+	Confidence       float64
+	Stability        float64
+	Status           string
+	OccurredAt       time.Time
+	ObservedAt       time.Time
+	ValidFrom        time.Time
+	ValidTo          *time.Time
+	LastAccessedAt   time.Time
+	SourceTurnID     string
+	SourceKind       string
+	SemanticCategory string
+	StabilityLabel   string
+	MergeKey         string
+	EvidenceCount    int
+	Entities         []Entity
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
 }
 
 type TemporalMemoryNodeFilter struct {
@@ -102,6 +108,11 @@ func (s *Store) CreateMemoryNode(node TemporalMemoryNode) (TemporalMemoryNode, e
 	node.Title = strings.TrimSpace(node.Title)
 	node.Summary = strings.TrimSpace(node.Summary)
 	node.Status = strings.TrimSpace(node.Status)
+	node.SourceTurnID = strings.TrimSpace(node.SourceTurnID)
+	node.SourceKind = strings.TrimSpace(node.SourceKind)
+	node.SemanticCategory = strings.TrimSpace(node.SemanticCategory)
+	node.StabilityLabel = strings.TrimSpace(node.StabilityLabel)
+	node.MergeKey = strings.TrimSpace(node.MergeKey)
 	if node.UserID == "" || node.BotID == "" || node.NodeType == "" || node.Summary == "" {
 		return TemporalMemoryNode{}, errors.New("temporal memory node missing required fields")
 	}
@@ -121,6 +132,10 @@ func (s *Store) CreateMemoryNode(node TemporalMemoryNode) (TemporalMemoryNode, e
 	if node.ValidFrom.IsZero() {
 		node.ValidFrom = node.OccurredAt
 	}
+	if node.EvidenceCount <= 0 {
+		node.EvidenceCount = 1
+	}
+	node.Entities = append([]Entity(nil), node.Entities...)
 	node.CreatedAt = now
 	node.UpdatedAt = now
 	return s.UpdateMemoryNode(node)
@@ -135,12 +150,21 @@ func (s *Store) UpdateMemoryNode(node TemporalMemoryNode) (TemporalMemoryNode, e
 	node.Title = strings.TrimSpace(node.Title)
 	node.Summary = strings.TrimSpace(node.Summary)
 	node.Status = strings.TrimSpace(node.Status)
+	node.SourceTurnID = strings.TrimSpace(node.SourceTurnID)
+	node.SourceKind = strings.TrimSpace(node.SourceKind)
+	node.SemanticCategory = strings.TrimSpace(node.SemanticCategory)
+	node.StabilityLabel = strings.TrimSpace(node.StabilityLabel)
+	node.MergeKey = strings.TrimSpace(node.MergeKey)
 	if node.ID == "" || node.UserID == "" || node.BotID == "" || node.NodeType == "" || node.Summary == "" {
 		return TemporalMemoryNode{}, errors.New("temporal memory node missing required fields")
 	}
 	if node.Status == "" {
 		node.Status = "active"
 	}
+	if node.EvidenceCount <= 0 {
+		node.EvidenceCount = 1
+	}
+	node.Entities = append([]Entity(nil), node.Entities...)
 	now := time.Now().UTC()
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -421,6 +445,7 @@ func cloneTemporalMemoryNode(node TemporalMemoryNode) TemporalMemoryNode {
 		value := node.ValidTo.UTC()
 		clone.ValidTo = &value
 	}
+	clone.Entities = append([]Entity(nil), node.Entities...)
 	return clone
 }
 
