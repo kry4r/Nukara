@@ -33,6 +33,51 @@ func TestBuildMemoryGraphResponseCreatesMemoryTopicNodesAndEdges(t *testing.T) {
 	}
 }
 
+func TestBuildTemporalMemoryGraphResponseIncludesTemporalNodesAndEdges(t *testing.T) {
+	now := time.Date(2026, 3, 8, 12, 0, 0, 0, time.UTC)
+	graph := buildTemporalMemoryGraphResponse([]store.TemporalMemoryNode{
+		{
+			ID:         "tm:turn-1:promise:m1",
+			NodeType:   "promise",
+			Title:      "摄影课",
+			Summary:    "这周要把摄影课报上",
+			Status:     "active",
+			OccurredAt: now.Add(-time.Hour),
+			Salience:   0.86,
+		},
+		{
+			ID:         "session-summary:conv-1",
+			NodeType:   "session_summary",
+			Title:      "会话摘要",
+			Summary:    "最近一直在聊散步和摄影课",
+			Status:     "active",
+			OccurredAt: now,
+			Salience:   0.91,
+		},
+	}, []store.TemporalMemoryEdge{{
+		ID:       "edge-1",
+		SourceID: "tm:turn-1:promise:m1",
+		TargetID: "session-summary:conv-1",
+		EdgeType: "summarizes",
+	}}, memoryGraphContext{})
+
+	if len(graph.Nodes) != 2 {
+		t.Fatalf("expected 2 graph nodes, got %d", len(graph.Nodes))
+	}
+	if len(graph.Edges) != 1 {
+		t.Fatalf("expected 1 graph edge, got %d", len(graph.Edges))
+	}
+	if graph.Summary.MemoryCount != 2 {
+		t.Fatalf("memory_count = %d, want 2", graph.Summary.MemoryCount)
+	}
+	if graph.Summary.GraphSource != "temporal_memory_graph" {
+		t.Fatalf("graph_source = %q, want temporal_memory_graph", graph.Summary.GraphSource)
+	}
+	if graph.Nodes[0].Type != "memory" && graph.Nodes[1].Type != "memory" {
+		t.Fatalf("expected temporal nodes to map to memory nodes: %+v", graph.Nodes)
+	}
+}
+
 func TestBuildMemoryGraphResponseIncludesRuntimeProfileViews(t *testing.T) {
 	now := time.Date(2026, 3, 8, 12, 0, 0, 0, time.UTC)
 	graph := buildMemoryGraphResponse([]store.MemoryItem{

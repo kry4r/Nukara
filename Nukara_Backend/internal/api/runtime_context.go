@@ -21,17 +21,27 @@ const (
 )
 
 func (s *Server) newTurnRequest(userID, botID, conversationID, prompt string, userMessageIDs []string, systemContext map[string]any) agentx.TurnRequest {
+	return s.newTurnRequestWithProviderConversation(userID, botID, conversationID, conversationID, prompt, userMessageIDs, systemContext)
+}
+
+func (s *Server) newTurnRequestWithProviderConversation(userID, botID, conversationID, providerConversationID, prompt string, userMessageIDs []string, systemContext map[string]any) agentx.TurnRequest {
 	enrichedContext := enrichLocaleSystemContext(systemContext, time.Now().UTC())
-	systemPrompt, history := s.buildRuntimeContext(userID, botID, conversationID, prompt, userMessageIDs, enrichedContext)
+	localConversationID := strings.TrimSpace(conversationID)
+	systemPrompt, history := s.buildRuntimeContext(userID, botID, localConversationID, prompt, userMessageIDs, enrichedContext)
+	providerConversationID = strings.TrimSpace(providerConversationID)
+	if providerConversationID == "" {
+		providerConversationID = localConversationID
+	}
 	return agentx.TurnRequest{
-		UserID:         strings.TrimSpace(userID),
-		BotID:          strings.TrimSpace(botID),
-		ConversationID: strings.TrimSpace(conversationID),
-		AggregatedText: strings.TrimSpace(prompt),
-		UserMessageIDs: append([]string(nil), userMessageIDs...),
-		SystemContext:  enrichedContext,
-		SystemPrompt:   systemPrompt,
-		History:        history,
+		UserID:                 strings.TrimSpace(userID),
+		BotID:                  strings.TrimSpace(botID),
+		ConversationID:         localConversationID,
+		ProviderConversationID: providerConversationID,
+		AggregatedText:         strings.TrimSpace(prompt),
+		UserMessageIDs:         append([]string(nil), userMessageIDs...),
+		SystemContext:          enrichedContext,
+		SystemPrompt:           systemPrompt,
+		History:                history,
 	}
 }
 

@@ -2,14 +2,25 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"nukara/backend/internal/apns"
 	"nukara/backend/internal/store"
 )
+
+type countingEmailSender struct {
+	calls int
+}
+
+func (s *countingEmailSender) SendVerificationCode(_ context.Context, _ string, _ string, _ time.Duration) error {
+	s.calls++
+	return nil
+}
 
 func TestEmailAuthSendRequiresSMTPConfig(t *testing.T) {
 	st := store.NewStore()
@@ -72,6 +83,32 @@ func TestEmailAuthLoginUsesEmailCode(t *testing.T) {
 	srv.HandlerFor("account").ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+}
+
+func TestEmailAuthSendSuppressesImmediateDuplicateEmails(t *testing.T) {
+	st := store.NewStore()
+	srv := NewServer(st, nil, apns.NewClient("com.nukara.app"), "test-secret", "")
+	sender := &countingEmailSender{}
+	srv.emailSender = sender
+
+	body := bytes.NewBufferString(`{"email":"tester@example.com","purpose":"register"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/email/send", body)
+	rec := httptest.NewRecorder()
+	srv.HandlerFor("account").ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("first status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	body2 := bytes.NewBufferString(`{"email":"tester@example.com","purpose":"register"}`)
+	req2 := httptest.NewRequest(http.MethodPost, "/api/v1/auth/email/send", body2)
+	rec2 := httptest.NewRecorder()
+	srv.HandlerFor("account").ServeHTTP(rec2, req2)
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("second status = %d, want %d, body=%s", rec2.Code, http.StatusOK, rec2.Body.String())
+	}
+	if sender.calls != 1 {
+		t.Fatalf("email sender calls = %d, want 1", sender.calls)
 	}
 }
 

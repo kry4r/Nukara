@@ -31,6 +31,7 @@ const embeddingSaving = ref(false)
 const showCreateProvider = ref(false)
 const createStatus = ref('')
 const selectedSourceId = ref('')
+const expandedProviderId = ref('')
 
 const providers = ref([])
 const rows = ref([])
@@ -53,6 +54,7 @@ const drafts = reactive({})
 const savingByUser = reactive({})
 const savingByProvider = reactive({})
 const testingByProvider = reactive({})
+const providerDrafts = reactive({})
 const providerTestDrafts = reactive({})
 const providerTestReplies = reactive({})
 const newProvider = reactive({
@@ -160,6 +162,50 @@ function ensureProviderTestDraft(provider) {
   return providerTestDrafts[provider.id]
 }
 
+function ensureProviderDraft(provider) {
+  if (!provider?.id) {
+    return {
+      name: '',
+      base_url: '',
+      api_key: '',
+      api_mode: 'chat_completions',
+      models: '',
+      priority: '100',
+    }
+  }
+  if (!providerDrafts[provider.id]) {
+    providerDrafts[provider.id] = {
+      name: provider.name || '',
+      base_url: provider.base_url || '',
+      api_key: provider.api_key || '',
+      api_mode: provider.api_mode || 'chat_completions',
+      models: Array.isArray(provider.models) ? provider.models.join(', ') : '',
+      priority: String(provider.priority ?? 100),
+    }
+  }
+  return providerDrafts[provider.id]
+}
+
+function resetProviderDrafts() {
+  Object.keys(providerDrafts).forEach((key) => {
+    delete providerDrafts[key]
+  })
+  providers.value.forEach((provider) => {
+    providerDrafts[provider.id] = {
+      name: provider.name || '',
+      base_url: provider.base_url || '',
+      api_key: provider.api_key || '',
+      api_mode: provider.api_mode || 'chat_completions',
+      models: Array.isArray(provider.models) ? provider.models.join(', ') : '',
+      priority: String(provider.priority ?? 100),
+    }
+  })
+}
+
+function toggleProviderExpand(providerId) {
+  expandedProviderId.value = expandedProviderId.value === providerId ? '' : providerId
+}
+
 function ensureDraft(user) {
   if (!drafts[user.user_id]) {
     drafts[user.user_id] = {
@@ -252,8 +298,12 @@ async function refreshAll() {
     if (selectedSourceId.value && !providers.value.some((provider) => provider.id === selectedSourceId.value)) {
       selectedSourceId.value = ''
     }
+    if (expandedProviderId.value && !providers.value.some((provider) => provider.id === expandedProviderId.value)) {
+      expandedProviderId.value = ''
+    }
 
     resetDraftsFromRows()
+    resetProviderDrafts()
     statusMessage.value = '数据已刷新。'
   } catch (error) {
     errorMessage.value = error.message
@@ -427,6 +477,56 @@ async function runProviderMessageTest(provider) {
   }
 }
 
+async function saveProvider(provider) {
+  if (!provider?.id || savingByProvider[provider.id]) {
+    return
+  }
+  const draft = ensureProviderDraft(provider)
+  savingByProvider[provider.id] = true
+  errorMessage.value = ''
+  try {
+    await updateProvider(provider.id, {
+      name: draft.name,
+      api_key: draft.api_key,
+      base_url: draft.base_url,
+      api_mode: draft.api_mode,
+      models: draft.models,
+      priority: Number(draft.priority || 100),
+      is_active: provider.is_active,
+    })
+    statusMessage.value = `${provider.name} 配置已保存。`
+    await refreshAll()
+    expandedProviderId.value = provider.id
+  } catch (error) {
+    errorMessage.value = error.message
+  } finally {
+    savingByProvider[provider.id] = false
+  }
+}
+
+async function removeProvider(provider) {
+  if (!provider?.id || savingByProvider[provider.id] || provider.is_active) {
+    return
+  }
+  savingByProvider[provider.id] = true
+  errorMessage.value = ''
+  try {
+    await deleteProvider(provider.id)
+    if (selectedSourceId.value === provider.id) {
+      selectedSourceId.value = ''
+    }
+    if (expandedProviderId.value === provider.id) {
+      expandedProviderId.value = ''
+    }
+    statusMessage.value = `${provider.name} 已删除。`
+    await refreshAll()
+  } catch (error) {
+    errorMessage.value = error.message
+  } finally {
+    savingByProvider[provider.id] = false
+  }
+}
+
 async function saveEmbeddingSettings() {
   if (embeddingSaving.value) {
     return
@@ -535,67 +635,121 @@ onMounted(() => {
             <article
               v-for="provider in providers"
               :key="provider.id"
-              :class="['provider-item-card', { selected: selectedSourceId === provider.id }]"
-              @click="selectedSourceId = selectedSourceId === provider.id ? '' : provider.id"
+              :class="['provider-item-card', {
+                selected: selectedSourceId === provider.id,
+                expanded: expandedProviderId === provider.id,
+              }]"
             >
-              <div class="provider-item-top">
-                <strong>{{ provider.name }}</strong>
-                <span :class="['provider-state', { active: provider.is_active }]">
-                  {{ provider.is_active ? 'Active' : 'Standby' }}
-                </span>
-              </div>
-              <p class="provider-model">
-                {{ Array.isArray(provider.models) && provider.models.length > 0 ? provider.models[0] : '未配置 model' }}
-              </p>
-              <p class="provider-count">{{ providerModeLabel(provider.api_mode) }}</p>
-              <p class="provider-count">{{ providerUsersCount(provider.id) }} 位用户</p>
-              <div class="provider-item-actions">
-                <select
-                  :value="provider.api_mode || 'chat_completions'"
-                  :disabled="creatingProvider || savingByProvider[provider.id]"
-                  @click.stop
-                  @change="changeProviderMode(provider, $event.target.value)"
-                >
-                  <option value="chat_completions">Chat Completions</option>
-                  <option value="responses">Responses</option>
-                  <option value="auto">Auto</option>
-                </select>
+              <button type="button" class="provider-card-toggle" @click="toggleProviderExpand(provider.id)">
+                <div class="provider-item-top">
+                  <strong>{{ provider.name }}</strong>
+                  <span :class="['provider-state', { active: provider.is_active }]">
+                    {{ provider.is_active ? 'Active' : 'Standby' }}
+                  </span>
+                </div>
+                <div class="provider-summary-grid">
+                  <p class="provider-model">
+                    {{ Array.isArray(provider.models) && provider.models.length > 0 ? provider.models[0] : '未配置 model' }}
+                  </p>
+                  <p class="provider-count">{{ providerModeLabel(provider.api_mode) }}</p>
+                  <p class="provider-count">{{ providerUsersCount(provider.id) }} 位用户</p>
+                </div>
+              </button>
+
+              <div class="provider-inline-actions">
                 <button
                   type="button"
-                  class="mini"
-                  :disabled="creatingProvider || savingByProvider[provider.id] || provider.is_active"
-                  @click.stop="activateProvider(provider)"
+                  class="ghost mini"
+                  @click="selectedSourceId = selectedSourceId === provider.id ? '' : provider.id"
                 >
-                  {{ provider.is_active ? 'Active' : '设为默认' }}
+                  {{ selectedSourceId === provider.id ? '取消筛选' : '筛选用户' }}
                 </button>
                 <button
                   type="button"
                   class="ghost mini"
                   :disabled="creatingProvider || savingByProvider[provider.id]"
-                  @click.stop="quickTestProvider(provider)"
+                  @click="quickTestProvider(provider)"
                 >
                   连通测试
                 </button>
+                <button
+                  type="button"
+                  class="mini"
+                  :disabled="creatingProvider || savingByProvider[provider.id] || provider.is_active"
+                  @click="activateProvider(provider)"
+                >
+                  {{ provider.is_active ? 'Active' : '设为默认' }}
+                </button>
               </div>
-              <div v-if="selectedSourceId === provider.id" class="provider-test-box" @click.stop>
-                <input
-                  :value="ensureProviderTestDraft(provider)"
-                  placeholder="输入一条测试消息，验证端点是否可用"
-                  @input="providerTestDrafts[provider.id] = $event.target.value"
-                />
-                <div class="provider-test-actions">
+
+              <div v-if="expandedProviderId === provider.id" class="provider-expander">
+                <label class="mini-form-field">
+                  <span>Name</span>
+                  <input v-model.trim="ensureProviderDraft(provider).name" placeholder="Provider 名称" />
+                </label>
+                <label class="mini-form-field">
+                  <span>Base URL</span>
+                  <input v-model.trim="ensureProviderDraft(provider).base_url" placeholder="https://api.example.com/v1" />
+                </label>
+                <label class="mini-form-field">
+                  <span>API Key</span>
+                  <input v-model.trim="ensureProviderDraft(provider).api_key" type="password" placeholder="sk-..." />
+                </label>
+                <div class="provider-expander-grid">
+                  <label class="mini-form-field">
+                    <span>API Mode</span>
+                    <select v-model="ensureProviderDraft(provider).api_mode">
+                      <option value="chat_completions">Chat Completions</option>
+                      <option value="responses">Responses</option>
+                      <option value="auto">Auto</option>
+                    </select>
+                  </label>
+                  <label class="mini-form-field">
+                    <span>Priority</span>
+                    <input v-model.trim="ensureProviderDraft(provider).priority" inputmode="numeric" placeholder="100" />
+                  </label>
+                </div>
+                <label class="mini-form-field">
+                  <span>Models（逗号分隔）</span>
+                  <input v-model.trim="ensureProviderDraft(provider).models" placeholder="gpt-4o-mini, gpt-4.1-mini" />
+                </label>
+
+                <div class="provider-item-actions">
+                  <button
+                    type="button"
+                    :disabled="savingByProvider[provider.id]"
+                    @click="saveProvider(provider)"
+                  >
+                    {{ savingByProvider[provider.id] ? '保存中...' : '保存配置' }}
+                  </button>
                   <button
                     type="button"
                     class="ghost mini"
                     :disabled="testingByProvider[provider.id]"
-                    @click.stop="runProviderMessageTest(provider)"
+                    @click="runProviderMessageTest(provider)"
                   >
                     {{ testingByProvider[provider.id] ? '测试中...' : '消息测试' }}
                   </button>
+                  <button
+                    type="button"
+                    class="ghost mini"
+                    :disabled="savingByProvider[provider.id] || provider.is_active"
+                    @click="removeProvider(provider)"
+                  >
+                    删除
+                  </button>
                 </div>
-                <p v-if="providerTestReplies[provider.id]" class="provider-test-reply">
-                  {{ providerTestReplies[provider.id] }}
-                </p>
+
+                <div class="provider-test-box">
+                  <input
+                    :value="ensureProviderTestDraft(provider)"
+                    placeholder="输入一条测试消息，验证端点是否可用"
+                    @input="providerTestDrafts[provider.id] = $event.target.value"
+                  />
+                  <p v-if="providerTestReplies[provider.id]" class="provider-test-reply">
+                    {{ providerTestReplies[provider.id] }}
+                  </p>
+                </div>
               </div>
             </article>
           </div>

@@ -305,7 +305,7 @@ func shouldBlockTriggerForPresence(trigger string, online bool, lastUserAt, now 
 // sendProactiveMessage generates and delivers a proactive message for a user+bot pair.
 // Reused by both the scheduler and the manual trigger API.
 func (s *Server) sendProactiveMessage(userID string, bot store.Bot, conv store.Conversation, triggerType string) {
-	convID := agent.NanobotConvID(userID, bot.ID, conv.ID)
+	localConversationID := conv.ID
 	sysCtx := agent.BuildSystemContext(bot, nil)
 	now := time.Now().UTC()
 
@@ -322,7 +322,7 @@ func (s *Server) sendProactiveMessage(userID string, bot store.Bot, conv store.C
 		sysCtx["last_user_message"] = lastText
 	}
 
-	message, emotion, _, _, err := s.runRuntimeProactive(context.Background(), userID, bot.ID, convID, triggerType, sysCtx)
+	message, emotion, _, _, err := s.runRuntimeProactive(context.Background(), userID, bot.ID, localConversationID, triggerType, sysCtx)
 	if err != nil {
 		log.Printf("[scheduler] runtime proactive failed: %v", err)
 		message = fmt.Sprintf("%s：刚想到你了，最近怎么样？", bot.Name)

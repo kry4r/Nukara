@@ -14,6 +14,7 @@ type DataStore interface {
 	GetLastUserMessageAt(userID string) (time.Time, bool)
 
 	SaveEmailCode(email, purpose, code string, ttl time.Duration)
+	GetLatestEmailCode(email, purpose string) (EmailCode, bool)
 	ValidateEmailCode(email, purpose, code string) bool
 	FindUserByEmail(email string) (User, bool)
 	FindUserByID(id string) (User, bool)

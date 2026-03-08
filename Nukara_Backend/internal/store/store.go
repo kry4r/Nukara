@@ -23,6 +23,7 @@ type EmailCode struct {
 	Email     string
 	Purpose   string
 	Code      string
+	CreatedAt time.Time
 	ExpiresAt time.Time
 }
 
@@ -442,7 +443,20 @@ func (s *Store) SaveEmailCode(email, purpose, code string, ttl time.Duration) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.emailCodes[email+":"+purpose] = EmailCode{Email: email, Purpose: purpose, Code: code, ExpiresAt: time.Now().Add(ttl)}
+	now := time.Now()
+	s.emailCodes[email+":"+purpose] = EmailCode{Email: email, Purpose: purpose, Code: code, CreatedAt: now, ExpiresAt: now.Add(ttl)}
+}
+
+func (s *Store) GetLatestEmailCode(email, purpose string) (EmailCode, bool) {
+	email = strings.TrimSpace(email)
+	purpose = strings.TrimSpace(purpose)
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	entry, ok := s.emailCodes[email+":"+purpose]
+	if !ok {
+		return EmailCode{}, false
+	}
+	return entry, true
 }
 
 func (s *Store) ValidateEmailCode(email, purpose, code string) bool {
