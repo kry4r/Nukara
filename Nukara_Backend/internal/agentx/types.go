@@ -10,6 +10,7 @@ type TurnRequest struct {
 	UserMessageIDs []string
 	SystemContext  map[string]any
 	SystemPrompt   string
+	Purpose        string
 	History        []llm.ChatMessage
 }
 

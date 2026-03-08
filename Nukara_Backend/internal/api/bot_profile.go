@@ -6,9 +6,11 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"time"
 
 	"nukara/backend/internal/agent"
 	agentpersona "nukara/backend/internal/agentx/persona"
+	"nukara/backend/internal/agentx/subtasks"
 	"nukara/backend/internal/store"
 )
 
@@ -23,6 +25,39 @@ type iterateAdds struct {
 	ExpressionStyleAdds      []string `json:"expression_style_adds"`
 	LifeContextAdds          []string `json:"life_context_adds"`
 	TaboosAndPreferencesAdds []string `json:"taboos_and_preferences_adds"`
+}
+
+type runtimeStateView struct {
+	ActivityText    string    `json:"activity_text"`
+	BasisTags       []string  `json:"basis_tags,omitempty"`
+	SourceMemoryIDs []string  `json:"source_memory_ids,omitempty"`
+	UpdatedAt       time.Time `json:"updated_at,omitempty"`
+}
+
+type profileMemoryView struct {
+	ID         string    `json:"id"`
+	Kind       string    `json:"kind"`
+	Owner      string    `json:"owner,omitempty"`
+	Content    string    `json:"content"`
+	Importance int       `json:"importance,omitempty"`
+	Status     string    `json:"status,omitempty"`
+	Topics     []string  `json:"topics,omitempty"`
+	OccurredAt time.Time `json:"occurred_at,omitempty"`
+	UpdatedAt  time.Time `json:"updated_at,omitempty"`
+}
+
+type personaChangeView struct {
+	ID            string    `json:"id"`
+	Field         string    `json:"field"`
+	ChangeType    string    `json:"change_type"`
+	ProposedValue string    `json:"proposed_value"`
+	SummaryText   string    `json:"summary_text,omitempty"`
+	Risk          string    `json:"risk,omitempty"`
+	Status        string    `json:"status"`
+	ReviewerNote  string    `json:"reviewer_note,omitempty"`
+	SourceTurnID  string    `json:"source_turn_id,omitempty"`
+	CreatedAt     time.Time `json:"created_at,omitempty"`
+	UpdatedAt     time.Time `json:"updated_at,omitempty"`
 }
 
 func (s *Server) handleBotProfile(w http.ResponseWriter, r *http.Request, userID, botID string) {
@@ -52,11 +87,17 @@ func (s *Server) handleBotProfile(w http.ResponseWriter, r *http.Request, userID
 		conversationID = conv.ID
 	}
 
+	runtimeState, recentImpressions, keyMemories, recentChanges, pendingChanges := s.buildRuntimePortrait(userID, botID)
+
 	respondJSON(w, http.StatusOK, map[string]any{
-		"bot":             bot,
-		"bot_state":       state,
-		"directives":      s.store.ListDirectives(userID, botID, "active"),
-		"conversation_id": conversationID,
+		"bot":                     bot,
+		"bot_state":               state,
+		"conversation_id":         conversationID,
+		"runtime_state":           runtimeState,
+		"recent_impressions":      recentImpressions,
+		"key_memories":            keyMemories,
+		"recent_changes":          recentChanges,
+		"pending_persona_changes": pendingChanges,
 	})
 }
 
@@ -74,6 +115,16 @@ func (s *Server) handleBotImpression(w http.ResponseWriter, r *http.Request, use
 	conv, found := s.store.FindConversationByBot(userID, botID)
 	if !found {
 		respondJSON(w, http.StatusNotFound, map[string]any{"error": "conversation not found"})
+		return
+	}
+
+	cachedImpressions := selectRecentImpressions(s.store.ListMemoryItems(userID, botID, 12), 1)
+	if len(cachedImpressions) > 0 {
+		cachedView := newProfileMemoryView(cachedImpressions[0])
+		respondJSON(w, http.StatusOK, map[string]any{
+			"impression": cachedView.Content,
+			"memory":     cachedView,
+		})
 		return
 	}
 
@@ -98,8 +149,24 @@ func (s *Server) handleBotImpression(w http.ResponseWriter, r *http.Request, use
 		impression = "你给我的感觉很真诚，也很值得认真倾听。"
 	}
 
+	saved, err := s.store.UpsertMemoryItem(store.MemoryItem{
+		UserID:     userID,
+		BotID:      botID,
+		Kind:       "impression",
+		Owner:      "bot",
+		Content:    impression,
+		Importance: 88,
+		OccurredAt: time.Now().UTC(),
+		Status:     "active",
+	})
+	if err != nil {
+		respondJSON(w, http.StatusInternalServerError, map[string]any{"error": "impression persistence failed"})
+		return
+	}
+
 	respondJSON(w, http.StatusOK, map[string]any{
 		"impression": impression,
+		"memory":     newProfileMemoryView(saved),
 	})
 }
 
@@ -152,29 +219,16 @@ func (s *Server) handleBotIterate(w http.ResponseWriter, r *http.Request, userID
 	}
 
 	adds := parseIterateAdds(raw)
-
-	identity := appendTextAdds(bot.Identity, adds.IdentityAdds)
-	personality := appendUnique(bot.Personality, adds.PersonalityAdds, 10)
-	expressionStyle := appendTextAdds(bot.ExpressionStyle, adds.ExpressionStyleAdds)
-	lifeContext := appendTextAdds(bot.LifeContext, adds.LifeContextAdds)
-	taboos := appendTextAdds(bot.TaboosAndPreferences, adds.TaboosAndPreferencesAdds)
-	compiled := agentpersona.CompilePrompt(store.Bot{
-		Name:                 bot.Name,
-		Identity:             identity,
-		Personality:          personality,
-		ExpressionStyle:      expressionStyle,
-		LifeContext:          lifeContext,
-		TaboosAndPreferences: taboos,
-	}, 420)
-
-	updated, found := s.store.ApplyBotPersonaPatch(userID, botID, store.PersonaPatchInput{
+	patch := store.PersonaPatchInput{
 		IdentityAdds:             adds.IdentityAdds,
 		PersonalityAdds:          adds.PersonalityAdds,
 		ExpressionStyleAdds:      adds.ExpressionStyleAdds,
 		LifeContextAdds:          adds.LifeContextAdds,
 		TaboosAndPreferencesAdds: adds.TaboosAndPreferencesAdds,
-		PersonaPrompt:            compiled,
-	})
+	}
+	patch.PersonaPrompt = compilePersonaPrompt(previewBotWithPatch(bot, patch))
+
+	updated, found := s.store.ApplyBotPersonaPatch(userID, botID, patch)
 	if !found {
 		respondJSON(w, http.StatusNotFound, map[string]any{"error": "bot not found"})
 		return
@@ -195,6 +249,77 @@ func (s *Server) handleBotIterate(w http.ResponseWriter, r *http.Request, userID
 		"life_context_adds":           adds.LifeContextAdds,
 		"taboos_and_preferences_adds": adds.TaboosAndPreferencesAdds,
 		"bot":                         updated,
+	})
+}
+
+func (s *Server) handleBotPersonaChangeAction(w http.ResponseWriter, r *http.Request, userID, botID, changeID, action string) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+
+	change, ok := s.findPersonaChangeEvent(userID, botID, changeID)
+	if !ok {
+		respondJSON(w, http.StatusNotFound, map[string]any{"error": "persona change not found"})
+		return
+	}
+	if !strings.EqualFold(strings.TrimSpace(change.Status), "pending") {
+		respondJSON(w, http.StatusConflict, map[string]any{"error": "persona change already resolved"})
+		return
+	}
+
+	var req struct {
+		ReviewerNote string `json:"reviewer_note"`
+	}
+	if r.ContentLength > 0 {
+		if err := decodeJSON(r, &req); err != nil && !errors.Is(err, context.Canceled) {
+			badRequest(w, err)
+			return
+		}
+	}
+
+	bot, found := s.store.GetBot(userID, botID)
+	if !found {
+		respondJSON(w, http.StatusNotFound, map[string]any{"error": "bot not found"})
+		return
+	}
+
+	status := "rejected"
+	if action == "accept" {
+		status = "accepted"
+		patch := buildPersonaPatchFromChange(change)
+		patch.PersonaPrompt = compilePersonaPrompt(previewBotWithPatch(bot, patch))
+		updatedBot, ok := s.store.ApplyBotPersonaPatch(userID, botID, patch)
+		if !ok {
+			respondJSON(w, http.StatusNotFound, map[string]any{"error": "bot not found"})
+			return
+		}
+		bot = updatedBot
+	}
+
+	updatedChange, ok := s.store.UpdatePersonaChangeEventStatus(changeID, status, req.ReviewerNote)
+	if !ok {
+		respondJSON(w, http.StatusNotFound, map[string]any{"error": "persona change not found"})
+		return
+	}
+	if action == "accept" {
+		conversationID := ""
+		if conv, found := s.store.FindConversationByBot(userID, botID); found {
+			conversationID = conv.ID
+		}
+		if updatedBot, err := s.refreshBotSelfCognition(r.Context(), subtasks.Input{
+			UserID:         userID,
+			BotID:          botID,
+			ConversationID: conversationID,
+			TurnID:         updatedChange.SourceTurnID,
+		}, bot, []store.PersonaChangeEvent{updatedChange}); err == nil {
+			bot = updatedBot
+		}
+	}
+
+	respondJSON(w, http.StatusOK, map[string]any{
+		"change": newPersonaChangeView(updatedChange),
+		"bot":    bot,
 	})
 }
 
@@ -242,6 +367,160 @@ func messagePlainText(msg store.Message) string {
 	default:
 		return ""
 	}
+}
+
+func (s *Server) buildRuntimePortrait(userID, botID string) (*runtimeStateView, []profileMemoryView, []profileMemoryView, []personaChangeView, []personaChangeView) {
+	var runtimeState *runtimeStateView
+	if state, ok := s.store.GetBotRuntimeState(userID, botID); ok {
+		runtimeState = &runtimeStateView{
+			ActivityText:    strings.TrimSpace(state.ActivityText),
+			BasisTags:       append([]string(nil), state.BasisTags...),
+			SourceMemoryIDs: append([]string(nil), state.SourceMemoryIDs...),
+			UpdatedAt:       state.UpdatedAt,
+		}
+	}
+
+	items := s.store.ListMemoryItems(userID, botID, 24)
+	recentImpressions := buildProfileMemoryViews(selectRecentImpressions(items, 3))
+	keyMemories := buildProfileMemoryViews(selectProfileMemories(items, 6, func(item store.MemoryItem) bool {
+		switch strings.TrimSpace(item.Kind) {
+		case "promise", "event", "self_fact", "user_fact", "habit":
+			return true
+		default:
+			return false
+		}
+	}))
+	recentChanges := buildPersonaChangeViews(s.store.ListPersonaChangeEvents(userID, botID, "accepted", 20))
+	pendingChanges := buildPersonaChangeViews(s.store.ListPersonaChangeEvents(userID, botID, "pending", 20))
+	return runtimeState, recentImpressions, keyMemories, recentChanges, pendingChanges
+}
+
+func (s *Server) cachedBotImpression(userID, botID string) string {
+	items := selectRecentImpressions(s.store.ListMemoryItems(userID, botID, 12), 1)
+	if len(items) == 0 {
+		return ""
+	}
+	return strings.TrimSpace(items[0].Content)
+}
+
+func (s *Server) findPersonaChangeEvent(userID, botID, changeID string) (store.PersonaChangeEvent, bool) {
+	for _, item := range s.store.ListPersonaChangeEvents(userID, botID, "", 100) {
+		if item.ID == strings.TrimSpace(changeID) {
+			return item, true
+		}
+	}
+	return store.PersonaChangeEvent{}, false
+}
+
+func buildProfileMemoryViews(items []store.MemoryItem) []profileMemoryView {
+	views := make([]profileMemoryView, 0, len(items))
+	for _, item := range items {
+		content := strings.TrimSpace(item.Content)
+		if content == "" {
+			continue
+		}
+		views = append(views, newProfileMemoryView(item))
+	}
+	return views
+}
+
+func buildPersonaChangeViews(items []store.PersonaChangeEvent) []personaChangeView {
+	views := make([]personaChangeView, 0, len(items))
+	for _, item := range items {
+		views = append(views, newPersonaChangeView(item))
+	}
+	return views
+}
+
+func newPersonaChangeView(item store.PersonaChangeEvent) personaChangeView {
+	return personaChangeView{
+		ID:            item.ID,
+		Field:         strings.TrimSpace(item.Field),
+		ChangeType:    strings.TrimSpace(item.ChangeType),
+		ProposedValue: strings.TrimSpace(item.ProposedValue),
+		SummaryText:   summarizePersonaChangeValue(item.Field, item.ProposedValue),
+		Risk:          strings.TrimSpace(item.Risk),
+		Status:        strings.TrimSpace(item.Status),
+		ReviewerNote:  strings.TrimSpace(item.ReviewerNote),
+		SourceTurnID:  strings.TrimSpace(item.SourceTurnID),
+		CreatedAt:     item.CreatedAt,
+		UpdatedAt:     item.UpdatedAt,
+	}
+}
+
+func newProfileMemoryView(item store.MemoryItem) profileMemoryView {
+	return profileMemoryView{
+		ID:         item.ID,
+		Kind:       strings.TrimSpace(item.Kind),
+		Owner:      strings.TrimSpace(item.Owner),
+		Content:    strings.TrimSpace(item.Content),
+		Importance: item.Importance,
+		Status:     strings.TrimSpace(item.Status),
+		Topics:     append([]string(nil), item.Topics...),
+		OccurredAt: item.OccurredAt,
+		UpdatedAt:  item.UpdatedAt,
+	}
+}
+
+func selectProfileMemories(items []store.MemoryItem, limit int, keep func(store.MemoryItem) bool) []store.MemoryItem {
+	if limit <= 0 {
+		limit = len(items)
+	}
+	selected := make([]store.MemoryItem, 0, limit)
+	for _, item := range items {
+		if keep != nil && !keep(item) {
+			continue
+		}
+		selected = append(selected, item)
+		if len(selected) >= limit {
+			break
+		}
+	}
+	return selected
+}
+
+func selectRecentImpressions(items []store.MemoryItem, limit int) []store.MemoryItem {
+	selected := selectProfileMemories(items, limit, func(item store.MemoryItem) bool {
+		return strings.TrimSpace(item.Kind) == "impression" && strings.TrimSpace(item.Content) != ""
+	})
+	if len(selected) > 0 {
+		return selected
+	}
+	return selectProfileMemories(items, limit, func(item store.MemoryItem) bool {
+		return strings.TrimSpace(item.Kind) == "user_fact" && strings.TrimSpace(item.Content) != ""
+	})
+}
+
+func buildPersonaPatchFromChange(change store.PersonaChangeEvent) store.PersonaPatchInput {
+	adds := splitTextValues(change.ProposedValue)
+	patch := store.PersonaPatchInput{}
+	switch strings.TrimSpace(change.Field) {
+	case "identity":
+		patch.IdentityAdds = adds
+	case "personality":
+		patch.PersonalityAdds = adds
+	case "expression_style":
+		patch.ExpressionStyleAdds = adds
+	case "life_context":
+		patch.LifeContextAdds = adds
+	case "taboos_and_preferences":
+		patch.TaboosAndPreferencesAdds = adds
+	}
+	return patch
+}
+
+func previewBotWithPatch(bot store.Bot, patch store.PersonaPatchInput) store.Bot {
+	preview := bot
+	preview.Identity = appendTextAdds(preview.Identity, patch.IdentityAdds)
+	preview.Personality = appendUnique(preview.Personality, patch.PersonalityAdds, 10)
+	preview.ExpressionStyle = appendTextAdds(preview.ExpressionStyle, patch.ExpressionStyleAdds)
+	preview.LifeContext = appendTextAdds(preview.LifeContext, patch.LifeContextAdds)
+	preview.TaboosAndPreferences = appendTextAdds(preview.TaboosAndPreferences, patch.TaboosAndPreferencesAdds)
+	return preview
+}
+
+func compilePersonaPrompt(bot store.Bot) string {
+	return agentpersona.CompilePrompt(bot, 420)
 }
 
 func parseIterateAdds(raw string) iterateAdds {

@@ -262,6 +262,161 @@ func (p *PostgresStore) ListMemoryItems(userID, botID string, limit int) []Memor
 	return items
 }
 
+func (p *PostgresStore) UpsertBotRuntimeState(state BotRuntimeState) (BotRuntimeState, error) {
+	saved, err := p.Store.UpsertBotRuntimeState(state)
+	if err != nil {
+		return BotRuntimeState{}, err
+	}
+
+	ctx, cancel := p.withTimeout()
+	defer cancel()
+	basisTags, _ := json.Marshal(saved.BasisTags)
+	sourceMemoryIDs, _ := json.Marshal(saved.SourceMemoryIDs)
+	_, dbErr := p.db.ExecContext(ctx, `
+		INSERT INTO bot_runtime_states(user_id, bot_id, activity_text, basis_tags, source_memory_ids, updated_at)
+		VALUES ($1,$2,$3,$4::jsonb,$5::jsonb,$6)
+		ON CONFLICT (user_id, bot_id)
+		DO UPDATE SET activity_text=EXCLUDED.activity_text, basis_tags=EXCLUDED.basis_tags, source_memory_ids=EXCLUDED.source_memory_ids, updated_at=EXCLUDED.updated_at
+	`, saved.UserID, saved.BotID, saved.ActivityText, string(basisTags), string(sourceMemoryIDs), saved.UpdatedAt)
+	if dbErr != nil {
+		log.Printf("upsert bot runtime state failed: %v", dbErr)
+	}
+	return saved, dbErr
+}
+
+func (p *PostgresStore) GetBotRuntimeState(userID, botID string) (BotRuntimeState, bool) {
+	ctx, cancel := p.withTimeout()
+	defer cancel()
+
+	var state BotRuntimeState
+	var basisTagsRaw, sourceMemoryIDsRaw []byte
+	err := p.db.QueryRowContext(ctx, `
+		SELECT user_id, bot_id, activity_text, basis_tags, source_memory_ids, updated_at
+		FROM bot_runtime_states
+		WHERE user_id=$1 AND bot_id=$2
+	`, strings.TrimSpace(userID), strings.TrimSpace(botID)).Scan(
+		&state.UserID, &state.BotID, &state.ActivityText, &basisTagsRaw, &sourceMemoryIDsRaw, &state.UpdatedAt,
+	)
+	if err == nil {
+		_ = json.Unmarshal(basisTagsRaw, &state.BasisTags)
+		_ = json.Unmarshal(sourceMemoryIDsRaw, &state.SourceMemoryIDs)
+		return state, true
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		log.Printf("get bot runtime state failed: %v", err)
+	}
+	return p.Store.GetBotRuntimeState(userID, botID)
+}
+
+func (p *PostgresStore) CreatePersonaChangeEvent(event PersonaChangeEvent) (PersonaChangeEvent, error) {
+	saved, err := p.Store.CreatePersonaChangeEvent(event)
+	if err != nil {
+		return PersonaChangeEvent{}, err
+	}
+
+	ctx, cancel := p.withTimeout()
+	defer cancel()
+	_, dbErr := p.db.ExecContext(ctx, `
+		INSERT INTO persona_change_events(id, user_id, bot_id, field, change_type, proposed_value, source_turn_id, risk, status, reviewer_note, created_at, updated_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+		ON CONFLICT (id)
+		DO UPDATE SET field=EXCLUDED.field, change_type=EXCLUDED.change_type, proposed_value=EXCLUDED.proposed_value,
+		  source_turn_id=EXCLUDED.source_turn_id, risk=EXCLUDED.risk, status=EXCLUDED.status, reviewer_note=EXCLUDED.reviewer_note, updated_at=EXCLUDED.updated_at
+	`, saved.ID, saved.UserID, saved.BotID, saved.Field, saved.ChangeType, saved.ProposedValue, nullIfEmpty(saved.SourceTurnID), saved.Risk, saved.Status, nullIfEmpty(saved.ReviewerNote), saved.CreatedAt, saved.UpdatedAt)
+	if dbErr != nil {
+		log.Printf("create persona change event failed: %v", dbErr)
+		return saved, dbErr
+	}
+	if pruneErr := p.prunePersonaChangeEvents(saved.UserID, saved.BotID, 20); pruneErr != nil {
+		log.Printf("prune persona change events failed: %v", pruneErr)
+	}
+	return saved, nil
+}
+
+func (p *PostgresStore) ListPersonaChangeEvents(userID, botID, status string, limit int) []PersonaChangeEvent {
+	ctx, cancel := p.withTimeout()
+	defer cancel()
+
+	if limit <= 0 {
+		limit = 20
+	}
+	baseQuery := `
+		SELECT id, user_id, bot_id, field, change_type, proposed_value, COALESCE(source_turn_id::text, ''), risk, status, COALESCE(reviewer_note, ''), created_at, updated_at
+		FROM persona_change_events
+		WHERE user_id=$1 AND bot_id=$2`
+	args := []any{strings.TrimSpace(userID), strings.TrimSpace(botID)}
+	if status != "" {
+		baseQuery += ` AND status=$3 ORDER BY created_at DESC, updated_at DESC LIMIT $4`
+		args = append(args, strings.TrimSpace(status), limit)
+	} else {
+		baseQuery += ` ORDER BY created_at DESC, updated_at DESC LIMIT $3`
+		args = append(args, limit)
+	}
+	rows, err := p.db.QueryContext(ctx, baseQuery, args...)
+	if err != nil {
+		log.Printf("list persona change events failed: %v", err)
+		return p.Store.ListPersonaChangeEvents(userID, botID, status, limit)
+	}
+	defer rows.Close()
+
+	items := make([]PersonaChangeEvent, 0, limit)
+	for rows.Next() {
+		var item PersonaChangeEvent
+		if scanErr := rows.Scan(&item.ID, &item.UserID, &item.BotID, &item.Field, &item.ChangeType, &item.ProposedValue, &item.SourceTurnID, &item.Risk, &item.Status, &item.ReviewerNote, &item.CreatedAt, &item.UpdatedAt); scanErr != nil {
+			log.Printf("scan persona change event failed: %v", scanErr)
+			continue
+		}
+		items = append(items, item)
+	}
+	if len(items) == 0 {
+		return p.Store.ListPersonaChangeEvents(userID, botID, status, limit)
+	}
+	return items
+}
+
+func (p *PostgresStore) UpdatePersonaChangeEventStatus(changeID, status, reviewerNote string) (PersonaChangeEvent, bool) {
+	ctx, cancel := p.withTimeout()
+	defer cancel()
+
+	updatedAt := time.Now().UTC()
+	var item PersonaChangeEvent
+	err := p.db.QueryRowContext(ctx, `
+		UPDATE persona_change_events
+		SET status=$2, reviewer_note=$3, updated_at=$4
+		WHERE id=$1
+		RETURNING id, user_id, bot_id, field, change_type, proposed_value, COALESCE(source_turn_id::text, ''), risk, status, COALESCE(reviewer_note, ''), created_at, updated_at
+	`, strings.TrimSpace(changeID), strings.TrimSpace(status), nullIfEmpty(strings.TrimSpace(reviewerNote)), updatedAt).Scan(
+		&item.ID, &item.UserID, &item.BotID, &item.Field, &item.ChangeType, &item.ProposedValue,
+		&item.SourceTurnID, &item.Risk, &item.Status, &item.ReviewerNote, &item.CreatedAt, &item.UpdatedAt,
+	)
+	if err != nil {
+		if !errors.Is(err, sql.ErrNoRows) {
+			log.Printf("update persona change event status failed: %v", err)
+			return p.Store.UpdatePersonaChangeEventStatus(changeID, status, reviewerNote)
+		}
+		return PersonaChangeEvent{}, false
+	}
+	return item, true
+}
+
+func (p *PostgresStore) prunePersonaChangeEvents(userID, botID string, keep int) error {
+	ctx, cancel := p.withTimeout()
+	defer cancel()
+	if keep <= 0 {
+		keep = 20
+	}
+	_, err := p.db.ExecContext(ctx, `
+		DELETE FROM persona_change_events
+		WHERE user_id=$1 AND bot_id=$2 AND id NOT IN (
+			SELECT id FROM persona_change_events
+			WHERE user_id=$1 AND bot_id=$2
+			ORDER BY created_at DESC, updated_at DESC
+			LIMIT $3
+		)
+	`, strings.TrimSpace(userID), strings.TrimSpace(botID), keep)
+	return err
+}
+
 func marshalSettingValue(value string) string {
 	raw, _ := json.Marshal(map[string]string{"value": strings.TrimSpace(value)})
 	return string(raw)

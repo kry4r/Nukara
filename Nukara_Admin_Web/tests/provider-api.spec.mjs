@@ -2,9 +2,13 @@ import assert from 'node:assert/strict'
 import {
   normalizeProviderPayload,
   normalizeEmailAuthSettingsPayload,
+  normalizePostTurnModelPayload,
+  normalizeSelfCognitionSummaryModelPayload,
   buildListAdminUsersPath,
   buildListUserBotsPath,
   buildMemoryGraphPath,
+  buildPostTurnModelPath,
+  buildSelfCognitionSummaryModelPath,
 } from '../src/api/admin.js'
 
 const payload = normalizeProviderPayload({
@@ -34,3 +38,25 @@ assert.equal(emailPayload.code_ttl_seconds, 900)
 assert.equal(buildListAdminUsersPath({ q: 'alice', limit: 20, offset: 40 }), '/users?q=alice&limit=20&offset=40')
 assert.equal(buildListUserBotsPath('user-1'), '/users/user-1/bots')
 assert.equal(buildMemoryGraphPath('user-1', 'bot-1'), '/users/user-1/bots/bot-1/memory-graph')
+
+const postTurnPayload = normalizePostTurnModelPayload({
+  provider_id: ' minimax_m2_5 ',
+  model: ' MiniMax-M2.5-Small ',
+})
+
+assert.deepEqual(postTurnPayload, {
+  provider_id: 'minimax_m2_5',
+  model: 'MiniMax-M2.5-Small',
+})
+assert.equal(buildPostTurnModelPath(), '/settings/post-turn-model')
+
+const selfCognitionSummaryPayload = normalizeSelfCognitionSummaryModelPayload({
+  provider_id: ' minimax_m2_5 ',
+  model: ' MiniMax-M2.5-Small ',
+})
+
+assert.deepEqual(selfCognitionSummaryPayload, {
+  provider_id: 'minimax_m2_5',
+  model: 'MiniMax-M2.5-Small',
+})
+assert.equal(buildSelfCognitionSummaryModelPath(), '/settings/self-cognition-summary-model')

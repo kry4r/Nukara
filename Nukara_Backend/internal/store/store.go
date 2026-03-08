@@ -65,16 +65,6 @@ func DerivePersonaV2FromLegacy(bot Bot) Bot {
 	if strings.TrimSpace(bot.LifeContext) == "" {
 		bot.LifeContext = firstNonEmptyPersonaField(bot.Background, bot.Role)
 	}
-	if strings.TrimSpace(bot.TaboosAndPreferences) == "" {
-		parts := make([]string, 0, len(bot.SelfCognition))
-		for _, value := range bot.SelfCognition {
-			value = strings.TrimSpace(value)
-			if value != "" {
-				parts = append(parts, value)
-			}
-		}
-		bot.TaboosAndPreferences = strings.Join(parts, "；")
-	}
 	return bot
 }
 
@@ -93,9 +83,6 @@ func SyncLegacyPersonaFields(bot Bot) Bot {
 	}
 	if len(bot.Personality) > 0 {
 		bot.Traits = append([]string(nil), bot.Personality...)
-	}
-	if strings.TrimSpace(bot.TaboosAndPreferences) != "" {
-		bot.SelfCognition = []string{strings.TrimSpace(bot.TaboosAndPreferences)}
 	}
 	return bot
 }
@@ -272,49 +259,61 @@ type Store struct {
 	proactiveLogs     []ProactiveLog
 	directivesByBot   map[string][]Directive
 
-	emotionBuffers       map[string][]string       // key: userID:botID
-	emotionCtxs          map[string]EmotionContext // key: userID:botID
-	presenceByUser       map[string]presenceState
-	userProviderSettings map[string]providerSetting
-	botProviderOverrides map[string]providerSetting
-	systemSettings       map[string]string
-	agentTurnsByID       map[string]AgentTurn
-	compactsByConv       map[string]ConversationCompact
-	memoryItemsByID      map[string]MemoryItem
+	emotionBuffers          map[string][]string       // key: userID:botID
+	emotionCtxs             map[string]EmotionContext // key: userID:botID
+	presenceByUser          map[string]presenceState
+	userProviderSettings    map[string]providerSetting
+	botProviderOverrides    map[string]providerSetting
+	systemSettings          map[string]string
+	agentTurnsByID          map[string]AgentTurn
+	compactsByConv          map[string]ConversationCompact
+	memoryItemsByID         map[string]MemoryItem
+	memoryNodesByID         map[string]TemporalMemoryNode
+	memoryEdgesByID         map[string]TemporalMemoryEdge
+	memoryCardsByID         map[string]MemoryCard
+	activationTracesByID    map[string]ActivationTrace
+	runtimeStatesByKey      map[string]BotRuntimeState
+	personaChangeEventsByID map[string]PersonaChangeEvent
 
 	metrics Metrics
 }
 
 func NewStore() *Store {
 	s := &Store{
-		usersByEmail:         map[string]User{},
-		usersByID:            map[string]User{},
-		emailCodes:           map[string]EmailCode{},
-		botsByID:             map[string]Bot{},
-		botsByUser:           map[string][]string{},
-		botStatesByKey:       map[string]BotState{},
-		conversationsByID:    map[string]Conversation{},
-		conversationsByUser:  map[string][]string{},
-		messagesByConv:       map[string][]Message{},
-		deviceTokenByUser:    map[string]DeviceToken{},
-		notifByUser:          map[string]NotificationSettings{},
-		userStatusByUser:     map[string]UserStatus{},
-		proactiveLogs:        []ProactiveLog{},
-		directivesByBot:      map[string][]Directive{},
-		emotionBuffers:       map[string][]string{},
-		emotionCtxs:          map[string]EmotionContext{},
-		presenceByUser:       map[string]presenceState{},
-		userProviderSettings: map[string]providerSetting{},
-		botProviderOverrides: map[string]providerSetting{},
-		systemSettings:       map[string]string{},
-		agentTurnsByID:       map[string]AgentTurn{},
-		compactsByConv:       map[string]ConversationCompact{},
-		memoryItemsByID:      map[string]MemoryItem{},
+		usersByEmail:            map[string]User{},
+		usersByID:               map[string]User{},
+		emailCodes:              map[string]EmailCode{},
+		botsByID:                map[string]Bot{},
+		botsByUser:              map[string][]string{},
+		botStatesByKey:          map[string]BotState{},
+		conversationsByID:       map[string]Conversation{},
+		conversationsByUser:     map[string][]string{},
+		messagesByConv:          map[string][]Message{},
+		deviceTokenByUser:       map[string]DeviceToken{},
+		notifByUser:             map[string]NotificationSettings{},
+		userStatusByUser:        map[string]UserStatus{},
+		proactiveLogs:           []ProactiveLog{},
+		directivesByBot:         map[string][]Directive{},
+		emotionBuffers:          map[string][]string{},
+		emotionCtxs:             map[string]EmotionContext{},
+		presenceByUser:          map[string]presenceState{},
+		userProviderSettings:    map[string]providerSetting{},
+		botProviderOverrides:    map[string]providerSetting{},
+		systemSettings:          map[string]string{},
+		agentTurnsByID:          map[string]AgentTurn{},
+		compactsByConv:          map[string]ConversationCompact{},
+		memoryItemsByID:         map[string]MemoryItem{},
+		memoryNodesByID:         map[string]TemporalMemoryNode{},
+		memoryEdgesByID:         map[string]TemporalMemoryEdge{},
+		memoryCardsByID:         map[string]MemoryCard{},
+		activationTracesByID:    map[string]ActivationTrace{},
+		runtimeStatesByKey:      map[string]BotRuntimeState{},
+		personaChangeEventsByID: map[string]PersonaChangeEvent{},
 	}
 
 	// seed dev user for local auth flows
 	devUser := User{
-		ID:        NewID(),
+		ID:        "dev-user-tester",
 		Email:     "tester@nukara.local",
 		Nickname:  "测试用户",
 		CreatedAt: time.Now().UTC(),
@@ -655,9 +654,6 @@ func (s *Store) UpdateBot(userID, botID string, patch Bot) (Bot, bool) {
 	}
 	if len(patch.SelfCognition) > 0 {
 		bot.SelfCognition = append([]string(nil), patch.SelfCognition...)
-		if strings.TrimSpace(patch.TaboosAndPreferences) == "" {
-			bot.TaboosAndPreferences = strings.TrimSpace(strings.Join(bot.SelfCognition, "；"))
-		}
 	}
 	bot = SyncLegacyPersonaFields(bot)
 	bot.UpdatedAt = time.Now().UTC()

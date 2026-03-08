@@ -49,6 +49,25 @@ func (r staticResolver) ResolveChatRoute(userID, botID string) (provider.Route, 
 	return r.route, r.err
 }
 
+type staticSubtaskResolver struct {
+	chatRoute                 provider.Route
+	subtaskRoute              provider.Route
+	selfCognitionSummaryRoute provider.Route
+	err                       error
+}
+
+func (r staticSubtaskResolver) ResolveChatRoute(userID, botID string) (provider.Route, error) {
+	return r.chatRoute, r.err
+}
+
+func (r staticSubtaskResolver) ResolveSubtaskRoute(userID, botID string) (provider.Route, error) {
+	return r.subtaskRoute, r.err
+}
+
+func (r staticSubtaskResolver) ResolveSelfCognitionSummaryRoute(userID, botID string) (provider.Route, error) {
+	return r.selfCognitionSummaryRoute, r.err
+}
+
 func readFinalText(t *testing.T, finalCh <-chan FinalTurn) string {
 	t.Helper()
 	final, ok := <-finalCh
@@ -243,5 +262,107 @@ func TestRuntimePreservesExplicitMessageBoundaryProtocolInFinalTurn(t *testing.T
 
 	if got := readFinalText(t, finalCh); got != "先去吃饭<<<MSG>>>吃完再和我说" {
 		t.Fatalf("final text = %q", got)
+	}
+}
+
+func TestRuntimeUsesDedicatedSubtaskRouteWhenPurposeIsSubtask(t *testing.T) {
+	defaultClient := &captureStreamClient{chunks: []string{"default-hit"}}
+	routeClient := &captureStreamClient{chunks: []string{"subtask-hit"}}
+	resolver := staticSubtaskResolver{
+		chatRoute: provider.Route{
+			ProviderID: "provider_chat",
+			BaseURL:    "http://chat.local",
+			APIKey:     "chat-key",
+			Model:      "chat-model",
+			APIMode:    "chat_completions",
+		},
+		subtaskRoute: provider.Route{
+			ProviderID: "provider_subtask",
+			BaseURL:    "http://subtask.local",
+			APIKey:     "subtask-key",
+			Model:      "subtask-model",
+			APIMode:    "responses",
+		},
+	}
+
+	var routeSeen provider.Route
+	rt := NewRuntime(RuntimeDeps{
+		ProviderClient: defaultClient,
+		RouteResolver:  resolver,
+		ClientFactory: func(route provider.Route) llm.StreamClient {
+			routeSeen = route
+			return routeClient
+		},
+	})
+
+	_, finalCh, err := rt.StreamTurn(context.Background(), TurnRequest{
+		UserID:         "user-1",
+		BotID:          "bot-1",
+		ConversationID: "conv-1",
+		AggregatedText: "提取记忆",
+		Purpose:        "subtask",
+	})
+	if err != nil {
+		t.Fatalf("StreamTurn failed: %v", err)
+	}
+	if got := readFinalText(t, finalCh); got != "subtask-hit" {
+		t.Fatalf("final text = %q", got)
+	}
+	if routeSeen.ProviderID != "provider_subtask" {
+		t.Fatalf("route provider = %q, want provider_subtask", routeSeen.ProviderID)
+	}
+	if routeSeen.Model != "subtask-model" {
+		t.Fatalf("route model = %q", routeSeen.Model)
+	}
+}
+
+func TestRuntimeUsesDedicatedSelfCognitionSummaryRoute(t *testing.T) {
+	defaultClient := &captureStreamClient{chunks: []string{"default-hit"}}
+	routeClient := &captureStreamClient{chunks: []string{"summary-hit"}}
+	resolver := staticSubtaskResolver{
+		chatRoute: provider.Route{
+			ProviderID: "provider_chat",
+			BaseURL:    "http://chat.local",
+			APIKey:     "chat-key",
+			Model:      "chat-model",
+			APIMode:    "chat_completions",
+		},
+		selfCognitionSummaryRoute: provider.Route{
+			ProviderID: "provider_summary",
+			BaseURL:    "http://summary.local",
+			APIKey:     "summary-key",
+			Model:      "summary-model",
+			APIMode:    "responses",
+		},
+	}
+
+	var routeSeen provider.Route
+	rt := NewRuntime(RuntimeDeps{
+		ProviderClient: defaultClient,
+		RouteResolver:  resolver,
+		ClientFactory: func(route provider.Route) llm.StreamClient {
+			routeSeen = route
+			return routeClient
+		},
+	})
+
+	_, finalCh, err := rt.StreamTurn(context.Background(), TurnRequest{
+		UserID:         "user-1",
+		BotID:          "bot-1",
+		ConversationID: "conv-1",
+		AggregatedText: "总结自我认知",
+		Purpose:        "self_cognition_summary",
+	})
+	if err != nil {
+		t.Fatalf("StreamTurn failed: %v", err)
+	}
+	if got := readFinalText(t, finalCh); got != "summary-hit" {
+		t.Fatalf("final text = %q", got)
+	}
+	if routeSeen.ProviderID != "provider_summary" {
+		t.Fatalf("route provider = %q, want provider_summary", routeSeen.ProviderID)
+	}
+	if routeSeen.Model != "summary-model" {
+		t.Fatalf("route model = %q", routeSeen.Model)
 	}
 }

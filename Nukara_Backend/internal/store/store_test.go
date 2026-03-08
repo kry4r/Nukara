@@ -186,8 +186,8 @@ func TestBotPersonaV2Backfill(t *testing.T) {
 	if derived.LifeContext != legacy.Background {
 		t.Fatalf("life_context = %q want %q", derived.LifeContext, legacy.Background)
 	}
-	if derived.TaboosAndPreferences != "不喜欢被命令式对待；更喜欢被温柔回应" {
-		t.Fatalf("taboos_and_preferences = %q", derived.TaboosAndPreferences)
+	if derived.TaboosAndPreferences != "" {
+		t.Fatalf("taboos_and_preferences should stay independent, got %q", derived.TaboosAndPreferences)
 	}
 
 	preserved := DerivePersonaV2FromLegacy(Bot{
@@ -231,7 +231,39 @@ func TestBotPersonaV2Backfill(t *testing.T) {
 	if !reflect.DeepEqual(synced.Traits, synced.Personality) {
 		t.Fatalf("traits = %#v want %#v", synced.Traits, synced.Personality)
 	}
-	if !reflect.DeepEqual(synced.SelfCognition, []string{"不喜欢被命令式对待，更喜欢被温柔回应"}) {
-		t.Fatalf("self_cognition = %#v", synced.SelfCognition)
+	if len(synced.SelfCognition) != 0 {
+		t.Fatalf("self_cognition should stay independent, got %#v", synced.SelfCognition)
+	}
+}
+
+func TestUpdateBotSelfCognitionDoesNotOverwriteStaticTaboos(t *testing.T) {
+	s := NewStore()
+	bot := s.CreateBot("user-1", Bot{
+		Name:                 "bot",
+		TaboosAndPreferences: "不喜欢被命令式对待",
+	})
+
+	updated, ok := s.UpdateBot("user-1", bot.ID, Bot{
+		SelfCognition: []string{"我最近会在下班后散步，让自己慢慢冷静下来。"},
+	})
+	if !ok {
+		t.Fatal("expected update to succeed")
+	}
+	if updated.TaboosAndPreferences != "不喜欢被命令式对待" {
+		t.Fatalf("taboos_and_preferences = %q", updated.TaboosAndPreferences)
+	}
+	if !reflect.DeepEqual(updated.SelfCognition, []string{"我最近会在下班后散步，让自己慢慢冷静下来。"}) {
+		t.Fatalf("self_cognition = %#v", updated.SelfCognition)
+	}
+}
+
+func TestNewStoreSeedsStableDevUser(t *testing.T) {
+	s := NewStore()
+	user, ok := s.FindUserByEmail("tester@nukara.local")
+	if !ok {
+		t.Fatal("expected seeded dev user")
+	}
+	if user.ID != "dev-user-tester" {
+		t.Fatalf("seeded dev user id = %q, want %q", user.ID, "dev-user-tester")
 	}
 }

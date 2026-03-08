@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"nukara/backend/internal/agentx"
 	"nukara/backend/internal/agentx/subtasks"
@@ -11,9 +12,12 @@ import (
 	"nukara/backend/internal/store"
 )
 
-type stubSubtaskRuntime struct{}
+type stubSubtaskRuntime struct {
+	lastReq agentx.TurnRequest
+}
 
-func (stubSubtaskRuntime) StreamTurn(_ context.Context, req agentx.TurnRequest) (<-chan agentx.StreamDelta, <-chan agentx.FinalTurn, error) {
+func (s *stubSubtaskRuntime) StreamTurn(_ context.Context, req agentx.TurnRequest) (<-chan agentx.StreamDelta, <-chan agentx.FinalTurn, error) {
+	s.lastReq = req
 	deltaCh := make(chan agentx.StreamDelta)
 	finalCh := make(chan agentx.FinalTurn, 1)
 	go func() {
@@ -50,7 +54,8 @@ func TestSubtasksUseRuntimeWhenAgentNilAndCanUpdateMemory(t *testing.T) {
 	}
 
 	server := NewServer(st, nil, apns.NewClient("com.nukara.app"), "test-secret", "")
-	server.SetChatRuntime(stubSubtaskRuntime{})
+	runtime := &stubSubtaskRuntime{}
+	server.SetChatRuntime(runtime)
 
 	if _, err := server.subtasks.Run(context.Background(), subtasks.Input{
 		UserID:         "user-1",
@@ -78,5 +83,28 @@ func TestSubtasksUseRuntimeWhenAgentNilAndCanUpdateMemory(t *testing.T) {
 	}
 	if got, ok := st.GetConversationCompact("conv-1"); !ok || !strings.Contains(got.CompactJSON, "绿茶") {
 		t.Fatalf("compact not updated, got=(%v,%+v)", ok, got)
+	}
+	if runtime.lastReq.Purpose != "subtask" {
+		t.Fatalf("runtime purpose = %q, want subtask", runtime.lastReq.Purpose)
+	}
+}
+
+func TestBuildMemoryCandidateContextUsesTemporalGraphRecall(t *testing.T) {
+	st := store.NewStore()
+	now := time.Date(2026, 3, 8, 12, 0, 0, 0, time.UTC)
+	if _, err := st.CreateMemoryNode(store.TemporalMemoryNode{UserID: "user-1", BotID: "bot-1", SessionID: "conv-1", NodeType: "promise", Title: "报名摄影课", Summary: "这周还没把摄影课报上。", Status: "active", OccurredAt: now.Add(-2 * time.Hour), ObservedAt: now, ValidFrom: now.Add(-2 * time.Hour)}); err != nil {
+		t.Fatalf("create promise node failed: %v", err)
+	}
+	if _, err := st.CreateMemoryNode(store.TemporalMemoryNode{UserID: "user-1", BotID: "bot-1", SessionID: "conv-1", NodeType: "episode", Title: "昨晚散步", Summary: "昨晚散步时又想到摄影课。", Status: "active", OccurredAt: now.Add(-3 * time.Hour), ObservedAt: now, ValidFrom: now.Add(-3 * time.Hour)}); err != nil {
+		t.Fatalf("create episode node failed: %v", err)
+	}
+
+	server := NewServer(st, nil, apns.NewClient("com.nukara.app"), "test-secret", "")
+	contextText := server.buildMemoryCandidateContext("user-1", "bot-1", "你还记得我这周没做完什么吗", "我记得你还有摄影课没报名")
+	if !strings.Contains(contextText, "type=promise") {
+		t.Fatalf("expected promise node in candidate context, got=%s", contextText)
+	}
+	if !strings.Contains(contextText, "content=这周还没把摄影课报上") {
+		t.Fatalf("expected node summary in candidate context, got=%s", contextText)
 	}
 }

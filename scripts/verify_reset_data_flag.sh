@@ -12,15 +12,27 @@ require_line() {
   fi
 }
 
+forbid_line() {
+  local file="$1"
+  local pattern="$2"
+  if rg -q -- "$pattern" "$ROOT_DIR/$file"; then
+    echo "unexpected pattern in $file: $pattern" >&2
+    exit 1
+  fi
+}
+
 require_line "deploy/deploy-local.sh" '^[[:space:]]*--reset-data\)'
 require_line "deploy/deploy-local.sh" '--reset-data'
 require_line "deploy/deploy-local.sh" '^confirm_reset_data\(\) \{$'
-require_line "deploy/deploy-local.sh" '^reset_neo4j_auth_and_data\(\) \{$'
+require_line "deploy/deploy-local.sh" '^reset_postgres_data\(\) \{$'
+require_line "deploy/deploy-local.sh" '^reset_redis_data\(\) \{$'
 require_line "deploy/deploy-local.sh" '^reset_nukara_data\(\) \{$'
-require_line "deploy/deploy-local.sh" 'Neo4j password mismatch detected; resetting local Neo4j auth and data'
-require_line "deploy/deploy-local.sh" '/var/lib/neo4j/data/dbms/auth\*'
-require_line "deploy/deploy-local.sh" 'wait_for_neo4j_ready 30 \|\|'
-require_line "deploy/deploy-local.sh" 'reset_nukara_data'
-require_line "docs/deployment-guide.md" 'Neo4j 认证失败时'
+require_line "deploy/deploy-local.sh" 'Temporal memory graph data is stored in PostgreSQL and will be removed together'
+require_line "deploy/deploy-local.sh" 'reset_postgres_data'
+require_line "deploy/deploy-local.sh" 'reset_redis_data'
+require_line "docs/deployment-guide.md" '重建 PostgreSQL `nukara` 数据库（会一并清空时序记忆图'
+forbid_line "deploy/deploy-local.sh" 'reset_qdrant_data'
+forbid_line "deploy/deploy-local.sh" 'reset_neo4j_data'
+forbid_line "deploy/deploy-local.sh" 'Neo4j'
 
 echo "verify_reset_data_flag: PASS"

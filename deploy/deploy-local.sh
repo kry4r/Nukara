@@ -89,7 +89,6 @@ source "$(dirname "$0")/lib/deploy-state.sh"
 source "$(dirname "$0")/lib/change-detection.sh"
 source "$(dirname "$0")/lib/service-restart.sh"
 source "$(dirname "$0")/lib/cleanup.sh"
-source "$(dirname "$0")/lib/memory-infra.sh"
 source "$(dirname "$0")/lib/admin-bootstrap.sh"
 
 # --- Detect distro ---
@@ -235,23 +234,7 @@ apply_config_defaults() {
   DEFAULT_PROVIDER_MODELS="${DEFAULT_PROVIDER_MODELS:-$LLM_MODEL}"
   DEFAULT_PROVIDER_PRIORITY="${DEFAULT_PROVIDER_PRIORITY:-1}"
   DEFAULT_PROVIDER_API_MODE="${DEFAULT_PROVIDER_API_MODE:-$LLM_API_MODE}"
-  NUKARA_MEMORY_INFRA_ENABLED="${NUKARA_MEMORY_INFRA_ENABLED:-true}"
-  NUKARA_QDRANT_VERSION="${NUKARA_QDRANT_VERSION:-1.16.3}"
-  NUKARA_QDRANT_HTTP_PORT="${NUKARA_QDRANT_HTTP_PORT:-6333}"
-  NUKARA_QDRANT_GRPC_PORT="${NUKARA_QDRANT_GRPC_PORT:-6334}"
-  NUKARA_QDRANT_COLLECTION="${NUKARA_QDRANT_COLLECTION:-agent_memory_v1}"
   NUKARA_EMBEDDING_MODEL="${NUKARA_EMBEDDING_MODEL:-text-embedding-3-small}"
-  NUKARA_QDRANT_VECTOR_SIZE="${NUKARA_QDRANT_VECTOR_SIZE:-$(infer_qdrant_vector_size "$NUKARA_EMBEDDING_MODEL")}"
-  NUKARA_NEO4J_USER="${NUKARA_NEO4J_USER:-neo4j}"
-  NUKARA_NEO4J_PASSWORD="${NUKARA_NEO4J_PASSWORD:-$(generate_secret)}"
-  NUKARA_NEO4J_DATABASE="${NUKARA_NEO4J_DATABASE:-neo4j}"
-  NUKARA_NEO4J_HTTP_PORT="${NUKARA_NEO4J_HTTP_PORT:-7474}"
-  NUKARA_NEO4J_BOLT_PORT="${NUKARA_NEO4J_BOLT_PORT:-7687}"
-  NUKARA_NEO4J_ADAPTER_PORT="${NUKARA_NEO4J_ADAPTER_PORT:-17687}"
-  NUKARA_QDRANT_URL="${NUKARA_QDRANT_URL:-http://127.0.0.1:${NUKARA_QDRANT_HTTP_PORT}}"
-  NUKARA_QDRANT_API_KEY="${NUKARA_QDRANT_API_KEY:-}"
-  NUKARA_NEO4J_BOLT_URL="${NUKARA_NEO4J_BOLT_URL:-bolt://127.0.0.1:${NUKARA_NEO4J_BOLT_PORT}}"
-  NUKARA_NEO4J_URL="${NUKARA_NEO4J_URL:-http://127.0.0.1:${NUKARA_NEO4J_ADAPTER_PORT}}"
 }
 
 validate_config() {
@@ -262,9 +245,6 @@ validate_config() {
     [ -n "${NUKARA_SMTP_PASSWORD:-}" ] || err "SMTP auth code is required when SMTP from email is set"
     NUKARA_SMTP_USERNAME="${NUKARA_SMTP_USERNAME:-$NUKARA_SMTP_FROM_EMAIL}"
   fi
-  case "${NUKARA_QDRANT_VECTOR_SIZE:-}" in
-    ''|*[!0-9]*) err "NUKARA_QDRANT_VECTOR_SIZE must be a positive integer" ;;
-  esac
 }
 
 persist_config() {
@@ -299,22 +279,6 @@ persist_config() {
   append_env_var DEFAULT_PROVIDER_MODELS "$DEFAULT_PROVIDER_MODELS"
   append_env_var DEFAULT_PROVIDER_PRIORITY "$DEFAULT_PROVIDER_PRIORITY"
   append_env_var DEFAULT_PROVIDER_API_MODE "$DEFAULT_PROVIDER_API_MODE"
-  append_env_var NUKARA_MEMORY_INFRA_ENABLED "$NUKARA_MEMORY_INFRA_ENABLED"
-  append_env_var NUKARA_QDRANT_VERSION "$NUKARA_QDRANT_VERSION"
-  append_env_var NUKARA_QDRANT_HTTP_PORT "$NUKARA_QDRANT_HTTP_PORT"
-  append_env_var NUKARA_QDRANT_GRPC_PORT "$NUKARA_QDRANT_GRPC_PORT"
-  append_env_var NUKARA_QDRANT_URL "$NUKARA_QDRANT_URL"
-  append_env_var NUKARA_QDRANT_API_KEY "$NUKARA_QDRANT_API_KEY"
-  append_env_var NUKARA_QDRANT_COLLECTION "$NUKARA_QDRANT_COLLECTION"
-  append_env_var NUKARA_QDRANT_VECTOR_SIZE "$NUKARA_QDRANT_VECTOR_SIZE"
-  append_env_var NUKARA_NEO4J_URL "$NUKARA_NEO4J_URL"
-  append_env_var NUKARA_NEO4J_USER "$NUKARA_NEO4J_USER"
-  append_env_var NUKARA_NEO4J_PASSWORD "$NUKARA_NEO4J_PASSWORD"
-  append_env_var NUKARA_NEO4J_DATABASE "$NUKARA_NEO4J_DATABASE"
-  append_env_var NUKARA_NEO4J_HTTP_PORT "$NUKARA_NEO4J_HTTP_PORT"
-  append_env_var NUKARA_NEO4J_BOLT_PORT "$NUKARA_NEO4J_BOLT_PORT"
-  append_env_var NUKARA_NEO4J_BOLT_URL "$NUKARA_NEO4J_BOLT_URL"
-  append_env_var NUKARA_NEO4J_ADAPTER_PORT "$NUKARA_NEO4J_ADAPTER_PORT"
   append_env_var NUKARA_EMBEDDING_MODEL "$NUKARA_EMBEDDING_MODEL"
 
   log "Config saved to $ENV_FILE"
@@ -553,39 +517,9 @@ collect_config() {
   DEFAULT_PROVIDER_API_MODE="${input:-${DEFAULT_PROVIDER_API_MODE:-${LLM_API_MODE:-chat_completions}}}"
 
   echo ""
-  echo -e "${CYAN}[7/7] Memory Infra${NC}"
-  read -rp "  Enable local Qdrant/Neo4j install [${NUKARA_MEMORY_INFRA_ENABLED:-true}] (true/false): " input
-  NUKARA_MEMORY_INFRA_ENABLED="${input:-${NUKARA_MEMORY_INFRA_ENABLED:-true}}"
-  read -rp "  Qdrant version [${NUKARA_QDRANT_VERSION:-1.16.3}]: " input
-  NUKARA_QDRANT_VERSION="${input:-${NUKARA_QDRANT_VERSION:-1.16.3}}"
-  read -rp "  Qdrant HTTP port [${NUKARA_QDRANT_HTTP_PORT:-6333}]: " input
-  NUKARA_QDRANT_HTTP_PORT="${input:-${NUKARA_QDRANT_HTTP_PORT:-6333}}"
-  read -rp "  Qdrant gRPC port [${NUKARA_QDRANT_GRPC_PORT:-6334}]: " input
-  NUKARA_QDRANT_GRPC_PORT="${input:-${NUKARA_QDRANT_GRPC_PORT:-6334}}"
-  NUKARA_QDRANT_URL="http://127.0.0.1:${NUKARA_QDRANT_HTTP_PORT}"
-  read -rp "  Qdrant API key [${NUKARA_QDRANT_API_KEY:-}]: " input
-  NUKARA_QDRANT_API_KEY="${input:-${NUKARA_QDRANT_API_KEY:-}}"
-  read -rp "  Qdrant collection [${NUKARA_QDRANT_COLLECTION:-agent_memory_v1}]: " input
-  NUKARA_QDRANT_COLLECTION="${input:-${NUKARA_QDRANT_COLLECTION:-agent_memory_v1}}"
-  read -rp "  Neo4j HTTP port [${NUKARA_NEO4J_HTTP_PORT:-7474}]: " input
-  NUKARA_NEO4J_HTTP_PORT="${input:-${NUKARA_NEO4J_HTTP_PORT:-7474}}"
-  read -rp "  Neo4j Bolt port [${NUKARA_NEO4J_BOLT_PORT:-7687}]: " input
-  NUKARA_NEO4J_BOLT_PORT="${input:-${NUKARA_NEO4J_BOLT_PORT:-7687}}"
-  read -rp "  Neo4j adapter port [${NUKARA_NEO4J_ADAPTER_PORT:-17687}]: " input
-  NUKARA_NEO4J_ADAPTER_PORT="${input:-${NUKARA_NEO4J_ADAPTER_PORT:-17687}}"
-  NUKARA_NEO4J_BOLT_URL="bolt://127.0.0.1:${NUKARA_NEO4J_BOLT_PORT}"
-  NUKARA_NEO4J_URL="http://127.0.0.1:${NUKARA_NEO4J_ADAPTER_PORT}"
-  read -rp "  Neo4j database [${NUKARA_NEO4J_DATABASE:-neo4j}]: " input
-  NUKARA_NEO4J_DATABASE="${input:-${NUKARA_NEO4J_DATABASE:-neo4j}}"
-  read -rp "  Neo4j user [${NUKARA_NEO4J_USER:-neo4j}]: " input
-  NUKARA_NEO4J_USER="${input:-${NUKARA_NEO4J_USER:-neo4j}}"
-  read -rsp "  Neo4j password [auto-generated if empty]: " input
-  echo ""
-  NUKARA_NEO4J_PASSWORD="${input:-${NUKARA_NEO4J_PASSWORD:-$(generate_secret)}}"
+  echo -e "${CYAN}[7/7] Memory / Embedding${NC}"
   read -rp "  Embedding model [${NUKARA_EMBEDDING_MODEL:-text-embedding-3-small}]: " input
   NUKARA_EMBEDDING_MODEL="${input:-${NUKARA_EMBEDDING_MODEL:-text-embedding-3-small}}"
-  read -rp "  Qdrant vector size [${NUKARA_QDRANT_VECTOR_SIZE:-$(infer_qdrant_vector_size "$NUKARA_EMBEDDING_MODEL")}]: " input
-  NUKARA_QDRANT_VECTOR_SIZE="${input:-${NUKARA_QDRANT_VECTOR_SIZE:-$(infer_qdrant_vector_size "$NUKARA_EMBEDDING_MODEL")}}"
 
   persist_config
 }
@@ -621,7 +555,7 @@ confirm_reset_data() {
   fi
   [ -t 0 ] || err "--reset-data requires a TTY confirmation or --non-interactive"
 
-  warn "--reset-data will delete Nukara application data from PostgreSQL, Redis, Qdrant, and Neo4j before redeploy."
+  warn "--reset-data will delete Nukara application data from PostgreSQL and Redis before redeploy. Temporal memory graph data is stored in PostgreSQL and will be removed together."
   read -rp "Type RESET to continue: " confirm
   [ "$confirm" = "RESET" ] || err "Reset aborted by user"
 }
@@ -674,91 +608,11 @@ reset_redis_data() {
   log "  Deleted Redis keys: $deleted"
 }
 
-reset_qdrant_data() {
-  [ "${NUKARA_MEMORY_INFRA_ENABLED:-true}" = "true" ] || return 0
-  [ -n "${NUKARA_QDRANT_COLLECTION:-}" ] || return 0
-
-  log "Resetting Qdrant collection: ${NUKARA_QDRANT_COLLECTION}"
-  if [ "$DRY_RUN" = true ]; then
-    log "  [dry-run] would delete Qdrant collection ${NUKARA_QDRANT_COLLECTION}"
-    return 0
-  fi
-  ensure_service_started_if_present qdrant || {
-    warn "Skipping Qdrant reset: qdrant service not installed"
-    return 0
-  }
-  wait_for_qdrant_ready 20
-
-  local collection_url="${NUKARA_QDRANT_URL%/}/collections/${NUKARA_QDRANT_COLLECTION}"
-  qdrant_request DELETE "$collection_url" || err "Failed deleting Qdrant collection: ${QDRANT_HTTP_BODY:-curl error}"
-  case "$QDRANT_HTTP_STATUS" in
-    200|202|204)
-      log "  Qdrant collection deleted: ${NUKARA_QDRANT_COLLECTION}"
-      ;;
-    404)
-      log "  Qdrant collection not found: ${NUKARA_QDRANT_COLLECTION}"
-      ;;
-    *)
-      err "Failed deleting Qdrant collection: status=$QDRANT_HTTP_STATUS body=$QDRANT_HTTP_BODY"
-      ;;
-  esac
-}
-
-reset_neo4j_auth_and_data() {
-  warn "Neo4j password mismatch detected; resetting local Neo4j auth and data"
-  if [ "$DRY_RUN" = true ]; then
-    log "  [dry-run] would stop Neo4j and clear /var/lib/neo4j/data/databases/*, /var/lib/neo4j/data/transactions/*, and /var/lib/neo4j/data/dbms/auth*"
-    return 0
-  fi
-
-  if systemd_unit_exists nukara-neo4j-adapter; then
-    systemctl stop nukara-neo4j-adapter 2>/dev/null || true
-  fi
-  systemctl stop neo4j 2>/dev/null || true
-  rm -rf /var/lib/neo4j/data/databases/*
-  rm -rf /var/lib/neo4j/data/transactions/*
-  rm -rf /var/lib/neo4j/data/dbms/*
-  mkdir -p /var/lib/neo4j/data/databases /var/lib/neo4j/data/transactions /var/lib/neo4j/data/dbms
-  chown -R neo4j:neo4j /var/lib/neo4j/data 2>/dev/null || true
-}
-
-reset_neo4j_data() {
-  [ "${NUKARA_MEMORY_INFRA_ENABLED:-true}" = "true" ] || return 0
-
-  log "Resetting Neo4j database contents: ${NUKARA_NEO4J_DATABASE}"
-  if [ "$DRY_RUN" = true ]; then
-    log "  [dry-run] would delete all Neo4j nodes and relationships in ${NUKARA_NEO4J_DATABASE}"
-    return 0
-  fi
-  ensure_service_started_if_present neo4j || {
-    warn "Skipping Neo4j reset: neo4j service not installed"
-    return 0
-  }
-  command -v cypher-shell >/dev/null 2>&1 || {
-    warn "Skipping Neo4j reset: cypher-shell not installed"
-    return 0
-  }
-
-  wait_for_neo4j_ready 30 || {
-    reset_neo4j_auth_and_data
-    return 0
-  }
-  cypher-shell \
-    -a "bolt://127.0.0.1:${NUKARA_NEO4J_BOLT_PORT}" \
-    -u "${NUKARA_NEO4J_USER}" \
-    -p "${NUKARA_NEO4J_PASSWORD}" \
-    -d "${NUKARA_NEO4J_DATABASE}" \
-    'MATCH (n) DETACH DELETE n;' >/dev/null
-  log "  Neo4j graph data cleared"
-}
-
 reset_nukara_data() {
   [ "$RESET_DATA" = true ] || return 0
   log "Resetting Nukara application data before redeploy..."
   reset_postgres_data
   reset_redis_data
-  reset_qdrant_data
-  reset_neo4j_data
 }
 
 repair_postgres_permissions() {
@@ -980,8 +834,6 @@ build_services() {
     CGO_ENABLED=0 go build -o "$INSTALL_DIR/bin/proactive" ./cmd/proactive
     log "Building admin..."
     CGO_ENABLED=0 go build -o "$INSTALL_DIR/bin/admin" ./cmd/admin
-    log "Building neo4j adapter..."
-    CGO_ENABLED=0 go build -o "$INSTALL_DIR/bin/neo4j-adapter" ./cmd/neo4j_adapter
   else
     log "Skipping backend build (no changes)"
   fi
@@ -1011,42 +863,13 @@ create_services() {
   log "Creating systemd services..."
 
   local PG_DSN="postgres://nukara:${POSTGRES_PASSWORD}@127.0.0.1:5432/nukara?sslmode=disable"
-  local memory_after=""
-  local memory_wants=""
-
-  if [ "${NUKARA_MEMORY_INFRA_ENABLED:-true}" = "true" ]; then
-    memory_after=" qdrant.service neo4j.service nukara-neo4j-adapter.service"
-    memory_wants=" qdrant.service neo4j.service nukara-neo4j-adapter.service"
-
-    cat > /etc/systemd/system/nukara-neo4j-adapter.service <<EOF
-[Unit]
-Description=Nukara Neo4j HTTP Adapter
-After=network.target neo4j.service
-Wants=network.target neo4j.service
-
-[Service]
-Type=simple
-ExecStart=$INSTALL_DIR/bin/neo4j-adapter
-Restart=on-failure
-RestartSec=5
-Environment=NUKARA_NEO4J_BOLT_URL=${NUKARA_NEO4J_BOLT_URL}
-Environment=NUKARA_NEO4J_USER=${NUKARA_NEO4J_USER}
-Environment=NUKARA_NEO4J_PASSWORD=${NUKARA_NEO4J_PASSWORD}
-Environment=NUKARA_NEO4J_DATABASE=${NUKARA_NEO4J_DATABASE}
-Environment=NUKARA_NEO4J_ADAPTER_HOST=127.0.0.1
-Environment=NUKARA_NEO4J_ADAPTER_PORT=${NUKARA_NEO4J_ADAPTER_PORT}
-
-[Install]
-WantedBy=multi-user.target
-EOF
-  fi
 
   # --- Gateway ---
   cat > /etc/systemd/system/nukara-gateway.service <<EOF
 [Unit]
 Description=Nukara Gateway
-After=${POSTGRES_SERVICE_NAME}.service ${REDIS_SERVICE_NAME}.service${memory_after}
-Wants=${POSTGRES_SERVICE_NAME}.service ${REDIS_SERVICE_NAME}.service${memory_wants}
+After=${POSTGRES_SERVICE_NAME}.service ${REDIS_SERVICE_NAME}.service
+Wants=${POSTGRES_SERVICE_NAME}.service ${REDIS_SERVICE_NAME}.service
 
 [Service]
 Type=simple
@@ -1061,12 +884,6 @@ Environment=NUKARA_CHAT_BASE_URL=${LLM_API_BASE}
 Environment=NUKARA_CHAT_API_KEY=${LLM_API_KEY}
 Environment=NUKARA_CHAT_MODEL=${LLM_MODEL}
 Environment=NUKARA_CHAT_API_MODE=${LLM_API_MODE}
-Environment=NUKARA_QDRANT_URL=${NUKARA_QDRANT_URL:-}
-Environment=NUKARA_QDRANT_API_KEY=${NUKARA_QDRANT_API_KEY:-}
-Environment=NUKARA_QDRANT_COLLECTION=${NUKARA_QDRANT_COLLECTION:-agent_memory_v1}
-Environment=NUKARA_NEO4J_URL=${NUKARA_NEO4J_URL:-}
-Environment=NUKARA_NEO4J_USER=${NUKARA_NEO4J_USER:-}
-Environment=NUKARA_NEO4J_PASSWORD=${NUKARA_NEO4J_PASSWORD:-}
 Environment=NUKARA_EMBEDDING_MODEL=${NUKARA_EMBEDDING_MODEL:-}
 Environment=NUKARA_INACTIVITY_THRESHOLD=${INACTIVITY_THRESHOLD}
 Environment=NUKARA_PROACTIVE_COOLDOWN=${PROACTIVE_COOLDOWN}
@@ -1079,8 +896,8 @@ EOF
   cat > /etc/systemd/system/nukara-proactive.service <<EOF
 [Unit]
 Description=Nukara Proactive Messaging
-After=nukara-gateway.service${memory_after}
-Wants=nukara-gateway.service${memory_wants}
+After=nukara-gateway.service
+Wants=nukara-gateway.service
 
 [Service]
 Type=simple
@@ -1095,12 +912,6 @@ Environment=NUKARA_CHAT_BASE_URL=${LLM_API_BASE}
 Environment=NUKARA_CHAT_API_KEY=${LLM_API_KEY}
 Environment=NUKARA_CHAT_MODEL=${LLM_MODEL}
 Environment=NUKARA_CHAT_API_MODE=${LLM_API_MODE}
-Environment=NUKARA_QDRANT_URL=${NUKARA_QDRANT_URL:-}
-Environment=NUKARA_QDRANT_API_KEY=${NUKARA_QDRANT_API_KEY:-}
-Environment=NUKARA_QDRANT_COLLECTION=${NUKARA_QDRANT_COLLECTION:-agent_memory_v1}
-Environment=NUKARA_NEO4J_URL=${NUKARA_NEO4J_URL:-}
-Environment=NUKARA_NEO4J_USER=${NUKARA_NEO4J_USER:-}
-Environment=NUKARA_NEO4J_PASSWORD=${NUKARA_NEO4J_PASSWORD:-}
 Environment=NUKARA_EMBEDDING_MODEL=${NUKARA_EMBEDDING_MODEL:-}
 
 [Install]
@@ -1203,9 +1014,6 @@ start_services() {
   echo -e "${BOLD}  Service Status${NC}"
   echo -e "${BOLD}=========================================${NC}"
   local services=("$POSTGRES_SERVICE_NAME" "$REDIS_SERVICE_NAME" nginx)
-  if [ "${NUKARA_MEMORY_INFRA_ENABLED:-true}" = "true" ]; then
-    services+=(qdrant neo4j nukara-neo4j-adapter)
-  fi
   services+=(nukara-gateway nukara-proactive nukara-admin)
   for svc in "${services[@]}"; do
     if systemctl is-active --quiet "$svc" 2>/dev/null; then
@@ -1300,7 +1108,6 @@ main() {
   prepare_sources
   setup_postgres
   build_services
-  install_memory_infra
   create_services
   configure_nginx
   start_services

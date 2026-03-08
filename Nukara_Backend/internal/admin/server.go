@@ -48,6 +48,8 @@ func (s *Server) setupRoutes() {
 	s.router.HandleFunc("/api/admin/users", s.authMiddleware(s.handleAdminUsers))
 	s.router.HandleFunc("/api/admin/users/", s.authMiddleware(s.handleAdminUserGraphRoutes))
 	s.router.HandleFunc("/api/admin/settings/embedding-config", s.authMiddleware(s.handleEmbeddingConfig))
+	s.router.HandleFunc("/api/admin/settings/post-turn-model", s.authMiddleware(s.handlePostTurnConfig))
+	s.router.HandleFunc("/api/admin/settings/self-cognition-summary-model", s.authMiddleware(s.handleSelfCognitionSummaryConfig))
 	s.router.HandleFunc("/api/admin/settings/email-auth", s.authMiddleware(s.handleEmailAuthSettings))
 	s.router.HandleFunc("/api/admin/settings/email-auth/test", s.authMiddleware(s.handleEmailAuthSettingsTest))
 

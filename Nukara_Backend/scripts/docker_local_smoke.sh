@@ -7,6 +7,8 @@ CONTAINER_NAME="${2:-nukara-gateway-local}"
 PORT="${3:-18080}"
 BASE_URL="http://localhost:${PORT}"
 BIN_PATH="$ROOT_DIR/build/gateway-linux-amd64"
+GO_BUILD_CACHE_DIR="${NUKARA_DOCKER_LOCAL_GOCACHE:-${TMPDIR:-/tmp}/nukara-go-build}"
+GO_MOD_CACHE_DIR="${NUKARA_DOCKER_LOCAL_GOMODCACHE:-}"
 
 cleanup() {
   rm -f "$BIN_PATH"
@@ -28,12 +30,23 @@ if [[ -z "$GO_BIN" ]]; then
   GO_BIN="/opt/homebrew/bin/go"
 fi
 
-mkdir -p "$ROOT_DIR/build"
+mkdir -p "$ROOT_DIR/build" "$GO_BUILD_CACHE_DIR"
+
+BUILD_ENV=(
+  "GOCACHE=$GO_BUILD_CACHE_DIR"
+  "CGO_ENABLED=0"
+  "GOOS=linux"
+  "GOARCH=amd64"
+)
+if [[ -n "$GO_MOD_CACHE_DIR" ]]; then
+  mkdir -p "$GO_MOD_CACHE_DIR"
+  BUILD_ENV+=("GOMODCACHE=$GO_MOD_CACHE_DIR")
+fi
 
 echo "[1/5] build linux gateway binary"
 (
   cd "$ROOT_DIR"
-  GOCACHE=/tmp/go-build GOMODCACHE=/tmp/go-mod CGO_ENABLED=0 GOOS=linux GOARCH=amd64 "$GO_BIN" build -o "$BIN_PATH" ./cmd/gateway/main.go
+  env "${BUILD_ENV[@]}" "$GO_BIN" build -o "$BIN_PATH" ./cmd/gateway/main.go
 )
 
 echo "[2/5] build runtime image ($IMAGE_TAG)"
@@ -52,7 +65,7 @@ for i in {1..30}; do
 done
 
 echo "[5/5] run smoke test"
-"$ROOT_DIR/scripts/smoke_backend.sh" "$BASE_URL"
+bash "$ROOT_DIR/scripts/smoke_backend.sh" "$BASE_URL"
 
 echo "docker local smoke passed"
 echo "container: $CONTAINER_NAME"

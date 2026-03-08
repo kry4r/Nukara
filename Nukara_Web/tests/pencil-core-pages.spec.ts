@@ -56,6 +56,26 @@ test('app renders inside a fixed 9:16 phone shell on desktop', async ({ page }) 
   expect(ratio).toBeLessThan(0.59)
 })
 
+test('desktop keeps the phone shell vertically centered on medium-height screens', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 920 })
+  await page.addInitScript(() => {
+    localStorage.setItem('nukara_token', 'test-token')
+  })
+  await mockConversations(page)
+
+  await page.goto(`${WEB_URL}/`)
+
+  const shell = page.locator('.phone-shell')
+  await expect(shell).toBeVisible()
+
+  const box = await shell.boundingBox()
+  expect(box).not.toBeNull()
+
+  const topGap = box?.y ?? 0
+  const bottomGap = 920 - ((box?.y ?? 0) + (box?.height ?? 0))
+  expect(Math.abs(topGap - bottomGap)).toBeLessThanOrEqual(4)
+})
+
 test('chat page keeps message input visible inside the phone shell on mobile', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 })
   await page.addInitScript(() => {
@@ -231,21 +251,14 @@ test('bot detail page renders persona v2 sections', async ({ page }) => {
           status_emoji: '💭',
           status_text: '在想你',
         },
-        directives: [
-          { id: 'd-1', content: '多问开放问题', category: 'behavior', source: 'conversation' },
-        ],
         conversation_id: 'conv-1',
+        recent_impressions: [
+          { id: 'imp-1', kind: 'impression', content: '你给我的感觉是理性又温柔。' },
+        ],
       }),
     })
   })
 
-  await page.route('**/api/v1/bots/bot-1/impression', async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify({ impression: '你给我的感觉是理性又温柔。' }),
-    })
-  })
 
   await page.goto(`${WEB_URL}/bots/bot-1`)
   await expect(page.getByTestId('bot-detail-page')).toBeVisible()
@@ -379,24 +392,14 @@ test('bot detail page keeps a scrollable content area on mobile', async ({ page 
           status_emoji: '💭',
           status_text: '在想你',
         },
-        directives: Array.from({ length: 12 }, (_, index) => ({
-          id: `d-${index}`,
-          content: `请记得第 ${index + 1} 条长期偏好和互动方式。`.repeat(3),
-          category: 'behavior',
-          source: 'conversation',
-        })),
         conversation_id: 'conv-1',
+        recent_impressions: [
+          { id: 'imp-1', kind: 'impression', content: '你给我的感觉是理性又温柔。'.repeat(6) },
+        ],
       }),
     })
   })
 
-  await page.route('**/api/v1/bots/bot-1/impression', async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify({ impression: '你给我的感觉是理性又温柔。'.repeat(6) }),
-    })
-  })
 
   await page.goto(`${WEB_URL}/bots/bot-1`)
 

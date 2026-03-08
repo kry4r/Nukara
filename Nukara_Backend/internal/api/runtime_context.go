@@ -8,14 +8,16 @@ import (
 	"time"
 
 	"nukara/backend/internal/agentx"
-	agentxmemory "nukara/backend/internal/agentx/memory"
 	"nukara/backend/internal/agentx/llm"
+	"nukara/backend/internal/agentx/memorygraph"
 	"nukara/backend/internal/store"
 )
 
 const (
-	runtimeRecentHistoryLimit = 8
-	runtimeMemoryRecallLimit  = 4
+	runtimeRecentHistoryLimit   = 8
+	runtimeMemoryRecallLimit    = 4
+	runtimeMemoryCardCharBudget = 180
+	runtimeMemoryCardLimit      = 5
 )
 
 func (s *Server) newTurnRequest(userID, botID, conversationID, prompt string, userMessageIDs []string, systemContext map[string]any) agentx.TurnRequest {
@@ -35,27 +37,26 @@ func (s *Server) newTurnRequest(userID, botID, conversationID, prompt string, us
 
 func (s *Server) buildRuntimeContext(userID, botID, conversationID, prompt string, userMessageIDs []string, systemContext map[string]any) (string, []llm.ChatMessage) {
 	history := s.buildRecentHistory(userID, conversationID, prompt, userMessageIDs, runtimeRecentHistoryLimit)
+	recentTexts := historyContents(history)
 	compactText := ""
 	if compact, ok := s.store.GetConversationCompact(conversationID); ok {
 		compactText = formatCompactContext(compact.CompactJSON)
 	}
-	memoryText := formatMemoryContext(s.selectRuntimeMemories(userID, botID, prompt))
-	return formatSystemPrompt(systemContext, compactText, memoryText), history
+	runtimeStateText := ""
+	if runtimeState, ok := s.store.GetBotRuntimeState(userID, botID); ok {
+		runtimeStateText = strings.TrimSpace(runtimeState.ActivityText)
+	}
+	activeItems := s.store.ListMemoryItems(userID, botID, 24)
+	promiseText := formatMemoryContext(selectRelevantPromises(activeItems, prompt, 3))
+	memoryCardsText := s.selectRuntimeMemoryCards(userID, botID, conversationID, prompt, recentTexts)
+	memoryText := ""
+	if strings.TrimSpace(memoryCardsText) == "" {
+		memoryText = formatMemoryContext(s.selectRuntimeMemories(userID, botID, prompt))
+	}
+	return formatSystemPrompt(systemContext, compactText, runtimeStateText, promiseText, memoryCardsText, memoryText), history
 }
 
 func (s *Server) selectRuntimeMemories(userID, botID, prompt string) []store.MemoryItem {
-	if s.memoryRecall != nil {
-		items, err := s.memoryRecall.Build(context.Background(), agentxmemory.RecallInput{
-			UserID:     strings.TrimSpace(userID),
-			BotID:      strings.TrimSpace(botID),
-			QueryText:  strings.TrimSpace(prompt),
-			Limit:      runtimeMemoryRecallLimit,
-			WithExpand: true,
-		})
-		if err == nil && len(items) > 0 {
-			return items
-		}
-	}
 	return selectRelevantMemories(s.store.ListMemoryItems(userID, botID, 24), prompt, runtimeMemoryRecallLimit)
 }
 
@@ -96,8 +97,8 @@ func (s *Server) buildRecentHistory(userID, conversationID, prompt string, userM
 	return out
 }
 
-func formatSystemPrompt(systemContext map[string]any, compactText, memoryText string) string {
-	sections := make([]string, 0, 6)
+func formatSystemPrompt(systemContext map[string]any, compactText, runtimeStateText, promiseText, memoryCardsText, memoryText string) string {
+	sections := make([]string, 0, 8)
 	appendLine := func(title, value string) {
 		value = strings.TrimSpace(value)
 		if value == "" {
@@ -110,13 +111,16 @@ func formatSystemPrompt(systemContext map[string]any, compactText, memoryText st
 	appendLine("【说话风格】", stringifySystemContextValue(systemContext["speaking_style"]))
 	appendLine("【角色背景】", stringifySystemContextValue(systemContext["background"]))
 	appendLine("【角色特质】", stringifySystemContextValue(systemContext["traits"]))
+	appendLine("【当前状态】", runtimeStateText)
 	appendLine("【用户要求】", stringifySystemContextValue(systemContext["user_directives"]))
 	appendLine("【用户状态】", stringifySystemContextValue(systemContext["user_status"]))
 	appendLine("【本地时间】", formatLocaleContext(systemContext))
 	appendLine("【状态标签规则】", stringifySystemContextValue(systemContext["status_instruction"]))
 	appendLine("【工具策略】", stringifySystemContextValue(systemContext["tool_policy"]))
 	appendLine("【聊天风格规则】", stringifySystemContextValue(systemContext["chat_style_skill"]))
+	appendLine("【进行中约定】", promiseText)
 	appendLine("【阶段摘要】", compactText)
+	appendLine("【记忆卡片】", memoryCardsText)
 	appendLine("【相关记忆】", memoryText)
 
 	return strings.TrimSpace(strings.Join(sections, "\n\n"))
@@ -173,6 +177,55 @@ func formatMemoryContext(items []store.MemoryItem) string {
 	return strings.Join(lines, "\n")
 }
 
+func (s *Server) selectRuntimeMemoryCards(userID, botID, conversationID, prompt string, recentTexts []string) string {
+	if s.temporalRecall == nil {
+		return ""
+	}
+	result, err := s.temporalRecall.Recall(context.Background(), memorygraph.RecallInput{
+		UserID:          strings.TrimSpace(userID),
+		BotID:           strings.TrimSpace(botID),
+		ConversationID:  strings.TrimSpace(conversationID),
+		TurnID:          "runtime",
+		QueryText:       strings.TrimSpace(prompt),
+		RecentTexts:     append([]string(nil), recentTexts...),
+		ActivationLimit: runtimeMemoryRecallLimit + 2,
+		MaxDepth:        2,
+		CardBudget:      memorygraph.CardBudget{MaxChars: runtimeMemoryCardCharBudget, MaxCards: runtimeMemoryCardLimit},
+		Now:             time.Now().UTC(),
+	})
+	if err != nil || len(result.Cards) == 0 {
+		return ""
+	}
+	return formatPromptCards(result.Cards)
+}
+
+func formatPromptCards(cards []memorygraph.PromptCard) string {
+	if len(cards) == 0 {
+		return ""
+	}
+	lines := make([]string, 0, len(cards))
+	for _, card := range cards {
+		text := strings.TrimSpace(card.Text)
+		if text == "" {
+			continue
+		}
+		lines = append(lines, "- "+text)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func historyContents(history []llm.ChatMessage) []string {
+	out := make([]string, 0, len(history))
+	for _, item := range history {
+		text := strings.TrimSpace(item.Content)
+		if text == "" {
+			continue
+		}
+		out = append(out, text)
+	}
+	return out
+}
+
 func selectRelevantMemories(items []store.MemoryItem, query string, limit int) []store.MemoryItem {
 	if len(items) == 0 {
 		return nil
@@ -181,7 +234,7 @@ func selectRelevantMemories(items []store.MemoryItem, query string, limit int) [
 		limit = runtimeMemoryRecallLimit
 	}
 	query = strings.TrimSpace(query)
-	hasRecallCue := strings.Contains(query, "记得") || strings.Contains(query, "喜欢") || strings.Contains(query, "讨厌") || strings.Contains(query, "偏好") || strings.Contains(query, "上次") || strings.Contains(query, "刚才") || strings.Contains(query, "说过")
+	hasRecallCue := strings.Contains(query, "记得") || strings.Contains(query, "喜欢") || strings.Contains(query, "讨厌") || strings.Contains(query, "偏好") || strings.Contains(query, "上次") || strings.Contains(query, "刚才") || strings.Contains(query, "说过") || strings.Contains(query, "答应") || strings.Contains(query, "约好")
 
 	type scored struct {
 		item  store.MemoryItem
@@ -244,6 +297,33 @@ func selectRelevantMemories(items []store.MemoryItem, query string, limit int) [
 		}
 	}
 	return out
+}
+
+func selectRelevantPromises(items []store.MemoryItem, query string, limit int) []store.MemoryItem {
+	if limit <= 0 {
+		limit = 3
+	}
+	promises := make([]store.MemoryItem, 0, len(items))
+	for _, item := range items {
+		if strings.TrimSpace(item.Kind) != "promise" || strings.TrimSpace(item.Content) == "" {
+			continue
+		}
+		if status := strings.TrimSpace(item.Status); status != "" && !strings.EqualFold(status, "active") {
+			continue
+		}
+		promises = append(promises, item)
+	}
+	if len(promises) == 0 {
+		return nil
+	}
+	selected := selectRelevantMemories(promises, query, limit)
+	if len(selected) > 0 {
+		return selected
+	}
+	if len(promises) > limit {
+		promises = promises[:limit]
+	}
+	return append([]store.MemoryItem(nil), promises...)
 }
 
 func stringifySystemContextValue(value any) string {

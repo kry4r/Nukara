@@ -2,11 +2,14 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT_DIR"
 
-large="$(bash -lc 'source "$1"; infer_qdrant_vector_size "TEXT-EMBEDDING-3-LARGE"' _ "$ROOT_DIR/deploy/lib/memory-infra.sh")"
-small="$(bash -lc 'source "$1"; infer_qdrant_vector_size "MiniMax-M2"' _ "$ROOT_DIR/deploy/lib/memory-infra.sh")"
-
-[ "$large" = "3072" ]
-[ "$small" = "1536" ]
+bash -n \
+  deploy/deploy-local.sh \
+  deploy/lib/deploy-state.sh \
+  deploy/lib/change-detection.sh \
+  deploy/lib/service-restart.sh \
+  deploy/lib/cleanup.sh \
+  deploy/lib/admin-bootstrap.sh
 
 echo "verify_deploy_bash_compat: PASS"

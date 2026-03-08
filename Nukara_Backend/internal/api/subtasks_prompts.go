@@ -61,3 +61,27 @@ func buildPersonaIteratePrompt(userText, botText string) string {
 用户：%s
 机器人：%s`, userText, botText)
 }
+
+func buildSelfCognitionSummaryPrompt(current []string, changes []string) string {
+	currentText := strings.TrimSpace(strings.Join(current, "；"))
+	if currentText == "" {
+		currentText = "（暂无）"
+	}
+	changeText := strings.TrimSpace(strings.Join(changes, "\n- "))
+	if changeText == "" {
+		changeText = "（暂无）"
+	} else {
+		changeText = "- " + changeText
+	}
+	return fmt.Sprintf(`[system:self_cognition_summary_json]
+请根据最近已经确认的人设变化，输出一条简短的“自我认知”总结。
+要求：
+1. 严格输出 JSON：{"self_cognition":"..."}
+2. 只输出一个短句，18~50字。
+3. 优先总结最近形成的习惯、近期状态、表达倾向，不要改写核心身份设定。
+4. 如果没有足够新变化，就沿用当前自我认知并自然压缩。
+
+当前自我认知：%s
+最近确认的人设变化：
+%s`, currentText, changeText)
+}

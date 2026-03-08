@@ -40,6 +40,30 @@ type MemoryItem struct {
 	UpdatedAt  time.Time
 }
 
+type BotRuntimeState struct {
+	UserID          string
+	BotID           string
+	ActivityText    string
+	BasisTags       []string
+	SourceMemoryIDs []string
+	UpdatedAt       time.Time
+}
+
+type PersonaChangeEvent struct {
+	ID            string
+	UserID        string
+	BotID         string
+	Field         string
+	ChangeType    string
+	ProposedValue string
+	SourceTurnID  string
+	Risk          string
+	Status        string
+	ReviewerNote  string
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
+}
+
 type providerSetting struct {
 	ProviderID string
 	Model      string
@@ -213,4 +237,149 @@ func (s *Store) ListMemoryItems(userID, botID string, limit int) []MemoryItem {
 		items = items[:limit]
 	}
 	return append([]MemoryItem(nil), items...)
+}
+
+func (s *Store) UpsertBotRuntimeState(state BotRuntimeState) (BotRuntimeState, error) {
+	state.UserID = strings.TrimSpace(state.UserID)
+	state.BotID = strings.TrimSpace(state.BotID)
+	state.ActivityText = strings.TrimSpace(state.ActivityText)
+	if state.UserID == "" || state.BotID == "" || state.ActivityText == "" {
+		return BotRuntimeState{}, errors.New("runtime state missing required fields")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if state.UpdatedAt.IsZero() {
+		state.UpdatedAt = time.Now().UTC()
+	} else {
+		state.UpdatedAt = state.UpdatedAt.UTC()
+	}
+	state.BasisTags = append([]string(nil), state.BasisTags...)
+	state.SourceMemoryIDs = append([]string(nil), state.SourceMemoryIDs...)
+	key := state.UserID + ":" + state.BotID
+	s.runtimeStatesByKey[key] = state
+	return state, nil
+}
+
+func (s *Store) GetBotRuntimeState(userID, botID string) (BotRuntimeState, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	state, ok := s.runtimeStatesByKey[strings.TrimSpace(userID)+":"+strings.TrimSpace(botID)]
+	if !ok {
+		return BotRuntimeState{}, false
+	}
+	state.BasisTags = append([]string(nil), state.BasisTags...)
+	state.SourceMemoryIDs = append([]string(nil), state.SourceMemoryIDs...)
+	return state, true
+}
+
+func (s *Store) CreatePersonaChangeEvent(event PersonaChangeEvent) (PersonaChangeEvent, error) {
+	event.UserID = strings.TrimSpace(event.UserID)
+	event.BotID = strings.TrimSpace(event.BotID)
+	event.Field = strings.TrimSpace(event.Field)
+	event.ChangeType = strings.TrimSpace(event.ChangeType)
+	event.ProposedValue = strings.TrimSpace(event.ProposedValue)
+	event.SourceTurnID = strings.TrimSpace(event.SourceTurnID)
+	event.Risk = strings.TrimSpace(event.Risk)
+	event.Status = strings.TrimSpace(event.Status)
+	event.ReviewerNote = strings.TrimSpace(event.ReviewerNote)
+	if event.UserID == "" || event.BotID == "" || event.Field == "" || event.ProposedValue == "" {
+		return PersonaChangeEvent{}, errors.New("persona change event missing required fields")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := time.Now().UTC()
+	if strings.TrimSpace(event.ID) == "" {
+		event.ID = NewID()
+	}
+	if event.CreatedAt.IsZero() {
+		event.CreatedAt = now
+	} else {
+		event.CreatedAt = event.CreatedAt.UTC()
+	}
+	if event.UpdatedAt.IsZero() {
+		event.UpdatedAt = event.CreatedAt
+	} else {
+		event.UpdatedAt = event.UpdatedAt.UTC()
+	}
+	if event.Status == "" {
+		event.Status = "pending"
+	}
+	s.personaChangeEventsByID[event.ID] = event
+	s.prunePersonaChangeEventsLocked(event.UserID, event.BotID, 20)
+	return event, nil
+}
+
+func (s *Store) ListPersonaChangeEvents(userID, botID, status string, limit int) []PersonaChangeEvent {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	userID = strings.TrimSpace(userID)
+	botID = strings.TrimSpace(botID)
+	status = strings.TrimSpace(status)
+	if limit <= 0 {
+		limit = 20
+	}
+	items := make([]PersonaChangeEvent, 0, len(s.personaChangeEventsByID))
+	for _, item := range s.personaChangeEventsByID {
+		if strings.TrimSpace(item.UserID) != userID || strings.TrimSpace(item.BotID) != botID {
+			continue
+		}
+		if status != "" && !strings.EqualFold(strings.TrimSpace(item.Status), status) {
+			continue
+		}
+		items = append(items, item)
+	}
+	sort.Slice(items, func(i, j int) bool {
+		if !items[i].CreatedAt.Equal(items[j].CreatedAt) {
+			return items[i].CreatedAt.After(items[j].CreatedAt)
+		}
+		return items[i].UpdatedAt.After(items[j].UpdatedAt)
+	})
+	if len(items) > limit {
+		items = items[:limit]
+	}
+	return append([]PersonaChangeEvent(nil), items...)
+}
+
+func (s *Store) UpdatePersonaChangeEventStatus(changeID, status, reviewerNote string) (PersonaChangeEvent, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	changeID = strings.TrimSpace(changeID)
+	status = strings.TrimSpace(status)
+	item, ok := s.personaChangeEventsByID[changeID]
+	if !ok || changeID == "" || status == "" {
+		return PersonaChangeEvent{}, false
+	}
+	item.Status = status
+	item.ReviewerNote = strings.TrimSpace(reviewerNote)
+	item.UpdatedAt = time.Now().UTC()
+	s.personaChangeEventsByID[changeID] = item
+	return item, true
+}
+
+func (s *Store) prunePersonaChangeEventsLocked(userID, botID string, keep int) {
+	if keep <= 0 {
+		keep = 20
+	}
+	items := make([]PersonaChangeEvent, 0, len(s.personaChangeEventsByID))
+	for _, item := range s.personaChangeEventsByID {
+		if strings.TrimSpace(item.UserID) != strings.TrimSpace(userID) || strings.TrimSpace(item.BotID) != strings.TrimSpace(botID) {
+			continue
+		}
+		items = append(items, item)
+	}
+	sort.Slice(items, func(i, j int) bool {
+		if !items[i].CreatedAt.Equal(items[j].CreatedAt) {
+			return items[i].CreatedAt.After(items[j].CreatedAt)
+		}
+		return items[i].UpdatedAt.After(items[j].UpdatedAt)
+	})
+	for i := keep; i < len(items); i++ {
+		delete(s.personaChangeEventsByID, items[i].ID)
+	}
 }

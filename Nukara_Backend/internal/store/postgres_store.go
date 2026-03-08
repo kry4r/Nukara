@@ -55,6 +55,10 @@ func NewPostgresStore(postgresDSN, redisAddr string) (*PostgresStore, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	if err := ensureTemporalMemoryGraphSchema(ctx, db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 
 	store := &PostgresStore{
 		Store:            NewStore(),
@@ -422,6 +426,32 @@ CREATE TABLE IF NOT EXISTS memory_items (
     updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_memory_items_user_bot ON memory_items(user_id, bot_id, status, occurred_at DESC);
+
+CREATE TABLE IF NOT EXISTS bot_runtime_states (
+    user_id UUID NOT NULL,
+    bot_id UUID NOT NULL,
+    activity_text TEXT NOT NULL,
+    basis_tags JSONB NOT NULL DEFAULT '[]'::jsonb,
+    source_memory_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (user_id, bot_id)
+);
+
+CREATE TABLE IF NOT EXISTS persona_change_events (
+    id UUID PRIMARY KEY,
+    user_id UUID NOT NULL,
+    bot_id UUID NOT NULL,
+    field VARCHAR(40) NOT NULL,
+    change_type VARCHAR(20) NOT NULL DEFAULT 'append',
+    proposed_value TEXT NOT NULL,
+    source_turn_id UUID,
+    risk VARCHAR(20) NOT NULL DEFAULT 'low',
+    status VARCHAR(20) NOT NULL DEFAULT 'pending',
+    reviewer_note TEXT,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_persona_change_events_user_bot ON persona_change_events(user_id, bot_id, status, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS agent_traces (
     id UUID PRIMARY KEY,
@@ -1033,12 +1063,25 @@ func (p *PostgresStore) AppendBotPersona(userID, botID string, speakingAdds, bac
 }
 
 func (p *PostgresStore) ApplyBotPersonaPatch(userID, botID string, input PersonaPatchInput) (Bot, bool) {
-	bot, found := p.Store.ApplyBotPersonaPatch(userID, botID, input)
+	bot, found := p.GetBot(userID, botID)
 	if !found {
 		return Bot{}, false
 	}
 
+	bot.Identity = appendPersonaText(bot.Identity, input.IdentityAdds)
+	bot.Personality = dedup(append(bot.Personality, input.PersonalityAdds...))
+	bot.ExpressionStyle = appendPersonaText(bot.ExpressionStyle, input.ExpressionStyleAdds)
+	bot.LifeContext = appendPersonaText(bot.LifeContext, input.LifeContextAdds)
+	bot.TaboosAndPreferences = appendPersonaText(bot.TaboosAndPreferences, input.TaboosAndPreferencesAdds)
+	if strings.TrimSpace(input.PersonaPrompt) != "" {
+		bot.PersonaPrompt = strings.TrimSpace(input.PersonaPrompt)
+	}
 	bot = SyncLegacyPersonaFields(bot)
+	bot.PersonaVersion++
+	if bot.PersonaVersion <= 0 {
+		bot.PersonaVersion = 1
+	}
+	bot.UpdatedAt = time.Now().UTC()
 	selfCognitionRaw, _ := json.Marshal(bot.SelfCognition)
 	traitsRaw, _ := json.Marshal(bot.Traits)
 	personalityRaw, _ := json.Marshal(bot.Personality)

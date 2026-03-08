@@ -12,7 +12,7 @@ sudo bash deploy/deploy-local.sh --force-clean
 - `--full`：强制全量重建
 - `--dry-run`：仅检测变更，不执行部署
 - `--force-clean`：部署前停止旧服务并清理关键端口
-- `--reset-data`：部署前清空 Nukara 的 PostgreSQL / Redis / Qdrant / Neo4j 应用数据
+- `--reset-data`：部署前清空 Nukara 的 PostgreSQL / Redis 应用数据（包含存放在 PostgreSQL 内的时序记忆图）
 - `--non-interactive`：不走交互输入，直接使用环境变量或 `deploy/.env`
 
 非交互示例：
@@ -86,9 +86,9 @@ sudo bash deploy/deploy-local.sh --reset-data
 
 - 默认情况下：**PostgreSQL** 数据库不会被删除或重置
 - 默认情况下：**Redis** 缓存数据保持不变
-- 默认情况下：**Qdrant / Neo4j** 记忆数据保持不变
+- 默认情况下：**时序记忆图 / 记忆卡片 / session 摘要** 会随 PostgreSQL 一起保持不变
 - **文件存储**: `/opt/nukara/data/uploads/` 中的用户文件保持不变
-- 若显式传入 `--reset-data`：会重建 `nukara` PostgreSQL 数据库、删除 Redis `nukara:*` 键、删除配置中的 Qdrant collection，并清空配置中的 Neo4j 数据库图数据
+- 若显式传入 `--reset-data`：会重建 `nukara` PostgreSQL 数据库，并删除 Redis `nukara:*` 键
 
 ### 变更检测逻辑
 
@@ -108,7 +108,7 @@ sudo bash deploy/deploy-local.sh --reset-data
 - `NUKARA_SMTP_FROM_EMAIL`
 - `NUKARA_SMTP_PASSWORD`
 - 默认 Provider 的 `name/base_url/api_key/models/priority/api_mode`
-- 本地记忆基础设施：`NUKARA_MEMORY_INFRA_ENABLED / NUKARA_QDRANT_VERSION / NUKARA_QDRANT_HTTP_PORT / NUKARA_QDRANT_GRPC_PORT / NUKARA_QDRANT_COLLECTION / NUKARA_QDRANT_VECTOR_SIZE / NUKARA_NEO4J_HTTP_PORT / NUKARA_NEO4J_BOLT_PORT / NUKARA_NEO4J_ADAPTER_PORT / NUKARA_NEO4J_DATABASE / NUKARA_NEO4J_USER / NUKARA_NEO4J_PASSWORD / NUKARA_EMBEDDING_MODEL`
+- `NUKARA_EMBEDDING_MODEL`（供记忆抽取 / 总结 / 检索链路使用）
 
 部署完成后会自动执行：
 
@@ -121,13 +121,9 @@ sudo bash deploy/deploy-local.sh --reset-data
 
 另外，provider bootstrap 不再只等待 `/health`；现在会等待带认证的 `/api/admin/providers` 真正可用，并在失败时打印完整响应体。这样在出现 `curl (22)` / `500` 时，可以直接看到数据库或 provider 表初始化的真实报错。
 
-默认情况下，`deploy/deploy-local.sh` 会在服务器上原生安装并拉起以下记忆基础设施：
+当前部署链路不再依赖独立的 Qdrant / Neo4j 记忆基础设施。
 
-- `qdrant`：官方 release 二进制 + `systemd`
-- `neo4j`：官方 apt/yum 仓库安装 + `systemd`
-- `nukara-neo4j-adapter`：仓内 Go 服务，负责把主链现有的 HTTP topic graph 协议桥接到 Neo4j Bolt
-
-注意：`NUKARA_NEO4J_URL` 指向的是 `nukara-neo4j-adapter`，不是 Neo4j 原生 `7474/7687` 端口。
+时序记忆图、记忆卡片、激活轨迹与 session 摘要统一存放在 PostgreSQL；部署脚本只需保证 PostgreSQL / Redis / Gateway / Proactive / Admin / Web 正常启动。
 
 ## 部署前置依赖
 
@@ -177,17 +173,14 @@ sudo bash deploy/deploy-local.sh --reset-data
 
 具体包括：
 
-- 重建 PostgreSQL `nukara` 数据库
+- 重建 PostgreSQL `nukara` 数据库（会一并清空时序记忆图、记忆卡片、激活轨迹与 session 摘要）
 - 删除 Redis 中匹配 `nukara:*` 的键
-- 删除 `NUKARA_QDRANT_COLLECTION` 对应的 Qdrant collection
-- 清空 `NUKARA_NEO4J_DATABASE` 中的图数据
 
 安全行为：
 
 - 交互模式下需要手动输入 `RESET` 确认
 - `--non-interactive` 下不会再二次确认，请谨慎使用
 - `--dry-run --reset-data` 只打印将执行的清理动作，不实际删除数据
-- Neo4j 认证失败时，脚本会自动清空本地 Neo4j data/auth 状态，并在后续安装步骤中按当前配置重新初始化密码与数据库
 
 ### 部署状态
 

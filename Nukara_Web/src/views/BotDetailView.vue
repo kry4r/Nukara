@@ -9,21 +9,36 @@ const api = useApi()
 
 const loading = ref(false)
 const loadingImpression = ref(false)
-const loadingIterate = ref(false)
+const resolvingChangeId = ref('')
 const error = ref('')
 const profile = ref({
   bot: null,
   bot_state: null,
-  directives: [],
   conversation_id: '',
+  runtime_state: null,
+  recent_impressions: [],
+  key_memories: [],
+  recent_changes: [],
+  pending_persona_changes: [],
 })
 const impression = ref('')
-const iterateResult = ref(null)
 
 const botID = computed(() => String(route.params.id || '').trim())
 const bot = computed(() => profile.value.bot || {})
-const directives = computed(() => Array.isArray(profile.value.directives) ? profile.value.directives : [])
 const personality = computed(() => Array.isArray(bot.value.personality) ? bot.value.personality : [])
+const runtimeState = computed(() => profile.value.runtime_state || null)
+const recentImpressions = computed(() => Array.isArray(profile.value.recent_impressions) ? profile.value.recent_impressions : [])
+const keyMemories = computed(() => Array.isArray(profile.value.key_memories) ? profile.value.key_memories : [])
+const recentChanges = computed(() => Array.isArray(profile.value.recent_changes) ? profile.value.recent_changes : [])
+const pendingPersonaChanges = computed(() => Array.isArray(profile.value.pending_persona_changes) ? profile.value.pending_persona_changes : [])
+const displayImpression = computed(() => impression.value || recentImpressions.value[0]?.content || '')
+const selfCognitionList = computed(() => {
+  const raw = Array.isArray(bot.value.self_cognition) ? bot.value.self_cognition : []
+  const staticTaboos = String(bot.value.taboos_and_preferences || '').trim()
+  return raw
+    .map((item) => String(item || '').trim())
+    .filter((item, index, arr) => item && item !== staticTaboos && arr.indexOf(item) === index)
+})
 
 const personaSections = computed(() => [
   { key: 'identity', title: '身份设定', type: 'text', value: bot.value.identity || '' },
@@ -33,16 +48,21 @@ const personaSections = computed(() => [
   { key: 'taboos_and_preferences', title: '禁忌与偏好', type: 'text', value: bot.value.taboos_and_preferences || '' },
 ])
 
-const iterateSections = computed(() => {
-  if (!iterateResult.value) return []
-  return [
-    { key: 'identity_adds', title: '身份设定新增', items: iterateResult.value.identity_adds || [] },
-    { key: 'personality_adds', title: '性格特征新增', items: iterateResult.value.personality_adds || [] },
-    { key: 'expression_style_adds', title: '表达风格新增', items: iterateResult.value.expression_style_adds || [] },
-    { key: 'life_context_adds', title: '生活环境新增', items: iterateResult.value.life_context_adds || [] },
-    { key: 'taboos_and_preferences_adds', title: '禁忌与偏好新增', items: iterateResult.value.taboos_and_preferences_adds || [] },
-  ].filter(section => Array.isArray(section.items) && section.items.length > 0)
-})
+function applyProfilePayload(data = {}) {
+  profile.value = {
+    bot: data.bot || null,
+    bot_state: data.bot_state || null,
+    conversation_id: data.conversation_id || '',
+    runtime_state: data.runtime_state || null,
+    recent_impressions: Array.isArray(data.recent_impressions) ? data.recent_impressions : [],
+    key_memories: Array.isArray(data.key_memories) ? data.key_memories : [],
+    recent_changes: Array.isArray(data.recent_changes) ? data.recent_changes : [],
+    pending_persona_changes: Array.isArray(data.pending_persona_changes) ? data.pending_persona_changes : [],
+  }
+  if (!impression.value && profile.value.recent_impressions.length > 0) {
+    impression.value = String(profile.value.recent_impressions[0]?.content || '').trim()
+  }
+}
 
 function displayState() {
   const state = profile.value.bot_state || {}
@@ -58,12 +78,7 @@ async function loadProfile() {
   error.value = ''
   try {
     const data = await api.get(`/api/v1/bots/${botID.value}/profile`)
-    profile.value = {
-      bot: data.bot || null,
-      bot_state: data.bot_state || null,
-      directives: Array.isArray(data.directives) ? data.directives : [],
-      conversation_id: data.conversation_id || '',
-    }
+    applyProfilePayload(data)
   } catch (e) {
     error.value = e?.message || '加载失败'
   } finally {
@@ -77,6 +92,11 @@ async function refreshImpression() {
   try {
     const data = await api.post(`/api/v1/bots/${botID.value}/impression`, {})
     impression.value = String(data?.impression || '').trim()
+    if (data?.memory?.content) {
+      const latest = data.memory
+      const rest = recentImpressions.value.filter(item => item.id !== latest.id && item.content !== latest.content)
+      profile.value.recent_impressions = [latest, ...rest]
+    }
   } catch (e) {
     error.value = e?.message || '印象更新失败'
   } finally {
@@ -84,35 +104,29 @@ async function refreshImpression() {
   }
 }
 
-async function runIterate() {
-  if (!botID.value || loadingIterate.value) return
-  loadingIterate.value = true
+async function resolvePersonaChange(changeId, action) {
+  if (!botID.value || !changeId || resolvingChangeId.value) return
+  resolvingChangeId.value = changeId
+  error.value = ''
   try {
-    const data = await api.post(`/api/v1/bots/${botID.value}/iterate`, { message_limit: 30 })
-    iterateResult.value = data || null
+    const data = await api.post(`/api/v1/bots/${botID.value}/persona-changes/${changeId}/${action}`, {})
+    const updatedChange = data?.change || null
     if (data?.bot) {
       profile.value.bot = data.bot
     }
+    profile.value.pending_persona_changes = pendingPersonaChanges.value.filter((item) => item.id !== changeId)
+    if (action === 'accept' && updatedChange) {
+      profile.value.recent_changes = [updatedChange, ...recentChanges.value].slice(0, 20)
+    }
   } catch (e) {
-    error.value = e?.message || '自我迭代失败'
+    error.value = e?.message || '处理待确认变更失败'
   } finally {
-    loadingIterate.value = false
-  }
-}
-
-async function revokeDirective(id) {
-  if (!id || !botID.value) return
-  try {
-    await api.del(`/api/v1/bots/${botID.value}/directives/${id}`)
-    profile.value.directives = directives.value.filter(item => item.id !== id)
-  } catch (e) {
-    error.value = e?.message || '撤销失败'
+    resolvingChangeId.value = ''
   }
 }
 
 onMounted(async () => {
   await loadProfile()
-  await refreshImpression()
 })
 </script>
 
@@ -131,10 +145,14 @@ onMounted(async () => {
         <p v-if="error" class="error">{{ error }}</p>
 
         <section class="card">
-          <h3>自我状态</h3>
+          <h3>当前生活状态</h3>
           <div class="status-row" data-testid="bot-detail-status">
             <span class="status-pill">{{ displayState().emoji }} {{ displayState().text }}</span>
             <span class="status-meta">会话 ID：{{ profile.conversation_id || '无' }}</span>
+          </div>
+          <p class="paragraph runtime-activity">{{ runtimeState?.activity_text || '暂时没有新的生活状态。' }}</p>
+          <div v-if="runtimeState?.basis_tags?.length" class="chips">
+            <span v-for="tag in runtimeState.basis_tags" :key="tag" class="chip muted-chip">{{ tag }}</span>
           </div>
         </section>
 
@@ -157,40 +175,71 @@ onMounted(async () => {
               {{ loadingImpression ? '刷新中...' : '刷新' }}
             </button>
           </div>
-          <p class="impression" data-testid="bot-detail-impression">{{ impression || '暂时还没有新的印象。' }}</p>
-        </section>
-
-        <section class="card">
-          <div class="section-head">
-            <h3>自我迭代</h3>
-            <button type="button" class="ghost-btn" :disabled="loadingIterate" @click="runIterate">
-              {{ loadingIterate ? '迭代中...' : '运行迭代' }}
-            </button>
-          </div>
-          <div v-if="iterateSections.length" class="iterate-list">
-            <div v-for="section in iterateSections" :key="section.key" class="field">
-              <span class="label">{{ section.title }}</span>
-              <div class="chips">
-                <span v-for="item in section.items" :key="`${section.key}-${item}`" class="chip">{{ item }}</span>
-              </div>
-            </div>
-          </div>
-          <p v-else class="muted">还没有新的迭代结果。</p>
-        </section>
-
-        <section class="card">
-          <h3>行为指令</h3>
-          <div v-if="!directives.length" class="muted">暂无指令</div>
-          <div v-else class="directive-list">
-            <div v-for="item in directives" :key="item.id" class="directive-row">
-              <div class="directive-main">
-                <p class="directive-content">{{ item.content }}</p>
-                <p class="directive-meta">{{ item.category || 'style' }} · {{ item.source || 'conversation' }}</p>
-              </div>
-              <button type="button" class="danger-btn" @click="revokeDirective(item.id)">撤销</button>
+          <p class="impression" data-testid="bot-detail-impression">{{ displayImpression || '暂时还没有新的印象。' }}</p>
+          <div v-if="recentImpressions.length > 1" class="stack-list">
+            <div v-for="item in recentImpressions.slice(1)" :key="item.id" class="mini-item">
+              <span class="mini-kind">{{ item.kind || 'memory' }}</span>
+              <span>{{ item.content }}</span>
             </div>
           </div>
         </section>
+
+        <section class="card">
+          <h3>关键记忆</h3>
+          <div v-if="!keyMemories.length" class="muted">暂无关键记忆</div>
+          <div v-else class="stack-list" data-testid="bot-detail-key-memories">
+            <div v-for="item in keyMemories" :key="item.id" class="memory-row">
+              <div class="memory-head">
+                <span class="mini-kind">{{ item.kind || 'memory' }}</span>
+                <span v-if="item.status" class="memory-status">{{ item.status }}</span>
+              </div>
+              <p class="paragraph">{{ item.content }}</p>
+            </div>
+          </div>
+        </section>
+
+        <section class="card">
+          <h3>自我认知</h3>
+          <div v-if="!selfCognitionList.length" class="muted">暂无最近自我认知变化</div>
+          <div v-else class="stack-list" data-testid="bot-detail-self-cognition">
+            <div v-for="item in selfCognitionList" :key="item" class="change-row cognition-row">
+              <p class="paragraph">{{ item }}</p>
+            </div>
+          </div>
+        </section>
+
+        <section class="card">
+          <h3>最近人设更迭</h3>
+          <div v-if="!recentChanges.length" class="muted">暂无最近变化</div>
+          <div v-else class="stack-list bounded-stack-list" data-testid="bot-detail-recent-changes">
+            <div v-for="item in recentChanges" :key="item.id" class="change-row accepted-row">
+              <div class="memory-head">
+                <span class="mini-kind">{{ item.field || 'persona' }}</span>
+                <span class="memory-status">{{ item.status }}</span>
+              </div>
+              <p class="paragraph">{{ item.summary_text || item.proposed_value }}</p>
+            </div>
+          </div>
+        </section>
+
+        <section class="card">
+          <h3>待确认的人设变更</h3>
+          <div v-if="!pendingPersonaChanges.length" class="muted">暂无待确认变更</div>
+          <div v-else class="stack-list" data-testid="bot-detail-pending-changes">
+            <div v-for="item in pendingPersonaChanges" :key="item.id" class="change-row pending-row">
+              <div class="memory-head">
+                <span class="mini-kind">{{ item.field || 'persona' }}</span>
+                <span class="memory-status">{{ item.status }}</span>
+              </div>
+              <p class="paragraph">{{ item.proposed_value }}</p>
+              <div class="action-row">
+                <button type="button" class="ghost-btn" :disabled="resolvingChangeId === item.id" @click="resolvePersonaChange(item.id, 'accept')">接受</button>
+                <button type="button" class="danger-btn" :disabled="resolvingChangeId === item.id" @click="resolvePersonaChange(item.id, 'reject')">拒绝</button>
+              </div>
+            </div>
+          </div>
+        </section>
+
       </template>
     </main>
   </div>
@@ -320,20 +369,61 @@ onMounted(async () => {
   background: #f9fcf4;
 }
 
+.muted-chip {
+  background: #eef4ff;
+}
+
 .directive-list,
-.iterate-list {
+.iterate-list,
+.stack-list {
   display: flex;
   flex-direction: column;
   gap: 10px;
 }
 
-.directive-row {
+.directive-row,
+.memory-row,
+.change-row,
+.mini-item {
   display: flex;
-  gap: 10px;
-  align-items: flex-start;
+  flex-direction: column;
+  gap: 8px;
   border: 1px dashed #d8e2c8;
   border-radius: 10px;
   padding: 10px;
+}
+
+.pending-row {
+  background: #fff8f0;
+}
+
+.accepted-row {
+  background: #f7fbf2;
+}
+
+.cognition-row {
+  background: #f5f8ff;
+}
+
+.bounded-stack-list {
+  max-height: 320px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.memory-head,
+.action-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.memory-status,
+.mini-kind {
+  font-size: 12px;
+  color: #6b7280;
 }
 
 .directive-main {
@@ -359,7 +449,8 @@ onMounted(async () => {
   color: #4f663d;
 }
 
-.ghost-btn:disabled {
+.ghost-btn:disabled,
+.danger-btn:disabled {
   opacity: 0.6;
 }
 
@@ -379,5 +470,9 @@ onMounted(async () => {
   color: #bb4538;
   font-size: 13px;
   line-height: 1.35;
+}
+
+.runtime-activity {
+  font-weight: 500;
 }
 </style>
