@@ -154,12 +154,11 @@ select {
   display: grid;
   align-content: start;
   gap: 16px;
-  position: sticky;
-  top: 20px;
-  max-height: calc(100vh - 40px);
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  padding-right: 4px;
+  position: static;
+  top: auto;
+  max-height: none;
+  overflow: visible;
+  padding-right: 0;
 }
 
 .panel-card,
