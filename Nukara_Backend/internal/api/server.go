@@ -526,6 +526,9 @@ func (s *Server) handleBotByID(w http.ResponseWriter, r *http.Request) {
 		case "iterate":
 			s.handleBotIterate(w, r, userID, botID)
 			return
+		case "memories":
+			s.handleBotMemories(w, r, userID, botID, parts[2:])
+			return
 		case "persona-changes":
 			if len(parts) >= 4 && (parts[3] == "accept" || parts[3] == "reject") {
 				s.handleBotPersonaChangeAction(w, r, userID, botID, parts[2], parts[3])
@@ -1300,4 +1303,57 @@ func badRequest(w http.ResponseWriter, err error) {
 
 func methodNotAllowed(w http.ResponseWriter) {
 	respondJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+}
+
+func (s *Server) handleBotMemories(w http.ResponseWriter, r *http.Request, userID, botID string, rest []string) {
+	if _, found := s.store.GetBot(userID, botID); !found {
+		respondJSON(w, http.StatusNotFound, map[string]any{"error": "bot not found"})
+		return
+	}
+
+	// DELETE /api/v1/bots/{botID}/memories/{memoryID}
+	if r.Method == http.MethodDelete && len(rest) > 0 {
+		memoryID := strings.TrimSpace(rest[0])
+		if memoryID == "" {
+			respondJSON(w, http.StatusBadRequest, map[string]any{"error": "memory id missing"})
+			return
+		}
+		if err := s.store.DeleteMemoryNode(memoryID, userID, botID); err != nil {
+			respondJSON(w, http.StatusNotFound, map[string]any{"error": "memory not found"})
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	// GET /api/v1/bots/{botID}/memories
+	if r.Method == http.MethodGet {
+		nodes := s.store.ListMemoryNodes(userID, botID, store.TemporalMemoryNodeFilter{
+			Status: "active",
+			Limit:  100,
+		})
+		type memoryItem struct {
+			ID             string `json:"id"`
+			NodeType       string `json:"node_type"`
+			Title          string `json:"title"`
+			Summary        string `json:"summary"`
+			OccurredAt     string `json:"occurred_at"`
+			StabilityLabel string `json:"stability_label"`
+		}
+		items := make([]memoryItem, 0, len(nodes))
+		for _, n := range nodes {
+			items = append(items, memoryItem{
+				ID:             n.ID,
+				NodeType:       n.NodeType,
+				Title:          n.Title,
+				Summary:        n.Summary,
+				OccurredAt:     n.OccurredAt.UTC().Format(time.RFC3339),
+				StabilityLabel: n.StabilityLabel,
+			})
+		}
+		respondJSON(w, http.StatusOK, map[string]any{"memories": items})
+		return
+	}
+
+	methodNotAllowed(w)
 }
