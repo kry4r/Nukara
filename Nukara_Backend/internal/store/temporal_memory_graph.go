@@ -440,11 +440,11 @@ func (s *Store) ListActivationTraces(userID, botID string, filter ActivationTrac
 }
 
 func (s *Store) DeleteMemoryNode(nodeID, userID, botID string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	nodeID = strings.TrimSpace(nodeID)
 	userID = strings.TrimSpace(userID)
 	botID = strings.TrimSpace(botID)
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	node, ok := s.memoryNodesByID[nodeID]
 	if !ok {
 		return errors.New("memory node not found")

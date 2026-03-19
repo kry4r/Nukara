@@ -185,15 +185,33 @@ func TestDeleteMemoryNode(t *testing.T) {
 	}
 
 	// userID 不匹配
-	node2, _ := s.CreateMemoryNode(TemporalMemoryNode{
+	node2, err := s.CreateMemoryNode(TemporalMemoryNode{
 		UserID:   "user-2",
 		BotID:    "bot-1",
 		NodeType: "episode",
 		Summary:  "another memory",
 		Status:   "active",
 	})
+	if err != nil {
+		t.Fatalf("create node2: %v", err)
+	}
 	if err := s.DeleteMemoryNode(node2.ID, "user-1", "bot-1"); err == nil {
 		t.Fatal("expected error for mismatched userID")
+	}
+
+	// botID 不匹配
+	node3, err := s.CreateMemoryNode(TemporalMemoryNode{
+		UserID:   "user-1",
+		BotID:    "bot-2",
+		NodeType: "episode",
+		Summary:  "bot2 memory",
+		Status:   "active",
+	})
+	if err != nil {
+		t.Fatalf("create node3: %v", err)
+	}
+	if err := s.DeleteMemoryNode(node3.ID, "user-1", "bot-1"); err == nil {
+		t.Fatal("expected error for mismatched botID")
 	}
 }
 
