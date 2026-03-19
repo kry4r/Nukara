@@ -465,7 +465,6 @@ onMounted(async () => {
 .danger-btn {
   border: 1px solid #e6b7b1;
   background: #fff5f3;
-  color: #b44f43;
 }
 
 .ghost-btn {
