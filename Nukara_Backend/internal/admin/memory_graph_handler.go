@@ -398,6 +398,10 @@ func (s *Server) handleAdminUserGraphRoutes(w http.ResponseWriter, r *http.Reque
 		s.handleAdminMemoryGraph(w, r, parts[0], parts[2])
 		return
 	}
+	if len(parts) == 5 && parts[1] == "bots" && parts[3] == "memories" {
+		s.handleAdminDeleteMemory(w, r, parts[0], parts[2], parts[4])
+		return
+	}
 	http.NotFound(w, r)
 }
 
@@ -734,4 +738,32 @@ func (s *Server) loadAdminPersonaChangeEvents(userID, botID, status string, limi
 		items = append(items, item)
 	}
 	return items, nil
+}
+
+func (s *Server) handleAdminDeleteMemory(w http.ResponseWriter, r *http.Request, userID, botID, memoryID string) {
+	if r.Method != http.MethodDelete {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	userID = strings.TrimSpace(userID)
+	botID = strings.TrimSpace(botID)
+	memoryID = strings.TrimSpace(memoryID)
+	if userID == "" || botID == "" || memoryID == "" {
+		http.Error(w, "missing parameters", http.StatusBadRequest)
+		return
+	}
+	result, err := s.db.Exec(
+		`DELETE FROM memory_nodes WHERE id = $1 AND user_id = $2 AND bot_id = $3`,
+		memoryID, userID, botID,
+	)
+	if err != nil {
+		http.Error(w, "Failed to delete memory: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	rows, _ := result.RowsAffected()
+	if rows == 0 {
+		http.Error(w, "memory not found", http.StatusNotFound)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
