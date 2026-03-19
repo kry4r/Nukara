@@ -28,6 +28,9 @@ const runtimeState = computed(() => profile.value.runtime_state || null)
 const recentImpressions = computed(() => Array.isArray(profile.value.recent_impressions) ? profile.value.recent_impressions : [])
 const keyMemories = computed(() => Array.isArray(profile.value.key_memories) ? profile.value.key_memories : [])
 const recentChanges = computed(() => Array.isArray(profile.value.recent_changes) ? profile.value.recent_changes : [])
+const memories = ref([])
+const memoriesLoading = ref(false)
+const memoriesError = ref('')
 const displayImpression = computed(() => impression.value || recentImpressions.value[0]?.content || '')
 const selfCognitionList = computed(() => {
   const raw = Array.isArray(bot.value.self_cognition) ? bot.value.self_cognition : []
@@ -44,6 +47,26 @@ const personaSections = computed(() => [
   { key: 'life_context', title: '生活环境', type: 'text', value: bot.value.life_context || '' },
   { key: 'taboos_and_preferences', title: '禁忌与偏好', type: 'text', value: bot.value.taboos_and_preferences || '' },
 ])
+
+function groupMemoriesByTime(list) {
+  const now = new Date()
+  const startOfWeek = new Date(now)
+  startOfWeek.setDate(now.getDate() - now.getDay())
+  startOfWeek.setHours(0, 0, 0, 0)
+  const startOfLastWeek = new Date(startOfWeek)
+  startOfLastWeek.setDate(startOfWeek.getDate() - 7)
+
+  const groups = { '本周': [], '上周': [], '更早': [] }
+  for (const m of list) {
+    const d = new Date(m.occurred_at)
+    if (d >= startOfWeek) groups['本周'].push(m)
+    else if (d >= startOfLastWeek) groups['上周'].push(m)
+    else groups['更早'].push(m)
+  }
+  return Object.entries(groups).filter(([, items]) => items.length > 0)
+}
+
+const groupedMemories = computed(() => groupMemoriesByTime(memories.value))
 
 function applyProfilePayload(data = {}) {
   profile.value = {
@@ -100,8 +123,33 @@ async function refreshImpression() {
   }
 }
 
+async function loadMemories() {
+  if (!botID.value) return
+  memoriesLoading.value = true
+  memoriesError.value = ''
+  try {
+    const data = await api.get(`/api/v1/bots/${botID.value}/memories`)
+    memories.value = Array.isArray(data?.memories) ? data.memories : []
+  } catch (e) {
+    memoriesError.value = e?.message || '加载记忆失败'
+  } finally {
+    memoriesLoading.value = false
+  }
+}
+
+async function deleteMemory(memoryID) {
+  if (!window.confirm('确定删除这条记忆？AI 将不再记得这件事。')) return
+  try {
+    await api.del(`/api/v1/bots/${botID.value}/memories/${memoryID}`)
+    memories.value = memories.value.filter(m => m.id !== memoryID)
+  } catch (e) {
+    memoriesError.value = e?.message || '删除失败'
+  }
+}
+
 onMounted(async () => {
   await loadProfile()
+  loadMemories()
 })
 </script>
 
@@ -195,6 +243,26 @@ onMounted(async () => {
               <p class="paragraph">{{ item.summary_text || item.proposed_value }}</p>
             </div>
           </div>
+        </section>
+
+        <section class="card">
+          <h3>记忆管理</h3>
+          <p v-if="memoriesLoading" class="muted">加载中...</p>
+          <p v-else-if="memoriesError" class="error">{{ memoriesError }}</p>
+          <p v-else-if="!memories.length" class="muted">暂无记忆记录</p>
+          <template v-else>
+            <div v-for="[group, items] in groupedMemories" :key="group" class="memory-group">
+              <p class="memory-group-label">{{ group }}</p>
+              <div v-for="m in items" :key="m.id" class="memory-row memory-manage-row">
+                <div class="memory-head">
+                  <span class="mini-kind">{{ m.node_type }}</span>
+                  <span class="muted" style="font-size:11px">{{ m.occurred_at?.slice(0,10) }}</span>
+                </div>
+                <p class="paragraph">{{ m.summary || m.title }}</p>
+                <button type="button" class="ghost-btn danger-btn" @click="deleteMemory(m.id)">删除</button>
+              </div>
+            </div>
+          </template>
         </section>
 
       </template>
@@ -431,5 +499,20 @@ onMounted(async () => {
 
 .runtime-activity {
   font-weight: 500;
+}
+
+.memory-group-label {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin: 12px 0 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.memory-manage-row {
+  position: relative;
+}
+.danger-btn {
+  color: var(--color-danger, #e05);
+  margin-top: 4px;
 }
 </style>

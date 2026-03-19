@@ -1,6 +1,7 @@
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
 import {
+  deleteAdminMemory,
   getMemoryGraph,
   listAdminUsers,
   listUserBots,
@@ -39,6 +40,20 @@ const graph = ref(emptyGraph())
 const selectedUserId = ref('')
 const selectedBotId = ref('')
 const selectedNodeId = ref('')
+const deletingNodeId = ref('')
+
+async function deleteNode(nodeId) {
+  if (!selectedUserId.value || !selectedBotId.value) return
+  deletingNodeId.value = nodeId
+  try {
+    await deleteAdminMemory(selectedUserId.value, selectedBotId.value, nodeId)
+    await loadSelectedBotGraph()
+  } catch (e) {
+    errorMessage.value = e?.message || '删除失败'
+  } finally {
+    deletingNodeId.value = ''
+  }
+}
 
 const selectedNode = computed(() => graph.value.nodes.find((node) => node.id === selectedNodeId.value) || null)
 const runtimeState = computed(() => graph.value.runtime_state || null)
@@ -330,6 +345,14 @@ onMounted(() => {
             <p v-if="selectedNode.importance"><strong>Importance：</strong>{{ selectedNode.importance }}</p>
             <p v-if="selectedNode.occurred_at"><strong>Occurred：</strong>{{ formatDateTime(selectedNode.occurred_at) }}</p>
             <p v-if="selectedNode.topics?.length"><strong>Topics：</strong>{{ selectedNode.topics.join(' / ') }}</p>
+            <button
+              type="button"
+              :disabled="deletingNodeId === selectedNode.id"
+              @click.stop="deleteNode(selectedNode.id)"
+              style="margin-left:8px;color:#e05;background:none;border:none;cursor:pointer;font-size:12px"
+            >
+              {{ deletingNodeId === selectedNode.id ? '删除中...' : '删除' }}
+            </button>
           </div>
         </section>
 

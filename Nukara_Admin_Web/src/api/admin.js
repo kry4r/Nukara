@@ -278,3 +278,9 @@ export function clearUserProviderSetting(userId) {
     method: 'DELETE',
   })
 }
+
+export function deleteAdminMemory(userId, botId, memoryId) {
+  return request(`/users/${userId}/bots/${botId}/memories/${memoryId}`, {
+    method: 'DELETE',
+  })
+}
