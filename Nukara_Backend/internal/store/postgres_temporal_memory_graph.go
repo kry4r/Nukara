@@ -562,3 +562,26 @@ func (p *PostgresStore) ListActivationTraces(userID, botID string, filter Activa
 	}
 	return out
 }
+
+func (p *PostgresStore) DeleteMemoryNode(nodeID, userID, botID string) error {
+	ctx, cancel := p.withTimeout()
+	defer cancel()
+	nodeID = strings.TrimSpace(nodeID)
+	userID = strings.TrimSpace(userID)
+	botID = strings.TrimSpace(botID)
+	result, err := p.db.ExecContext(ctx,
+		`DELETE FROM memory_nodes WHERE id = $1 AND user_id = $2 AND bot_id = $3`,
+		nodeID, userID, botID,
+	)
+	if err != nil {
+		return err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows == 0 {
+		return errors.New("memory node not found")
+	}
+	return nil
+}
