@@ -68,6 +68,7 @@ type DataStore interface {
 	UpdateMemoryNode(node TemporalMemoryNode) (TemporalMemoryNode, error)
 	GetMemoryNode(nodeID string) (TemporalMemoryNode, bool)
 	ListMemoryNodes(userID, botID string, filter TemporalMemoryNodeFilter) []TemporalMemoryNode
+	DeleteMemoryNode(nodeID, userID, botID string) error
 	CreateMemoryEdge(edge TemporalMemoryEdge) (TemporalMemoryEdge, error)
 	ListMemoryEdges(nodeIDs []string, filter TemporalMemoryEdgeFilter) []TemporalMemoryEdge
 	UpsertMemoryCard(card MemoryCard) (MemoryCard, error)

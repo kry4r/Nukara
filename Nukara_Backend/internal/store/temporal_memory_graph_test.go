@@ -157,6 +157,46 @@ func TestTemporalMemoryGraphStore_ListSessionSummaryNodes(t *testing.T) {
 	}
 }
 
+func TestDeleteMemoryNode(t *testing.T) {
+	s := NewStore()
+
+	node, err := s.CreateMemoryNode(TemporalMemoryNode{
+		UserID:   "user-1",
+		BotID:    "bot-1",
+		NodeType: "episode",
+		Summary:  "test memory",
+		Status:   "active",
+	})
+	if err != nil {
+		t.Fatalf("create node: %v", err)
+	}
+
+	// 正常删除
+	if err := s.DeleteMemoryNode(node.ID, "user-1", "bot-1"); err != nil {
+		t.Fatalf("delete node: %v", err)
+	}
+	if _, ok := s.GetMemoryNode(node.ID); ok {
+		t.Fatal("expected node to be deleted")
+	}
+
+	// 删除不存在的 ID
+	if err := s.DeleteMemoryNode("nonexistent", "user-1", "bot-1"); err == nil {
+		t.Fatal("expected error for nonexistent node")
+	}
+
+	// userID 不匹配
+	node2, _ := s.CreateMemoryNode(TemporalMemoryNode{
+		UserID:   "user-2",
+		BotID:    "bot-1",
+		NodeType: "episode",
+		Summary:  "another memory",
+		Status:   "active",
+	})
+	if err := s.DeleteMemoryNode(node2.ID, "user-1", "bot-1"); err == nil {
+		t.Fatal("expected error for mismatched userID")
+	}
+}
+
 func TestTemporalMemoryGraphStore_PreservesNodeMetadata(t *testing.T) {
 	s := NewStore()
 	now := time.Now().UTC()
