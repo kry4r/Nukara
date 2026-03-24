@@ -24,7 +24,7 @@ func BuildCue(query string, recentTexts []string) Cue {
 	return Cue{QueryText: strings.TrimSpace(query), EntityHints: uniqueIDs(entityHints)}
 }
 
-func SelectSeeds(cue Cue, nodes []store.TemporalMemoryNode, opts SeedOptions) []store.TemporalMemoryNode {
+func SelectSeeds(cue Cue, nodes []store.TemporalMemoryNode, opts SeedOptions, embSvc EmbeddingService) []store.TemporalMemoryNode {
 	limit := opts.Limit
 	if limit <= 0 {
 		limit = 4
@@ -36,7 +36,7 @@ func SelectSeeds(cue Cue, nodes []store.TemporalMemoryNode, opts SeedOptions) []
 		if status != "" && !strings.EqualFold(status, "active") {
 			continue
 		}
-		scored = append(scored, ActivatedNode{Node: node, Score: scoreNode(node, cue, now)})
+		scored = append(scored, ActivatedNode{Node: node, Score: scoreNode(node, cue, embSvc, now)})
 	}
 	sort.Slice(scored, func(i, j int) bool {
 		if math.Abs(scored[i].Score-scored[j].Score) > 1e-9 {
@@ -96,7 +96,7 @@ func MergeSeeds(groups ...[]store.TemporalMemoryNode) []store.TemporalMemoryNode
 	return out
 }
 
-func BuildActivationSet(cue Cue, seeds []store.TemporalMemoryNode, nodes []store.TemporalMemoryNode, edges []store.TemporalMemoryEdge, opts ActivationOptions) []ActivatedNode {
+func BuildActivationSet(cue Cue, seeds []store.TemporalMemoryNode, nodes []store.TemporalMemoryNode, edges []store.TemporalMemoryEdge, opts ActivationOptions, embSvc EmbeddingService) []ActivatedNode {
 	limit := opts.Limit
 	if limit <= 0 {
 		limit = 6
@@ -145,7 +145,7 @@ func BuildActivationSet(cue Cue, seeds []store.TemporalMemoryNode, nodes []store
 			continue
 		}
 		seenDepth[current.id] = current.depth
-		score := scoreNode(node, cue, now) + current.propagated
+		score := scoreNode(node, cue, embSvc, now) + current.propagated
 		reason := "seed"
 		if current.depth > 0 {
 			reason = "graph_activation"
@@ -296,10 +296,8 @@ func collectComponent(start string, adjacency map[string][]string) []string {
 	return out
 }
 
-func scoreNode(node store.TemporalMemoryNode, cue Cue, now time.Time) float64 {
-	text := nodeCorpus(node)
-	hints := append([]string{cue.QueryText}, cue.EntityHints...)
-	lexical := float64(lexicalHits(text, hints)) * 0.72
+func scoreNode(node store.TemporalMemoryNode, cue Cue, embSvc EmbeddingService, now time.Time) float64 {
+	embScore := embeddingScore(node, cue, embSvc)
 	typePrior := nodeTypePrior(node)
 	recency := recencyScore(node, now)
 	openLoop := 0.0
@@ -310,7 +308,24 @@ func scoreNode(node store.TemporalMemoryNode, cue Cue, now time.Time) float64 {
 	if strings.EqualFold(node.Status, "resolved") {
 		resolvedPenalty = 1.05
 	}
-	return lexical + typePrior + recency + maxFloat(node.Salience, 0)*0.35 - resolvedPenalty + openLoop
+	return embScore*1.2 + typePrior + recency + maxFloat(node.Salience, 0)*0.35 - resolvedPenalty + openLoop
+}
+
+func embeddingScore(node store.TemporalMemoryNode, cue Cue, embSvc EmbeddingService) float64 {
+	if embSvc == nil || cue.QueryEmbedding == nil {
+		text := nodeCorpus(node)
+		hints := append([]string{cue.QueryText}, cue.EntityHints...)
+		return float64(lexicalHits(text, hints)) * 0.72
+	}
+
+	nodeEmb, err := embSvc.GetEmbedding(node.ID)
+	if err != nil {
+		text := nodeCorpus(node)
+		hints := append([]string{cue.QueryText}, cue.EntityHints...)
+		return float64(lexicalHits(text, hints)) * 0.72
+	}
+
+	return CosineSimilarity(nodeEmb, cue.QueryEmbedding)
 }
 
 func associativeBonus(node store.TemporalMemoryNode, now time.Time) float64 {

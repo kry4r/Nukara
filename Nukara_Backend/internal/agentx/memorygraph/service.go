@@ -107,10 +107,10 @@ func (s *Service) Recall(_ context.Context, in RecallInput) (RecallResult, error
 	if seedLimit <= 0 {
 		seedLimit = 6
 	}
-	seeds := SelectSeeds(cue, allNodes, SeedOptions{Limit: minInt(seedLimit, 6), Now: now})
+	seeds := SelectSeeds(cue, allNodes, SeedOptions{Limit: minInt(seedLimit, 6), Now: now}, s.embeddingService)
 	seeds = MergeSeeds(seeds, BaseRecallNodes(allNodes))
 	edges := s.store.ListMemoryEdges(nil, store.TemporalMemoryEdgeFilter{Status: "active", Limit: 256})
-	activated := BuildActivationSet(cue, seeds, allNodes, edges, ActivationOptions{Limit: seedLimit, MaxDepth: in.MaxDepth, Now: now})
+	activated := BuildActivationSet(cue, seeds, allNodes, edges, ActivationOptions{Limit: seedLimit, MaxDepth: in.MaxDepth, Now: now}, s.embeddingService)
 	chains := BuildRecallChains(activated, edges)
 	cards := AssemblePromptCards(activatedToNodes(activated), chains, in.CardBudget)
 	selectedCardIDs := make([]string, 0, len(cards))

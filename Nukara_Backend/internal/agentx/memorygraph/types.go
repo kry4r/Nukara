@@ -7,9 +7,10 @@ import (
 )
 
 type Cue struct {
-	QueryText   string
-	TimeHints   []string
-	EntityHints []string
+	QueryText      string
+	TimeHints      []string
+	EntityHints    []string
+	QueryEmbedding []float64
 }
 
 type ActivationOptions struct {

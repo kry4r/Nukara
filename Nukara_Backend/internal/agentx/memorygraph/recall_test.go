@@ -55,6 +55,7 @@ func TestRecall_BuildsBoundedActivationSet(t *testing.T) {
 			{SourceID: seed.ID, TargetID: promise.ID, EdgeType: "supports", Weight: 0.9, Status: "active"},
 		},
 		ActivationOptions{Limit: 3, MaxDepth: 2, Now: now},
+		nil,
 	)
 
 	if len(activated) != 3 {
@@ -113,6 +114,7 @@ func TestRecall_PrefersOpenLoopsUntilResolved(t *testing.T) {
 		[]store.TemporalMemoryNode{openPromise, resolvedPromise, staleSnapshot},
 		nil,
 		ActivationOptions{Limit: 2, MaxDepth: 1, Now: now},
+		nil,
 	)
 
 	if len(activated) == 0 {
