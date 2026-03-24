@@ -20,6 +20,7 @@ import (
 	"nukara/backend/internal/agent"
 	"nukara/backend/internal/agentx"
 	"nukara/backend/internal/agentx/llm"
+	"nukara/backend/internal/agentx/memorybuffer"
 	"nukara/backend/internal/agentx/memorygraph"
 	agentprovider "nukara/backend/internal/agentx/provider"
 	"nukara/backend/internal/agentx/subtasks"
@@ -70,6 +71,8 @@ type Server struct {
 	emailSendCooldown time.Duration
 	tokenKey          []byte
 	tokenTTL          time.Duration
+	memoryBuffer      *memorybuffer.Service
+	topicDetector     memorybuffer.TopicDetector
 }
 
 func NewServer(st store.DataStore, agentClient *agent.Agent, apnsClient *apns.Client, tokenSecret string, redisAddr string) *Server {
@@ -86,6 +89,8 @@ func NewServer(st store.DataStore, agentClient *agent.Agent, apnsClient *apns.Cl
 		tokenKey:          []byte(tokenSecret),
 		tokenTTL:          30 * 24 * time.Hour,
 		temporalRecall:    memorygraph.NewService(memorygraph.ServiceDeps{Store: st}),
+		memoryBuffer:      memorybuffer.NewService(memorybuffer.Options{}),
+		topicDetector:     memorybuffer.NoOpTopicDetector{},
 	}
 	if agentClient != nil {
 		deps := agentx.RuntimeDeps{
@@ -107,7 +112,16 @@ func (s *Server) initSubtasks() {
 		MemoryTool:  s.memoryTool,
 		MemoryGraph: memorygraph.NewService(memorygraph.ServiceDeps{Store: s.store}),
 		MemoryExtractor: func(ctx context.Context, in subtasks.Input) (string, error) {
-			prompt := buildMemoryExtractPrompt(in.UserText, in.BotText, s.buildMemoryCandidateContext(in.UserID, in.BotID, in.UserText, in.BotText))
+			var prompt string
+			if strings.TrimSpace(in.AggregatedText) != "" {
+				// Multi-turn aggregated flush: use the dedicated aggregated prompt.
+				prompt = buildMemoryExtractPromptAggregated(
+					in.AggregatedText,
+					s.buildMemoryCandidateContext(in.UserID, in.BotID, in.UserText, in.BotText),
+				)
+			} else {
+				prompt = buildMemoryExtractPrompt(in.UserText, in.BotText, s.buildMemoryCandidateContext(in.UserID, in.BotID, in.UserText, in.BotText))
+			}
 			return s.runSubtaskPrompt(ctx, in, prompt, `{"items":[]}`)
 		},
 		CompactUpdater: func(ctx context.Context, in subtasks.Input) (string, error) {

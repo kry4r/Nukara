@@ -18,6 +18,10 @@ type Input struct {
 	TurnID         string
 	UserText       string
 	BotText        string
+	// AggregatedText is set when the runner is called with pre-buffered
+	// multi-turn text (delayed aggregation). When non-empty it takes
+	// precedence over UserText/BotText for memory extraction.
+	AggregatedText string
 }
 
 type Result struct {

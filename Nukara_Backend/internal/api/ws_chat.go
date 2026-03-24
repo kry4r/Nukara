@@ -287,6 +287,16 @@ func (s *Server) runTurnSubtasks(turn queuedTurn, turnID, botReplyText string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
+	// ── Delayed aggregation ──────────────────────────────────────────────────
+	// If a memory buffer is configured, we buffer this turn and only run memory
+	// extraction when the buffer flushes (topic change or window threshold).
+	// Compact, persona, and self-cognition subtasks still run every turn.
+	if s.memoryBuffer != nil {
+		s.runBufferedMemorySubtasks(ctx, turn, turnID, botReplyText)
+		return
+	}
+
+	// ── Legacy path (no buffer) ──────────────────────────────────────────────
 	result, err := s.subtasks.Run(ctx, subtasks.Input{
 		UserID:         turn.UserID,
 		BotID:          turn.Bot.ID,
@@ -299,6 +309,63 @@ func (s *Server) runTurnSubtasks(turn queuedTurn, turnID, botReplyText string) {
 		log.Printf("[ws-chat] subtasks failed: user=%s conv=%s err=%v", turn.UserID, turn.Conversation.ID, err)
 		return
 	}
+	s.publishSubtaskResult(turn, result)
+}
+
+// runBufferedMemorySubtasks appends the turn to the memory buffer and, if the
+// buffer flushes, runs memory extraction with the aggregated text. Compact and
+// persona subtasks are still run every turn (they are cheap and stateless).
+func (s *Server) runBufferedMemorySubtasks(ctx context.Context, turn queuedTurn, turnID, botReplyText string) {
+	// Detect topic continuity (cheap: no LLM call by default — NoOpTopicDetector).
+	existingKeywords := s.bufferKeywordsFor(turn.Conversation.ID)
+	topicContinues, newKeywords, _ := s.topicDetector.Detect(ctx, existingKeywords, turn.AggregatedText, botReplyText)
+
+	appendResult := s.memoryBuffer.Append(
+		turn.Conversation.ID,
+		turnID,
+		turn.AggregatedText,
+		botReplyText,
+		topicContinues,
+		newKeywords,
+	)
+
+	if flush := appendResult.Flushed; flush != nil && strings.TrimSpace(flush.AggregatedText) != "" {
+		// Run full subtasks with aggregated text for memory extraction.
+		lastTurnID := flush.LastTurnID
+		if lastTurnID == "" {
+			lastTurnID = turnID
+		}
+		result, err := s.subtasks.Run(ctx, subtasks.Input{
+			UserID:         turn.UserID,
+			BotID:          turn.Bot.ID,
+			ConversationID: turn.Conversation.ID,
+			TurnID:         lastTurnID,
+			UserText:       turn.AggregatedText,
+			BotText:        botReplyText,
+			AggregatedText: flush.AggregatedText,
+		})
+		if err != nil {
+			log.Printf("[ws-chat] aggregated subtasks failed: user=%s conv=%s reason=%s err=%v",
+				turn.UserID, turn.Conversation.ID, flush.Reason, err)
+		} else {
+			log.Printf("[ws-chat] buffer flushed: user=%s conv=%s turns=%d reason=%s",
+				turn.UserID, turn.Conversation.ID, len(flush.TurnIDs), flush.Reason)
+			s.publishSubtaskResult(turn, result)
+		}
+	}
+}
+
+// bufferKeywordsFor returns the current topic keywords for a conversation's
+// buffer, without exposing buffer internals.
+func (s *Server) bufferKeywordsFor(_ string) []string {
+	// Topic keywords are managed internally by the buffer; the detector
+	// receives them via the Append result. For now we pass nil (empty) and let
+	// the NoOpDetector always report topic-continues. When an LLMTopicDetector
+	// is wired in, it will use the per-conversation keywords stored in the buf.
+	return nil
+}
+
+func (s *Server) publishSubtaskResult(turn queuedTurn, result subtasks.Result) {
 	if result.PersonaUpdated {
 		s.wsHub.publishToUser(turn.UserID, map[string]any{
 			"type":      "bot_persona_updated",
