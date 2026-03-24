@@ -13,7 +13,7 @@ type SimilarityMatch struct {
 	ShouldMerge bool
 }
 
-func findBestSimilarityNode(candidate store.TemporalMemoryNode, existing []store.TemporalMemoryNode) (SimilarityMatch, store.TemporalMemoryNode, bool) {
+func findBestSimilarityNode(candidate store.TemporalMemoryNode, existing []store.TemporalMemoryNode, embSvc EmbeddingService) (SimilarityMatch, store.TemporalMemoryNode, bool) {
 	best := SimilarityMatch{}
 	var matched store.TemporalMemoryNode
 	found := false
@@ -21,9 +21,9 @@ func findBestSimilarityNode(candidate store.TemporalMemoryNode, existing []store
 		if strings.TrimSpace(node.ID) == "" || strings.TrimSpace(node.ID) == strings.TrimSpace(candidate.ID) {
 			continue
 		}
-		score := nodeSimilarity(candidate, node)
+		score := nodeSimilarity(candidate, node, embSvc)
 		if !found || score > best.Similarity {
-			best = SimilarityMatch{NodeID: node.ID, Similarity: score, ShouldMerge: score >= 0.72}
+			best = SimilarityMatch{NodeID: node.ID, Similarity: score, ShouldMerge: score >= 0.80}
 			matched = node
 			found = true
 		}
@@ -34,7 +34,7 @@ func findBestSimilarityNode(candidate store.TemporalMemoryNode, existing []store
 	return best, matched, true
 }
 
-func nodeSimilarity(a, b store.TemporalMemoryNode) float64 {
+func nodeSimilarity(a, b store.TemporalMemoryNode, embSvc EmbeddingService) float64 {
 	if strings.TrimSpace(a.NodeType) != strings.TrimSpace(b.NodeType) {
 		return 0
 	}
@@ -42,17 +42,66 @@ func nodeSimilarity(a, b store.TemporalMemoryNode) float64 {
 		return 0
 	}
 	if strings.TrimSpace(a.MergeKey) != "" && strings.TrimSpace(a.MergeKey) == strings.TrimSpace(b.MergeKey) {
-		return 1
+		return 1.0
 	}
-	textA := similarityText(a)
-	textB := similarityText(b)
-	if textA == "" || textB == "" {
-		return 0
+
+	embSim := computeEmbeddingSimilarity(a, b, embSvc)
+
+	if a.SessionID != "" && a.SessionID == b.SessionID {
+		if hasEntityOverlap(a.Entities, b.Entities) {
+			return embSim * 1.15
+		}
 	}
-	if textA == textB {
-		return 1
+
+	return embSim
+}
+
+func computeEmbeddingSimilarity(a, b store.TemporalMemoryNode, embSvc EmbeddingService) float64 {
+	if embSvc == nil {
+		textA := similarityText(a)
+		textB := similarityText(b)
+		if textA == "" || textB == "" {
+			return 0
+		}
+		if textA == textB {
+			return 1
+		}
+		return diceCoefficient(textA, textB)
 	}
-	return diceCoefficient(textA, textB)
+
+	embA, err := embSvc.GetEmbedding(a.ID)
+	if err != nil {
+		return diceCoefficient(similarityText(a), similarityText(b))
+	}
+
+	embB, err := embSvc.GetEmbedding(b.ID)
+	if err != nil {
+		return diceCoefficient(similarityText(a), similarityText(b))
+	}
+
+	return CosineSimilarity(embA, embB)
+}
+
+func hasEntityOverlap(a, b []store.Entity) bool {
+	if len(a) == 0 || len(b) == 0 {
+		return false
+	}
+	aSet := make(map[string]struct{})
+	for _, entity := range a {
+		key := strings.TrimSpace(entity.ID) + ":" + strings.TrimSpace(entity.Name)
+		if key != ":" {
+			aSet[key] = struct{}{}
+		}
+	}
+	for _, entity := range b {
+		key := strings.TrimSpace(entity.ID) + ":" + strings.TrimSpace(entity.Name)
+		if key != ":" {
+			if _, ok := aSet[key]; ok {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func similarityText(node store.TemporalMemoryNode) string {

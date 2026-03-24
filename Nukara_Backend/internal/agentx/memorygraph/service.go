@@ -207,7 +207,7 @@ func (s *Service) persistNodesWithMerge(nodes []store.TemporalMemoryNode) ([]sto
 
 func (s *Service) upsertMemoryFact(node store.TemporalMemoryNode) (store.TemporalMemoryNode, error) {
 	existing := s.store.ListMemoryNodes(node.UserID, node.BotID, store.TemporalMemoryNodeFilter{NodeTypes: []string{node.NodeType}, Status: "active", Limit: 128})
-	if match, matchedNode, ok := findBestSimilarityNode(node, existing); ok && match.ShouldMerge {
+	if match, matchedNode, ok := findBestSimilarityNode(node, existing, s.embeddingService); ok && match.ShouldMerge {
 		merged := mergeNode(matchedNode, node)
 		return s.store.UpdateMemoryNode(merged)
 	}
