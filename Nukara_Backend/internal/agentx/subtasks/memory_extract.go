@@ -61,6 +61,7 @@ func ParseMemoryItems(raw string) ([]store.MemoryItem, error) {
 		content := strings.TrimSpace(item.Content)
 		semanticCategory := normalizeSemanticCategory(item.SemanticCategory, content, item.Kind)
 		stability := normalizeMemoryStability(item.Stability, content)
+		entities := normalizeEntities(item.Entities)
 		normalized := store.MemoryItem{
 			ID:               strings.TrimSpace(item.MemoryID),
 			Kind:             normalizeMemoryKind(item.Kind),
@@ -72,7 +73,7 @@ func ParseMemoryItems(raw string) ([]store.MemoryItem, error) {
 			Topics:           append([]string(nil), item.Topics...),
 			SemanticCategory: semanticCategory,
 			Stability:        stability,
-			Entities:         append([]store.Entity(nil), item.Entities...),
+			Entities:         entities,
 			Relations:        relations,
 		}
 		if normalized.Importance <= 0 {
@@ -171,4 +172,16 @@ func shouldPersistMemory(kind, content string) bool {
 		return len([]rune(content)) >= 4
 	}
 	return true
+}
+
+func normalizeEntities(entities []store.Entity) []store.Entity {
+	out := make([]store.Entity, 0, len(entities))
+	for _, entity := range entities {
+		entity.Type = strings.ToLower(strings.TrimSpace(entity.Type))
+		if entity.Type != "" && !store.ValidateEntityType(entity.Type) {
+			entity.Type = ""
+		}
+		out = append(out, entity)
+	}
+	return out
 }

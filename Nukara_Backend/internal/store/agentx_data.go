@@ -32,6 +32,22 @@ type Entity struct {
 	Role string
 }
 
+const (
+	EntityTypePerson       = "person"
+	EntityTypeLocation     = "location"
+	EntityTypeTime         = "time"
+	EntityTypeOrganization = "organization"
+)
+
+func ValidateEntityType(t string) bool {
+	switch t {
+	case EntityTypePerson, EntityTypeLocation, EntityTypeTime, EntityTypeOrganization:
+		return true
+	default:
+		return false
+	}
+}
+
 type Relation struct {
 	SourceEntityID string
 	TargetEntityID string

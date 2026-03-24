@@ -32,8 +32,10 @@ func buildMemoryExtractPrompt(userText, botText, existingMemory string) string {
    - 只有确实全新时才创建新记忆（memory_id 留空）。
 6. kind 可取：event | promise | self_fact | user_fact | habit | state_basis | fact。
 7. semantic_category 可取：identity | personality | life_context | expression_style | taboos_and_preferences | relationship。
-8. stability 只允许 stable 或 temporary；出现“最近/这周/暂时/今天”等时间限定词时应优先标为 temporary。
+8. stability 只允许 stable 或 temporary；出现”最近/这周/暂时/今天”等时间限定词时应优先标为 temporary。
 9. 如果文本里提到人物、宠物、地点等实体，请在 entities 里列出；如果能识别关系，请在 relations 里列出。
+   - entity.type 必须是以下之一：person（人物）、location（地点）、time（时间）、organization（组织）
+   - 示例：{“id”:”pet-doufu”,”type”:”person”,”name”:”豆腐”,”role”:”user”}
 10. content 要写成简洁、可长期复用的稳定事实，topics 只保留真正可检索的关键词。
 
 已有长期记忆：
