@@ -5,12 +5,18 @@ import (
 	"strings"
 )
 
-func buildMemoryExtractPrompt(userText, botText, existingMemory string) string {
+// buildMemoryExtractPrompt builds the per-turn memory extraction prompt.
+// botName is the bot's display name (e.g. "米米").
+// userRole is how the bot refers to the user (e.g. "我的恋人", "朋友").
+func buildMemoryExtractPrompt(userText, botText, existingMemory, botName, userRole string) string {
 	if strings.TrimSpace(existingMemory) == "" {
 		existingMemory = "（暂无）"
 	}
+	roleCtx := buildRoleContext(botName, userRole)
 	return fmt.Sprintf(`[system:memory_extract_json]
 你现在负责判断"这轮对话里有没有值得长期保留的记忆事实"，并决定是新建记忆还是更新已有记忆。
+
+%s
 
 规则：
 1. 只有在确实值得长期保留时才写入 items；如果没有，必须返回 {"items":[]}。
@@ -30,6 +36,7 @@ func buildMemoryExtractPrompt(userText, botText, existingMemory string) string {
    - 如果已有记忆已经完整覆盖这次信息，返回 {"items":[]}。
    - 如果这次信息是在修正/补充已有记忆，复用对应 memory_id，并输出修正后的稳定表述。
    - 只有确实全新时才创建新记忆（memory_id 留空）。
+   - 如果多条已有记忆描述的是同一场景（相同地点、人物、话题），优先合并成一条更完整的记忆，复用其中一个 memory_id。
 6. kind 可取：event | promise | self_fact | user_fact | habit | state_basis | fact。
 7. semantic_category 可取：identity | personality | life_context | expression_style | taboos_and_preferences | relationship。
 8. stability 只允许 stable 或 temporary；出现"最近/这周/暂时/今天"等时间限定词时应优先标为 temporary。
@@ -44,18 +51,21 @@ func buildMemoryExtractPrompt(userText, botText, existingMemory string) string {
 严格输出 JSON：
 {"items":[{"memory_id":"已有记忆ID或空字符串","kind":"self_fact","owner":"user|bot|shared","content":"...","importance":0-100,"status":"active","topics":["..."],"semantic_category":"identity","stability":"stable","entities":[{"id":"pet-xiaomi","type":"pet","name":"小蜜","role":"bot"}],"relations":[{"source_entity_id":"bot-self","target_entity_id":"pet-xiaomi","relation_type":"owns","role_hint":"first_person"}]}]}
 用户：%s
-机器人：%s`, existingMemory, userText, botText)
+机器人：%s`, roleCtx, existingMemory, userText, botText)
 }
 
 // buildMemoryExtractPromptAggregated is like buildMemoryExtractPrompt but
 // accepts pre-formatted multi-turn conversation text (e.g. from the memory
 // buffer) instead of separate userText/botText strings.
-func buildMemoryExtractPromptAggregated(aggregatedText, existingMemory string) string {
+func buildMemoryExtractPromptAggregated(aggregatedText, existingMemory, botName, userRole string) string {
 	if strings.TrimSpace(existingMemory) == "" {
 		existingMemory = "（暂无）"
 	}
+	roleCtx := buildRoleContext(botName, userRole)
 	return fmt.Sprintf(`[system:memory_extract_json]
 你现在负责从一段多轮对话中提取值得长期保留的记忆事实，并决定是新建记忆还是更新已有记忆。
+
+%s
 
 规则：
 1. 只有在确实值得长期保留时才写入 items；如果没有，必须返回 {"items":[]}。
@@ -74,6 +84,7 @@ func buildMemoryExtractPromptAggregated(aggregatedText, existingMemory string) s
    - 如果已有记忆已经完整覆盖这次信息，返回 {"items":[]}。
    - 如果这次信息是在修正/补充已有记忆，复用对应 memory_id，并输出修正后的稳定表述。
    - 只有确实全新时才创建新记忆（memory_id 留空）。
+   - 如果多条已有记忆描述的是同一场景（相同地点、人物、话题），优先合并成一条更完整的记忆，复用其中一个 memory_id。
 6. kind 可取：event | promise | self_fact | user_fact | habit | state_basis | fact。
 7. semantic_category 可取：identity | personality | life_context | expression_style | taboos_and_preferences | relationship。
 8. stability 只允许 stable 或 temporary；出现"最近/这周/暂时/今天"等时间限定词时应优先标为 temporary。
@@ -87,7 +98,23 @@ func buildMemoryExtractPromptAggregated(aggregatedText, existingMemory string) s
 严格输出 JSON：
 {"items":[{"memory_id":"已有记忆ID或空字符串","kind":"self_fact","owner":"user|bot|shared","content":"...","importance":0-100,"status":"active","topics":["..."],"semantic_category":"identity","stability":"stable","entities":[],"relations":[]}]}
 对话内容：
-%s`, existingMemory, aggregatedText)
+%s`, roleCtx, existingMemory, aggregatedText)
+}
+
+// buildRoleContext returns the persona context block injected into memory prompts.
+func buildRoleContext(botName, userRole string) string {
+	botName = strings.TrimSpace(botName)
+	userRole = strings.TrimSpace(userRole)
+	if botName == "" {
+		botName = "我"
+	}
+	if userRole == "" {
+		userRole = "用户"
+	}
+	return fmt.Sprintf(`角色说明（写入 content 时必须遵守）：
+- 对话中的"机器人"即"%s"，在 content 里一律写成"我"（第一人称）。
+- 对话中的"用户"即"%s"，在 content 里一律使用这个称谓。
+- 示例：不要写"bot在咖啡厅打工"，要写"我在咖啡厅打工"。`, botName, userRole)
 }
 
 func buildCompactPrompt(userText, botText string) string {
@@ -98,12 +125,20 @@ func buildCompactPrompt(userText, botText string) string {
 机器人：%s`, userText, botText)
 }
 
-func buildPersonaIteratePrompt(userText, botText string) string {
+// buildPersonaIteratePrompt generates persona patch suggestions.
+// botName is used so the LLM writes self-facts in first person.
+func buildPersonaIteratePrompt(userText, botText, botName string) string {
+	if strings.TrimSpace(botName) == "" {
+		botName = "我"
+	}
 	return fmt.Sprintf(`[system:persona_iterate_json]
+你正在为 AI 角色"%s"分析人设变化。
+重要：所有 adds 里的文字必须用第一人称描述（用"我"，不要用"bot"或角色名字）。
+示例：不要写"米米在咖啡厅打工"，要写"我在咖啡厅打工"。
 请输出角色可追加的人设补丁JSON：
 {"identity_adds":[],"personality_adds":[],"expression_style_adds":[],"life_context_adds":[],"taboos_and_preferences_adds":[]}
 用户：%s
-机器人：%s`, userText, botText)
+机器人：%s`, botName, userText, botText)
 }
 
 func buildSelfCognitionSummaryPrompt(current []string, changes []string) string {
@@ -122,8 +157,9 @@ func buildSelfCognitionSummaryPrompt(current []string, changes []string) string 
 要求：
 1. 严格输出 JSON：{"self_cognition":"..."}
 2. 只输出一个短句，18~50字。
-3. 优先总结最近形成的习惯、近期状态、表达倾向，不要改写核心身份设定。
-4. 如果没有足够新变化，就沿用当前自我认知并自然压缩。
+3. 用第一人称"我"来描述，不要出现"bot"或角色名字。
+4. 优先总结最近形成的习惯、近期状态、表达倾向，不要改写核心身份设定。
+5. 如果没有足够新变化，就沿用当前自我认知并自然压缩。
 
 当前自我认知：%s
 最近确认的人设变化：

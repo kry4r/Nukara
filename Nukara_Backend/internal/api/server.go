@@ -112,15 +112,19 @@ func (s *Server) initSubtasks() {
 		MemoryTool:  s.memoryTool,
 		MemoryGraph: memorygraph.NewService(memorygraph.ServiceDeps{Store: s.store}),
 		MemoryExtractor: func(ctx context.Context, in subtasks.Input) (string, error) {
+			botName, userRole := s.botPersonaLabels(in.UserID, in.BotID)
 			var prompt string
 			if strings.TrimSpace(in.AggregatedText) != "" {
-				// Multi-turn aggregated flush: use the dedicated aggregated prompt.
 				prompt = buildMemoryExtractPromptAggregated(
 					in.AggregatedText,
 					s.buildMemoryCandidateContext(in.UserID, in.BotID, in.UserText, in.BotText),
+					botName, userRole,
 				)
 			} else {
-				prompt = buildMemoryExtractPrompt(in.UserText, in.BotText, s.buildMemoryCandidateContext(in.UserID, in.BotID, in.UserText, in.BotText))
+				prompt = buildMemoryExtractPrompt(in.UserText, in.BotText,
+					s.buildMemoryCandidateContext(in.UserID, in.BotID, in.UserText, in.BotText),
+					botName, userRole,
+				)
 			}
 			return s.runSubtaskPrompt(ctx, in, prompt, `{"items":[]}`)
 		},
@@ -129,13 +133,31 @@ func (s *Server) initSubtasks() {
 			return s.runSubtaskPrompt(ctx, in, prompt, `{"summary":"","facts":[]}`)
 		},
 		PersonaIterator: func(ctx context.Context, in subtasks.Input) (string, error) {
-			prompt := buildPersonaIteratePrompt(in.UserText, in.BotText)
+			botName, _ := s.botPersonaLabels(in.UserID, in.BotID)
+			prompt := buildPersonaIteratePrompt(in.UserText, in.BotText, botName)
 			return s.runSubtaskPrompt(ctx, in, prompt, `{"identity_adds":[],"personality_adds":[],"expression_style_adds":[],"life_context_adds":[],"taboos_and_preferences_adds":[]}`)
 		},
 		SelfCognitionUpdater: func(ctx context.Context, in subtasks.Input, bot store.Bot, changes []store.PersonaChangeEvent) (store.Bot, error) {
 			return s.refreshBotSelfCognition(ctx, in, bot, changes)
 		},
 	})
+}
+
+// botPersonaLabels returns the bot's display name and the term used to refer
+// to the user, for use in memory/persona prompts.
+// botName defaults to "我"; userRole defaults to "用户".
+func (s *Server) botPersonaLabels(userID, botID string) (botName, userRole string) {
+	bot, ok := s.store.GetBot(userID, botID)
+	if !ok {
+		return "", ""
+	}
+	botName = strings.TrimSpace(bot.Name)
+	// Relationship field describes how the bot sees the user (e.g. "我的恋人").
+	userRole = strings.TrimSpace(bot.Relationship)
+	if userRole == "" {
+		userRole = strings.TrimSpace(bot.Role)
+	}
+	return botName, userRole
 }
 
 func (s *Server) SetChatRuntime(runtime wsChatRuntime) {
