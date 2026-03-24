@@ -18,6 +18,8 @@ export const useChatStore = defineStore('chat', () => {
   const activeReplyGroups = ref({})
   const streamDraftByReply = ref({})
   const personaUpdate = ref({ summary: '', timestamp: 0 })
+  const memoryToast = ref('')
+  let _memoryToastTimer = null
 
   let wsSend = null
 
@@ -320,6 +322,13 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
+  function handleBotMemorySaved(data) {
+    const count = data.memory_count || 1
+    memoryToast.value = count > 1 ? `对你产生了 ${count} 条新记忆` : '对你产生了新的记忆'
+    if (_memoryToastTimer) clearTimeout(_memoryToastTimer)
+    _memoryToastTimer = setTimeout(() => { memoryToast.value = '' }, 4000)
+  }
+
   function clear() {
     conversationId.value = ''
     messages.value = []
@@ -330,6 +339,8 @@ export const useChatStore = defineStore('chat', () => {
     activeReplyGroups.value = {}
     streamDraftByReply.value = {}
     personaUpdate.value = { summary: '', timestamp: 0 }
+    memoryToast.value = ''
+    if (_memoryToastTimer) { clearTimeout(_memoryToastTimer); _memoryToastTimer = null }
   }
 
   return {
@@ -343,6 +354,7 @@ export const useChatStore = defineStore('chat', () => {
     errorBanner,
     activeReplyGroups,
     personaUpdate,
+    memoryToast,
     setWsSend,
     loadMessages,
     sendMessage,
@@ -361,5 +373,6 @@ export const useChatStore = defineStore('chat', () => {
     handleProactiveMessage,
     handleError,
     handleBotPersonaUpdated,
+    handleBotMemorySaved,
   }
 })

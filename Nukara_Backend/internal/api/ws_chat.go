@@ -308,4 +308,13 @@ func (s *Server) runTurnSubtasks(turn queuedTurn, turnID, botReplyText string) {
 			"timestamp": time.Now().UTC().Unix(),
 		})
 	}
+	if result.SavedMemoryCount > 0 {
+		log.Printf("[ws-chat] memory saved: user=%s bot=%s count=%d", turn.UserID, turn.Bot.ID, result.SavedMemoryCount)
+		s.wsHub.publishToUser(turn.UserID, map[string]any{
+			"type":         "bot_memory_saved",
+			"bot_id":       turn.Bot.ID,
+			"memory_count": result.SavedMemoryCount,
+			"timestamp":    time.Now().UTC().Unix(),
+		})
+	}
 }

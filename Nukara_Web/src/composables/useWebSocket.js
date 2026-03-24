@@ -59,6 +59,9 @@ export function useWebSocket() {
 
   function _dispatch(data) {
     if (data.type === 'pong') return
+    if (data.type === 'bot_memory_saved' || data.type === 'bot_persona_updated') {
+      console.log('[ws-debug]', data.type, data)
+    }
     const handler = handlers[data.type]
     if (handler) handler(data)
   }

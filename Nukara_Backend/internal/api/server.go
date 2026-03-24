@@ -225,14 +225,15 @@ func (s *Server) handleEmailSend(w http.ResponseWriter, r *http.Request) {
 
 	code := fmt.Sprintf("%06d", rand.Intn(1000000))
 	if err := s.emailSender.SendVerificationCode(r.Context(), email, code, ttl); err != nil {
-		status := http.StatusBadRequest
 		if !strings.Contains(strings.ToLower(err.Error()), "smtp not configured") && !strings.Contains(strings.ToLower(err.Error()), "invalid smtp") {
-			status = http.StatusBadGateway
+			respondJSON(w, http.StatusBadGateway, map[string]any{"error": err.Error()})
+			return
 		}
-		respondJSON(w, status, map[string]any{"error": err.Error()})
-		return
+		// dev mode: SMTP not configured, log code to console instead of sending email
+		log.Printf("[DEV] email=%s purpose=%s code=%s (smtp not configured, use this code)", email, req.Purpose, code)
+	} else {
+		log.Printf("[EMAIL] email=%s purpose=%s code=%s", email, req.Purpose, code)
 	}
-	log.Printf("[EMAIL] email=%s purpose=%s code=%s", email, req.Purpose, code)
 	s.store.SaveEmailCode(email, req.Purpose, code, ttl)
 	respondJSON(w, http.StatusOK, map[string]any{"success": true, "message": "验证码已发送到邮箱"})
 }

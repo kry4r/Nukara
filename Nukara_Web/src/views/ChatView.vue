@@ -83,6 +83,12 @@ function goBack() {
       <span class="ws-dot" :class="{ online: realtime.isConnected }" aria-hidden="true"></span>
     </header>
 
+    <Transition name="memory-toast">
+      <div v-if="chat.memoryToast" class="memory-toast">
+        🧠 {{ chat.botName }} {{ chat.memoryToast }}
+      </div>
+    </Transition>
+
     <main ref="listEl" class="message-list" aria-label="聊天消息列表">
       <div v-if="chat.isLoading" class="center-hint">加载中...</div>
       <div v-if="chat.personaUpdate.summary" class="persona-banner">
@@ -201,6 +207,42 @@ function goBack() {
   font-size: 12px;
   color: #3d5131;
   background: rgba(143, 170, 116, 0.18);
+}
+
+.memory-banner {
+  margin: 0 var(--spacing-lg) var(--spacing-sm);
+  padding: 8px 12px;
+  border-radius: 12px;
+  font-size: 12px;
+  color: #2e4a6b;
+  background: rgba(100, 149, 210, 0.15);
+}
+
+.memory-toast {
+  position: fixed;
+  top: calc(60px + env(safe-area-inset-top, 0));
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 999;
+  padding: 8px 16px;
+  border-radius: 20px;
+  font-size: 13px;
+  color: #2e4a6b;
+  background: rgba(220, 235, 255, 0.95);
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.12);
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.memory-toast-enter-active,
+.memory-toast-leave-active {
+  transition: opacity 0.3s, transform 0.3s;
+}
+
+.memory-toast-enter-from,
+.memory-toast-leave-to {
+  opacity: 0;
+  transform: translateX(-50%) translateY(-8px);
 }
 
 .error-banner {

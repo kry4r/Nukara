@@ -21,10 +21,12 @@ func (s *Server) runSubtaskPrompt(ctx context.Context, in subtasks.Input, prompt
 		return fallback, nil
 	}
 	if s.runtime != nil {
+		// subtask 必须用独立的 conversationID，避免复用聊天上下文导致 LLM 角色扮演而非输出 JSON
+		subtaskConvID := "subtask:" + strings.TrimSpace(in.ConversationID)
 		text, _, _, _, err := s.runRuntimeChat(ctx, agentx.TurnRequest{
 			UserID:         strings.TrimSpace(in.UserID),
 			BotID:          strings.TrimSpace(in.BotID),
-			ConversationID: strings.TrimSpace(in.ConversationID),
+			ConversationID: subtaskConvID,
 			AggregatedText: prompt,
 			SystemPrompt:   subtaskSystemPrompt,
 			Purpose:        "subtask",

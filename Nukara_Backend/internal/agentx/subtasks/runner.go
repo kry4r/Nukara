@@ -21,9 +21,10 @@ type Input struct {
 }
 
 type Result struct {
-	PersonaUpdated bool
-	PatchSummary   string
-	Patch          persona.Patch
+	PersonaUpdated   bool
+	PatchSummary     string
+	Patch            persona.Patch
+	SavedMemoryCount int
 }
 
 type MemoryExtractor func(ctx context.Context, in Input) (string, error)
@@ -104,6 +105,8 @@ func (r *Runner) Run(ctx context.Context, in Input) (Result, error) {
 			_ = r.store.Store.UpsertCompact(in.ConversationID, compact, in.TurnID)
 		}
 	}
+
+	result.SavedMemoryCount = len(savedItems)
 
 	if r.memoryGraph != nil && (len(savedItems) > 0 || strings.TrimSpace(compactJSON) != "") {
 		_, _ = r.memoryGraph.IngestTurn(ctx, memorygraph.IngestTurnInput{

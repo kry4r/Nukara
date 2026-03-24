@@ -20,15 +20,20 @@ type GraphStore interface {
 }
 
 type ServiceDeps struct {
-	Store GraphStore
+	Store            GraphStore
+	EmbeddingService EmbeddingService
 }
 
 type Service struct {
-	store GraphStore
+	store            GraphStore
+	embeddingService EmbeddingService
 }
 
 func NewService(deps ServiceDeps) *Service {
-	return &Service{store: deps.Store}
+	return &Service{
+		store:            deps.Store,
+		embeddingService: deps.EmbeddingService,
+	}
 }
 
 func (s *Service) IngestTurn(_ context.Context, in IngestTurnInput) (IngestTurnResult, error) {
@@ -76,6 +81,14 @@ func (s *Service) IngestTurn(_ context.Context, in IngestTurnInput) (IngestTurnR
 			result.Edges = append(result.Edges, created)
 		}
 	}
+
+	// 异步生成 embeddings
+	if s.embeddingService != nil {
+		for _, node := range result.Nodes {
+			go s.generateEmbedding(context.Background(), node.ID, node.Summary)
+		}
+	}
+
 	return result, nil
 }
 
@@ -227,4 +240,21 @@ func extractActivatedNodeIDs(nodes []ActivatedNode) []string {
 		}
 	}
 	return uniqueIDs(ids)
+}
+
+func (s *Service) generateEmbedding(ctx context.Context, nodeID, text string) {
+	if s.embeddingService == nil || strings.TrimSpace(text) == "" {
+		return
+	}
+
+	embedding, err := s.embeddingService.EmbedText(ctx, text)
+	if err != nil {
+		return
+	}
+
+	if graphStore, ok := s.store.(interface {
+		UpsertEmbedding(nodeID string, embedding []float64, model string) error
+	}); ok {
+		_ = graphStore.UpsertEmbedding(nodeID, embedding, "")
+	}
 }

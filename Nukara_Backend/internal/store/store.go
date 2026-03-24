@@ -275,8 +275,14 @@ type Store struct {
 	activationTracesByID    map[string]ActivationTrace
 	runtimeStatesByKey      map[string]BotRuntimeState
 	personaChangeEventsByID map[string]PersonaChangeEvent
+	embeddingsByNodeID      map[string]embeddingData
 
 	metrics Metrics
+}
+
+type embeddingData struct {
+	Embedding []float64
+	Model     string
 }
 
 func NewStore() *Store {
@@ -310,6 +316,7 @@ func NewStore() *Store {
 		activationTracesByID:    map[string]ActivationTrace{},
 		runtimeStatesByKey:      map[string]BotRuntimeState{},
 		personaChangeEventsByID: map[string]PersonaChangeEvent{},
+		embeddingsByNodeID:      map[string]embeddingData{},
 	}
 
 	// seed dev user for local auth flows
@@ -1078,3 +1085,33 @@ func NewID() string {
 	encoded := hex.EncodeToString(raw[:])
 	return encoded[0:8] + "-" + encoded[8:12] + "-" + encoded[12:16] + "-" + encoded[16:20] + "-" + encoded[20:32]
 }
+
+func (s *Store) UpsertEmbedding(nodeID string, embedding []float64, model string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.embeddingsByNodeID[nodeID] = embeddingData{Embedding: embedding, Model: model}
+	return nil
+}
+
+func (s *Store) GetEmbedding(nodeID string) ([]float64, string, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	data, ok := s.embeddingsByNodeID[nodeID]
+	if !ok {
+		return nil, "", errors.New("embedding not found")
+	}
+	return data.Embedding, data.Model, nil
+}
+
+func (s *Store) BatchGetEmbeddings(nodeIDs []string) (map[string][]float64, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	result := make(map[string][]float64)
+	for _, nodeID := range nodeIDs {
+		if data, ok := s.embeddingsByNodeID[nodeID]; ok {
+			result[nodeID] = data.Embedding
+		}
+	}
+	return result, nil
+}
+

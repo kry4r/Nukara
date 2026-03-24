@@ -90,4 +90,9 @@ type DataStore interface {
 
 	// ListAllUserIDs returns all registered user IDs for scheduler scanning.
 	ListAllUserIDs() []string
+
+	// Embedding operations
+	UpsertEmbedding(nodeID string, embedding []float64, model string) error
+	GetEmbedding(nodeID string) ([]float64, string, error)
+	BatchGetEmbeddings(nodeIDs []string) (map[string][]float64, error)
 }

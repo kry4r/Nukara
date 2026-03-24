@@ -26,6 +26,7 @@ export const useRealtimeStore = defineStore('realtime', () => {
     ws.on('error', chat.handleError)
     ws.on('connection_error', chat.handleError)
     ws.on('bot_persona_updated', chat.handleBotPersonaUpdated)
+    ws.on('bot_memory_saved', chat.handleBotMemorySaved)
     chat.setWsSend(ws.send)
     isBootstrapped.value = true
   }

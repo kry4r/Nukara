@@ -585,3 +585,71 @@ func (p *PostgresStore) DeleteMemoryNode(nodeID, userID, botID string) error {
 	}
 	return nil
 }
+
+func (p *PostgresStore) UpsertEmbedding(nodeID string, embedding []float64, model string) error {
+	if p.db == nil {
+		return nil
+	}
+	ctx, cancel := p.withTimeout()
+	defer cancel()
+
+	embJSON, _ := json.Marshal(embedding)
+	_, err := p.db.ExecContext(ctx, `
+		INSERT INTO memory_embeddings(node_id, embedding_model, embedding_json, updated_at)
+		VALUES ($1, $2, $3::jsonb, NOW())
+		ON CONFLICT (node_id)
+		DO UPDATE SET embedding_model=EXCLUDED.embedding_model, embedding_json=EXCLUDED.embedding_json, updated_at=NOW()
+	`, nodeID, model, embJSON)
+	return err
+}
+
+func (p *PostgresStore) GetEmbedding(nodeID string) ([]float64, string, error) {
+	if p.db == nil {
+		return nil, "", errors.New("database not configured")
+	}
+	ctx, cancel := p.withTimeout()
+	defer cancel()
+
+	var embJSON []byte
+	var model string
+	err := p.db.QueryRowContext(ctx, `SELECT embedding_json, embedding_model FROM memory_embeddings WHERE node_id=$1`, nodeID).Scan(&embJSON, &model)
+	if err != nil {
+		return nil, "", err
+	}
+
+	var embedding []float64
+	if err := json.Unmarshal(embJSON, &embedding); err != nil {
+		return nil, "", err
+	}
+	return embedding, model, nil
+}
+
+func (p *PostgresStore) BatchGetEmbeddings(nodeIDs []string) (map[string][]float64, error) {
+	if p.db == nil || len(nodeIDs) == 0 {
+		return make(map[string][]float64), nil
+	}
+	ctx, cancel := p.withTimeout()
+	defer cancel()
+
+	idsJSON, _ := json.Marshal(nodeIDs)
+	rows, err := p.db.QueryContext(ctx, `SELECT node_id, embedding_json FROM memory_embeddings WHERE node_id = ANY(SELECT jsonb_array_elements_text($1::jsonb))`, idsJSON)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	result := make(map[string][]float64)
+	for rows.Next() {
+		var nodeID string
+		var embJSON []byte
+		if err := rows.Scan(&nodeID, &embJSON); err != nil {
+			continue
+		}
+		var embedding []float64
+		if err := json.Unmarshal(embJSON, &embedding); err != nil {
+			continue
+		}
+		result[nodeID] = embedding
+	}
+	return result, nil
+}
